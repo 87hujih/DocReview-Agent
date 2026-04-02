@@ -1,0 +1,119 @@
+name: Release Deploy
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Existing image tag to deploy or roll back to"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+      build_images: ${{ steps.vars.outputs.build_images }}
+    steps:
+      - id: vars
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "image_tag=${{ github.event.inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+            echo "build_images=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "build_images=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-push-server:
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: ${{ needs.prepare.outputs.build_images == 'true' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/docreview-agent-server:${{ needs.prepare.outputs.image_tag }}
+
+  build-and-push-web:
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: ${{ needs.prepare.outputs.build_images == 'true' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/web
+          file: apps/web/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/docreview-agent-web:${{ needs.prepare.outputs.image_tag }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - build-and-push-server
+      - build-and-push-web
+    if: ${{ always() && needs.prepare.result == 'success' && (needs.prepare.outputs.build_images == 'false' || (needs.build-and-push-server.result == 'success' && needs.build-and-push-web.result == 'success')) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add server to known hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${{ secrets.DEPLOY_PORT }}" "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Copy deployment assets to server
+        shell: bash
+        run: |
+          scp -P "${{ secrets.DEPLOY_PORT }}" deploy/docker-compose.prod.yml "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/agent-project/docker-compose.prod.yml"
+          scp -P "${{ secrets.DEPLOY_PORT }}" scripts/deploy/remote-deploy.sh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/agent-project/remote-deploy.sh"
+
+      - name: Run remote deployment
+        shell: bash
+        run: |
+          ssh -p "${{ secrets.DEPLOY_PORT }}" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "\
+            chmod +x /opt/agent-project/remote-deploy.sh && \
+            APP_DIR=/opt/agent-project \
+            IMAGE_TAG=${{ needs.prepare.outputs.image_tag }} \
+            GHCR_USERNAME='${{ github.actor }}' \
+            GHCR_TOKEN='${{ secrets.GITHUB_TOKEN }}' \
+            sh /opt/agent-project/remote-deploy.sh"

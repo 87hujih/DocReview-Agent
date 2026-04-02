@@ -102,9 +102,29 @@ MVP 最终应至少包含以下页面：
 - [简历版 MVP 实施计划](/G:/gofile/Agent_Project/docs/superpowers/plans/2026-04-01-resume-ready-enterprise-document-ai-mvp.md)
 - [平台设计文档](/G:/gofile/Agent_Project/docs/superpowers/specs/2026-03-31-enterprise-document-task-platform-design.md)
 - [开发文档](/G:/gofile/Agent_Project/docs/development.md)
+- [CI/CD 部署文档](/G:/gofile/Agent_Project/docs/deployment.md)
 - [根目录 README](/G:/gofile/Agent_Project/README.md)
 
 ## 当前说明
 
 根目录 `README.md` 保留为原始主说明文档。  
 本文件只服务当前 MVP 收敛与简历表达，不覆盖原文档。
+
+## CI/CD
+
+当前仓库已规划为：
+
+- `CI`: `pull_request` 与 `push main` 触发
+- `CD`: `v*` tag 触发正式发布
+- 镜像仓库：`GHCR`
+- 部署方式：`SSH + Docker Compose`
+
+镜像命名约定：
+
+- `ghcr.io/87hujih/docreview-agent-server:<tag>`
+- `ghcr.io/87hujih/docreview-agent-web:<tag>`
+
+远程访问方式：
+
+- 前端：`http://<server-ip>:3000`
+- 后端：`http://<server-ip>:8080`

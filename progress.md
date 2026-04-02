@@ -10,3 +10,10 @@
 - 已明确本轮不包含数据库部署、域名、HTTPS 和反向代理，远程环境暂时通过公网端口访问。
 - 已将完整 CI/CD 设计写入 `docs/superpowers/specs/2026-04-02-github-actions-cicd-design.md`，等待用户审阅后再进入实施计划阶段。
 - 已基于已确认的 spec 产出实施计划 `docs/superpowers/plans/2026-04-02-github-actions-cicd-implementation-plan.md`。
+- 本地仓库已初始化并关联 GitHub 远程 `git@github.com:87hujih/DocReview-Agent.git`。
+- 为隔离实现工作，创建了 `.worktrees/github-actions-cicd` 与分支 `feat/github-actions-cicd`。
+- 已完成 Go 侧最小骨架：修正根模块名、加入配置加载、`/healthz` 路由与基础测试。
+- 已完成前端最小骨架：Next 应用、首页、`/resources` 预留页面、生产构建。
+- 已完成 `docker-compose.yml`、两份 Dockerfile、`.dockerignore`、部署模板、远程部署脚本与两条 GitHub Actions workflow。
+- 已完成本地可行验证：`go test ./apps/server/...`、`next build`、`docker compose config`、后端健康检查、前端页面路由访问。
+- 当前剩余阻塞：本机 Docker daemon 未启动，GitHub Secrets 未配置，远程服务器 `.env` 与首次发布/tag 验证尚未完成。

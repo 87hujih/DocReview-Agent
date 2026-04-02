@@ -45,11 +45,23 @@
 ## CI/CD 实施计划
 
 - [x] 基于 CI/CD 规格文档输出实施计划
-- [ ] 用户确认实施计划
-- [ ] 开始落地 `.github/workflows`、Dockerfile 和部署资产
+- [x] 用户确认实施计划
+- [x] 开始落地 `.github/workflows`、Dockerfile 和部署资产
+- [x] 建立 Git 基线并关联 GitHub 远程
+- [x] 创建隔离 worktree 并在分支中执行实现
+- [x] 完成 Task 1 最小脚手架
+- [x] 完成 workflow、部署模板和远程脚本
+- [ ] 启动本机 Docker 并完成镜像构建验证
+- [ ] 在 GitHub 仓库中配置 Secrets
+- [ ] 在远程服务器准备 `/opt/agent-project/.env`
+- [ ] 推送分支并验证 `ci.yml`
+- [ ] 推送 tag 并验证 `release-deploy.yml`
 
 ## CI/CD 实施 Review
 
 - 实施计划明确把“真实 GitHub 仓库”和“Task 1 最小脚手架完成”列为前置条件，避免出现只写本地 YAML 的伪完成
 - 部署资产被收敛为 `Dockerfile + deploy/docker-compose.prod.yml + remote-deploy.sh + 两条 workflow`
 - 验收标准要求同时覆盖 GitHub workflow、GHCR 镜像和远程服务器健康检查
+- 实现过程中出现的两个真实偏差已经固定：
+  - `next.config.ts` 被改为 `next.config.mjs`，因为当前 Next.js 版本不支持 `ts` 配置文件
+  - Docker 本地验证尚未完成，因为当前机器上的 Docker daemon 未启动

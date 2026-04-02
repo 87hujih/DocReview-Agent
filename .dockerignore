@@ -1,0 +1,14 @@
+.git
+.worktrees
+.idea
+node_modules
+coverage
+*.log
+apps/web/node_modules
+apps/web/.next
+apps/web/out
+tasks
+docs
+findings.md
+progress.md
+task_plan.md

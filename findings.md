@@ -16,3 +16,7 @@
   - 服务器已安装 `Docker` 和 `docker compose`
   - 本轮暂不做域名、HTTPS、反向代理
   - 远程只保留单套环境，通过公网端口访问
+- 为了满足 `using-git-worktrees` 的前置条件，先在主工作区创建了初始提交，然后建立了 `feat/github-actions-cicd` worktree。
+- 当前 Next.js 14 构建链不接受 `next.config.ts`，因此实现侧改为 `next.config.mjs`，这是与原 Task 1 文档的一个必要偏差。
+- 本地 `npm run build` 在沙箱内会因为子进程 `spawn EPERM` 失败，必须以放开权限的方式执行。
+- 本地 Docker CLI 可用，但当前机器上的 Docker daemon 未启动，因此无法完成 `docker build`、`docker run` 和基于容器的脚本语法验证。

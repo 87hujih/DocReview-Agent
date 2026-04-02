@@ -1,4 +1,4 @@
-module agent_project/apps/server
+module agent_project
 
 go 1.26.1
 

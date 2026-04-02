@@ -1,0 +1,21 @@
+services:
+  server:
+    image: ghcr.io/${GHCR_OWNER}/docreview-agent-server:${IMAGE_TAG}
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT}:8080"
+    environment:
+      PORT: "8080"
+      DATABASE_URL: "${DATABASE_URL}"
+
+  web:
+    image: ghcr.io/${GHCR_OWNER}/docreview-agent-web:${IMAGE_TAG}
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "${WEB_PORT}:3000"
+    environment:
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      NEXT_PUBLIC_API_BASE_URL: "${NEXT_PUBLIC_API_BASE_URL}"
