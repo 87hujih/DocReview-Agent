@@ -1,0 +1,10 @@
+node_modules/
+.next/
+coverage/
+apps/server/bin/
+.env
+.env.*
+data/
+.idea/
+.worktrees/
+*.log
