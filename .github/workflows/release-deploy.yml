@@ -90,6 +90,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Start SSH agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
@@ -101,11 +108,31 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -p "${{ secrets.DEPLOY_PORT }}" "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
 
+      - name: Pull release images on runner
+        shell: bash
+        run: |
+          docker pull "ghcr.io/${{ github.repository_owner }}/docreview-agent-server:${{ needs.prepare.outputs.image_tag }}"
+          docker pull "ghcr.io/${{ github.repository_owner }}/docreview-agent-web:${{ needs.prepare.outputs.image_tag }}"
+
+      - name: Export release images
+        shell: bash
+        run: |
+          mkdir -p dist/images
+          docker save "ghcr.io/${{ github.repository_owner }}/docreview-agent-server:${{ needs.prepare.outputs.image_tag }}" -o "dist/images/docreview-agent-server-${{ needs.prepare.outputs.image_tag }}.tar"
+          docker save "ghcr.io/${{ github.repository_owner }}/docreview-agent-web:${{ needs.prepare.outputs.image_tag }}" -o "dist/images/docreview-agent-web-${{ needs.prepare.outputs.image_tag }}.tar"
+
+      - name: Prepare remote deployment directory
+        shell: bash
+        run: |
+          ssh -p "${{ secrets.DEPLOY_PORT }}" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "mkdir -p /opt/agent-project/images"
+
       - name: Copy deployment assets to server
         shell: bash
         run: |
           scp -P "${{ secrets.DEPLOY_PORT }}" deploy/docker-compose.prod.yml "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/agent-project/docker-compose.prod.yml"
           scp -P "${{ secrets.DEPLOY_PORT }}" scripts/deploy/remote-deploy.sh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/agent-project/remote-deploy.sh"
+          scp -P "${{ secrets.DEPLOY_PORT }}" "dist/images/docreview-agent-server-${{ needs.prepare.outputs.image_tag }}.tar" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/agent-project/images/docreview-agent-server-${{ needs.prepare.outputs.image_tag }}.tar"
+          scp -P "${{ secrets.DEPLOY_PORT }}" "dist/images/docreview-agent-web-${{ needs.prepare.outputs.image_tag }}.tar" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/agent-project/images/docreview-agent-web-${{ needs.prepare.outputs.image_tag }}.tar"
 
       - name: Run remote deployment
         shell: bash
@@ -114,6 +141,6 @@ jobs:
             chmod +x /opt/agent-project/remote-deploy.sh && \
             APP_DIR=/opt/agent-project \
             IMAGE_TAG=${{ needs.prepare.outputs.image_tag }} \
-            GHCR_USERNAME='${{ github.actor }}' \
-            GHCR_TOKEN='${{ secrets.GITHUB_TOKEN }}' \
+            SERVER_IMAGE_ARCHIVE=/opt/agent-project/images/docreview-agent-server-${{ needs.prepare.outputs.image_tag }}.tar \
+            WEB_IMAGE_ARCHIVE=/opt/agent-project/images/docreview-agent-web-${{ needs.prepare.outputs.image_tag }}.tar \
             sh /opt/agent-project/remote-deploy.sh"

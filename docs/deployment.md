@@ -86,6 +86,7 @@ Behavior:
 
 - tag push builds and pushes fresh images to `GHCR`
 - manual dispatch deploys an existing image tag for rollback or replay
+- deploy job pulls the tagged images on the GitHub runner, exports them as archives, copies them to the server, and lets the server load them locally
 
 ## Publishing a New Version
 
@@ -101,7 +102,8 @@ Expected result:
 - GitHub Actions builds `docreview-agent-server:v0.1.0`
 - GitHub Actions builds `docreview-agent-web:v0.1.0`
 - the deploy job updates `/opt/agent-project/.env`
-- the remote server runs `docker compose pull` and `docker compose up -d`
+- the deploy job copies image archives into `/opt/agent-project/images`
+- the remote server runs `docker load` and `docker compose up -d`
 
 ## Rolling Back
 
@@ -113,6 +115,8 @@ Use the `Release Deploy` workflow manually:
 4. Execute the workflow.
 
 The workflow skips image builds and only redeploys the existing GHCR images.
+
+This rollback path still uses the GitHub runner as the component that pulls the images from `GHCR`. The server only receives the image archives and does not need to pull from `GHCR` itself.
 
 ## Runtime Verification
 

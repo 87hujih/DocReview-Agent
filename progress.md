@@ -16,4 +16,8 @@
 - 已完成前端最小骨架：Next 应用、首页、`/resources` 预留页面、生产构建。
 - 已完成 `docker-compose.yml`、两份 Dockerfile、`.dockerignore`、部署模板、远程部署脚本与两条 GitHub Actions workflow。
 - 已完成本地可行验证：`go test ./apps/server/...`、`next build`、`docker compose config`、后端健康检查、前端页面路由访问。
-- 当前剩余阻塞：本机 Docker daemon 未启动，GitHub Secrets 未配置，远程服务器 `.env` 与首次发布/tag 验证尚未完成。
+- 当前剩余阻塞已经收敛为两点：本地尚未重新完成 `docker build` 类验证，以及修复后的 `release-deploy.yml` 还未通过新的 GitHub tag 正式验收。
+- `main` 上的首轮 `ci.yml` 已在 GitHub Actions 成功通过。
+- 首次 `v0.1.0` 的 `release-deploy.yml` 已定位失败根因：远程服务器 `dockerd` 访问 `ghcr.io/token` 超时，导致服务器端 `docker login/pull` 失败。
+- 已将部署方案调整为“GitHub runner 从 `GHCR` 拉镜像、导出 tar、传到服务器，服务器只做 `docker load + docker compose up -d`”。
+- 新方案已通过手工 archive deploy 验证：`106.52.42.194` 上的 `http://127.0.0.1:8080/healthz`、`http://127.0.0.1:3000/`、`http://127.0.0.1:3000/resources` 均返回成功。

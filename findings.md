@@ -20,3 +20,6 @@
 - 当前 Next.js 14 构建链不接受 `next.config.ts`，因此实现侧改为 `next.config.mjs`，这是与原 Task 1 文档的一个必要偏差。
 - 本地 `npm run build` 在沙箱内会因为子进程 `spawn EPERM` 失败，必须以放开权限的方式执行。
 - 本地 Docker CLI 可用，但当前机器上的 Docker daemon 未启动，因此无法完成 `docker build`、`docker run` 和基于容器的脚本语法验证。
+- `main` 分支上的首轮 GitHub Actions `ci.yml` 已成功完成，说明当前最小骨架和 workflow 基本正确。
+- 首次 `v0.1.0` 的 `release-deploy.yml` 失败并非 workflow 语法问题，而是远程服务器 `dockerd` 自身访问 `ghcr.io/token` 超时；同机 shell `curl` 正常。
+- 由于服务器侧 `dockerd -> GHCR` 链路不稳定，当前更稳的 CD 方案是：runner 负责 `docker pull` / `docker save`，服务器负责 `docker load` / `docker compose up -d`。

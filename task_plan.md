@@ -29,3 +29,4 @@
 | `.worktrees` 尚未被 git 忽略且仓库没有初始提交 | 1 | 将 `.worktrees/` 加入 `.gitignore`，创建初始提交后再创建 worktree |
 | `next.config.ts` 在当前 Next.js 版本下无法构建 | 1 | 改为 `next.config.mjs`，并继续保留最小配置 |
 | 本地 Docker 验证失败，Docker daemon 未启动 | 1 | 先完成非 Docker 资产实现与非 Docker 验证，等待用户启动 Docker 后补完本地镜像验证 |
+| 首次 `release-deploy.yml` 在远程部署阶段失败 | 1 | 通过 GitHub API、远程 `docker pull`、`curl ghcr.io/token` 与 `dockerd` 日志定位为服务器侧 `dockerd -> GHCR` 超时，改为 runner 传输镜像归档再部署 |

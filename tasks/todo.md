@@ -52,9 +52,9 @@
 - [x] 完成 Task 1 最小脚手架
 - [x] 完成 workflow、部署模板和远程脚本
 - [ ] 启动本机 Docker 并完成镜像构建验证
-- [ ] 在 GitHub 仓库中配置 Secrets
-- [ ] 在远程服务器准备 `/opt/agent-project/.env`
-- [ ] 推送分支并验证 `ci.yml`
+- [x] 在 GitHub 仓库中配置 Secrets
+- [x] 在远程服务器准备 `/opt/agent-project/.env`
+- [x] 推送分支并验证 `ci.yml`
 - [ ] 推送 tag 并验证 `release-deploy.yml`
 
 ## CI/CD 实施 Review
@@ -64,4 +64,6 @@
 - 验收标准要求同时覆盖 GitHub workflow、GHCR 镜像和远程服务器健康检查
 - 实现过程中出现的两个真实偏差已经固定：
   - `next.config.ts` 被改为 `next.config.mjs`，因为当前 Next.js 版本不支持 `ts` 配置文件
-  - Docker 本地验证尚未完成，因为当前机器上的 Docker daemon 未启动
+  - Docker daemon 已恢复，但本地 `docker build` 类验证尚未重新补完
+- 首次 `v0.1.0` 发布失败的根因已经定位为“远程服务器的 `dockerd` 访问 `ghcr.io/token` 超时，而普通 shell `curl` 正常”，因此部署路径改为“GitHub runner 拉取镜像并传输 tar 包到服务器，再由服务器 `docker load`”
+- 新的 archive deploy 路径已通过手工验收：服务器成功加载 `v0.1.0` 镜像并启动 `web/server`，`/healthz` 与前端页面均返回正常
