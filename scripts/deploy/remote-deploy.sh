@@ -65,7 +65,7 @@ if [ -n "$SERVER_IMAGE_ARCHIVE" ] || [ -n "$WEB_IMAGE_ARCHIVE" ]; then
 
   load_image_archive "$SERVER_IMAGE_ARCHIVE" "server"
   load_image_archive "$WEB_IMAGE_ARCHIVE" "web"
-else
+elif [ -n "$GHCR_USERNAME" ] || [ -n "$GHCR_TOKEN" ]; then
   if [ -z "$GHCR_USERNAME" ] || [ -z "$GHCR_TOKEN" ]; then
     echo "GHCR_USERNAME and GHCR_TOKEN are required for GHCR-based deployments" >&2
     exit 1
@@ -73,6 +73,8 @@ else
 
   printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull
+else
+  echo "Using preloaded local images for IMAGE_TAG=$IMAGE_TAG"
 fi
 
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
