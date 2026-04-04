@@ -100,8 +100,6 @@ MVP 最终应至少包含以下页面：
 ## 相关文档
 
 - [简历版 MVP 实施计划](/G:/gofile/Agent_Project/docs/superpowers/plans/2026-04-01-resume-ready-enterprise-document-ai-mvp.md)
-- [平台设计文档](/G:/gofile/Agent_Project/docs/superpowers/specs/2026-03-31-enterprise-document-task-platform-design.md)
-- [开发文档](/G:/gofile/Agent_Project/docs/development.md)
 - [CI/CD 部署文档](/G:/gofile/Agent_Project/docs/deployment.md)
 - [根目录 README](/G:/gofile/Agent_Project/README.md)
 

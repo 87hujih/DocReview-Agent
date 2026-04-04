@@ -8,3 +8,9 @@ data/
 .idea/
 .worktrees/
 *.log
+.claude/
+findings.md
+progress.md
+task_plan.md
+tasks/
+docs/superpowers/
