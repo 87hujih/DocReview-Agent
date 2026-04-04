@@ -7,6 +7,8 @@ IMAGE_TAG="${IMAGE_TAG:-}"
 DRY_RUN="${DRY_RUN:-0}"
 GHCR_USERNAME="${GHCR_USERNAME:-}"
 GHCR_TOKEN="${GHCR_TOKEN:-}"
+SERVER_IMAGE_ARCHIVE="${SERVER_IMAGE_ARCHIVE:-}"
+WEB_IMAGE_ARCHIVE="${WEB_IMAGE_ARCHIVE:-}"
 
 if [ -z "$APP_DIR" ]; then
   echo "APP_DIR is required" >&2
@@ -43,12 +45,41 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-if [ -z "$GHCR_USERNAME" ] || [ -z "$GHCR_TOKEN" ]; then
-  echo "GHCR_USERNAME and GHCR_TOKEN are required for real deployments" >&2
-  exit 1
+load_image_archive() {
+  archive_path="$1"
+  image_label="$2"
+
+  if [ ! -f "$archive_path" ]; then
+    echo "Missing image archive for $image_label: $archive_path" >&2
+    exit 1
+  fi
+
+  docker load -i "$archive_path"
+}
+
+if [ -n "$SERVER_IMAGE_ARCHIVE" ] || [ -n "$WEB_IMAGE_ARCHIVE" ]; then
+  if [ -z "$SERVER_IMAGE_ARCHIVE" ] || [ -z "$WEB_IMAGE_ARCHIVE" ]; then
+    echo "SERVER_IMAGE_ARCHIVE and WEB_IMAGE_ARCHIVE must both be set when using archive deployment" >&2
+    exit 1
+  fi
+
+  load_image_archive "$SERVER_IMAGE_ARCHIVE" "server"
+  load_image_archive "$WEB_IMAGE_ARCHIVE" "web"
+elif [ -n "$GHCR_USERNAME" ] || [ -n "$GHCR_TOKEN" ]; then
+  if [ -z "$GHCR_USERNAME" ] || [ -z "$GHCR_TOKEN" ]; then
+    echo "GHCR_USERNAME and GHCR_TOKEN are required for GHCR-based deployments" >&2
+    exit 1
+  fi
+
+  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull
+else
+  echo "Using preloaded local images for IMAGE_TAG=$IMAGE_TAG"
 fi
 
-printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
+
+if [ -n "$SERVER_IMAGE_ARCHIVE" ] && [ -n "$WEB_IMAGE_ARCHIVE" ]; then
+  rm -f "$SERVER_IMAGE_ARCHIVE" "$WEB_IMAGE_ARCHIVE"
+fi

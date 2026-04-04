@@ -7,8 +7,22 @@ on:
       - main
 
 jobs:
-  server-check:
+  server-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agent_project
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -20,8 +34,10 @@ jobs:
 
       - name: Run server tests
         run: go test ./apps/server/...
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/agent_project?sslmode=disable
 
-  web-check:
+  web-build:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -37,13 +53,13 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
-      - name: Install web dependencies
+      - name: Install dependencies
         run: npm ci
 
       - name: Build web app
         run: npm run build
 
-  image-smoke:
+  build-images:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
