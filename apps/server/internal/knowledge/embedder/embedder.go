@@ -3,7 +3,9 @@ package embedder
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	openaiacl "github.com/cloudwego/eino-ext/libs/acl/openai"
 )
@@ -15,8 +17,9 @@ type Embedder struct {
 
 func New(ctx context.Context, baseURL string, apiKey string, model string, dim int) (*Embedder, error) {
 	config := &openaiacl.EmbeddingConfig{
-		APIKey: apiKey,
-		Model:  model,
+		APIKey:     apiKey,
+		Model:      model,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	}
 	if strings.TrimSpace(baseURL) != "" {
 		config.BaseURL = baseURL

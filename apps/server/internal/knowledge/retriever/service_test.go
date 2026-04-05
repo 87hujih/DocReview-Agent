@@ -2,6 +2,7 @@ package retriever
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/knowledge/embedder"
 	"agent_project/apps/server/internal/knowledge/ingest"
+	"agent_project/apps/server/internal/knowledge/reranker"
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
@@ -41,24 +43,73 @@ func TestBuildCitationsFromChunks(t *testing.T) {
 	}
 }
 
-func TestSearchIntegration(t *testing.T) {
-	if strings.TrimSpace(os.Getenv("SILICONFLOW_API_KEY")) == "" {
-		t.Skip("skipping: SILICONFLOW_API_KEY not set")
+func TestMergeUniqueChunks(t *testing.T) {
+	semantic := []postgres.ResourceChunk{
+		{ID: "chunk-1", Content: "alpha"},
+		{ID: "chunk-2", Content: "beta"},
+	}
+	lexical := []postgres.ResourceChunk{
+		{ID: "chunk-2", Content: "beta"},
+		{ID: "chunk-3", Content: "gamma"},
 	}
 
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
-		t.Skip("skipping: DATABASE_URL not set for remote integration")
+	merged := mergeUniqueChunks(semantic, lexical)
+	if len(merged) != 3 {
+		t.Fatalf("expected 3 merged chunks, got %d", len(merged))
+	}
+
+	expectedIDs := []string{"chunk-1", "chunk-2", "chunk-3"}
+	for index, chunk := range merged {
+		if chunk.ID != expectedIDs[index] {
+			t.Fatalf("expected merged chunk %d to be %q, got %q", index, expectedIDs[index], chunk.ID)
+		}
+	}
+}
+
+func TestRerankResultsToChunks(t *testing.T) {
+	chunks := []postgres.ResourceChunk{
+		{ID: "chunk-1", Content: "alpha"},
+		{ID: "chunk-2", Content: "beta"},
+		{ID: "chunk-3", Content: "gamma"},
+	}
+	results := []reranker.Result{
+		{Index: 2, RelevanceScore: 0.91},
+		{Index: 0, RelevanceScore: 0.52},
+		{Index: 99, RelevanceScore: 0.01},
+	}
+
+	ranked := rerankResultsToChunks(chunks, results, 2)
+	if len(ranked) != 2 {
+		t.Fatalf("expected 2 ranked chunks, got %d", len(ranked))
+	}
+
+	if ranked[0].ID != "chunk-3" {
+		t.Fatalf("expected first ranked chunk %q, got %q", "chunk-3", ranked[0].ID)
+	}
+
+	if ranked[1].ID != "chunk-1" {
+		t.Fatalf("expected second ranked chunk %q, got %q", "chunk-1", ranked[1].ID)
+	}
+}
+
+func TestSearchIntegration(t *testing.T) {
+	cfg := appconfig.Load()
+	if strings.TrimSpace(cfg.SiliconFlowAPIKey) == "" {
+		t.Skip("skipping: SILICONFLOW_API_KEY not configured")
+	}
+
+	if strings.TrimSpace(cfg.DatabaseURL) == "" {
+		t.Skip("skipping: DATABASE_URL not configured")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	cfg := appconfig.Load()
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		t.Skipf("skipping: database not available: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	if err := postgres.RunMigrations(ctx, pool); err != nil {
 		t.Fatalf("run migrations: %v", err)
@@ -69,11 +120,13 @@ func TestSearchIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new embedder: %v", err)
 	}
+	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
 
 	tempDir := t.TempDir()
 	markdownPath := filepath.Join(tempDir, "attendance-policy.md")
+	title := fmt.Sprintf("Attendance Policy %d", time.Now().UnixNano())
 	markdown := strings.Join([]string{
-		"# Attendance Policy",
+		"# " + title,
 		"",
 		"## 考勤管理",
 		"员工应按时完成签到、签退和请假审批。",
@@ -87,8 +140,32 @@ func TestSearchIntegration(t *testing.T) {
 		t.Fatalf("import directory: %v", err)
 	}
 
-	retrieverService := NewService(repo, emb)
-	citations, err := retrieverService.Search(ctx, "考勤", 3)
+	resources, err := repo.List(ctx)
+	if err != nil {
+		t.Fatalf("list resources: %v", err)
+	}
+
+	var resourceID string
+	for _, resource := range resources {
+		if resource.Title == title {
+			resourceID = resource.ID
+			break
+		}
+	}
+
+	if resourceID == "" {
+		t.Fatal("expected imported resource to be available")
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		if _, err := pool.Exec(cleanupCtx, `DELETE FROM resources WHERE id = $1`, resourceID); err != nil {
+			t.Fatalf("cleanup imported resource: %v", err)
+		}
+	})
+
+	retrieverService := NewService(repo, emb, rerankerClient)
+	citations, err := retrieverService.SearchByResource(ctx, resourceID, "考勤", 3)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}

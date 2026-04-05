@@ -17,6 +17,7 @@ const (
 	defaultLLMModel           = "MiniMax/MiniMax-M2.5"
 	defaultEmbeddingModel     = "Qwen/Qwen3-Embedding-8B"
 	defaultEmbeddingDim       = 1024
+	defaultRerankerModel      = "Qwen/Qwen3-Reranker-8B"
 )
 
 type Config struct {
@@ -28,6 +29,7 @@ type Config struct {
 	LLMModel           string
 	EmbeddingModel     string
 	EmbeddingDim       int
+	RerankerModel      string
 }
 
 type fileConfig struct {
@@ -44,6 +46,7 @@ type aiConfig struct {
 	LLMModel           string `yaml:"llm_model"`
 	EmbeddingModel     string `yaml:"embedding_model"`
 	EmbeddingDim       int    `yaml:"embedding_dim"`
+	RerankerModel      string `yaml:"reranker_model"`
 }
 
 func Load() Config {
@@ -51,13 +54,14 @@ func Load() Config {
 	dotenvValues := loadDotEnvValues()
 
 	return Config{
-		ServerPort:          resolveString("SERVER_PORT", dotenvValues, defaults.Server.Port, defaultServerPort),
-		DatabaseURL:         resolveString("DATABASE_URL", dotenvValues, "", ""),
-		SiliconFlowAPIKey:   resolveString("SILICONFLOW_API_KEY", dotenvValues, "", ""),
-		SiliconFlowBaseURL:  resolveString("SILICONFLOW_BASE_URL", dotenvValues, defaults.AI.SiliconFlowBaseURL, defaultSiliconFlowBaseURL),
-		LLMModel:            resolveString("LLM_MODEL", dotenvValues, defaults.AI.LLMModel, defaultLLMModel),
-		EmbeddingModel:      resolveString("EMBEDDING_MODEL", dotenvValues, defaults.AI.EmbeddingModel, defaultEmbeddingModel),
-		EmbeddingDim:        resolveInt("EMBEDDING_DIM", dotenvValues, defaults.AI.EmbeddingDim, defaultEmbeddingDim),
+		ServerPort:         resolveString("SERVER_PORT", dotenvValues, defaults.Server.Port, defaultServerPort),
+		DatabaseURL:        resolveString("DATABASE_URL", dotenvValues, "", ""),
+		SiliconFlowAPIKey:  resolveString("SILICONFLOW_API_KEY", dotenvValues, "", ""),
+		SiliconFlowBaseURL: resolveString("SILICONFLOW_BASE_URL", dotenvValues, defaults.AI.SiliconFlowBaseURL, defaultSiliconFlowBaseURL),
+		LLMModel:           resolveString("LLM_MODEL", dotenvValues, defaults.AI.LLMModel, defaultLLMModel),
+		EmbeddingModel:     resolveString("EMBEDDING_MODEL", dotenvValues, defaults.AI.EmbeddingModel, defaultEmbeddingModel),
+		EmbeddingDim:       resolveInt("EMBEDDING_DIM", dotenvValues, defaults.AI.EmbeddingDim, defaultEmbeddingDim),
+		RerankerModel:      resolveString("RERANKER_MODEL", dotenvValues, defaults.AI.RerankerModel, defaultRerankerModel),
 	}
 }
 
@@ -74,6 +78,10 @@ func (c Config) ValidateForServer() error {
 
 	if strings.TrimSpace(c.EmbeddingModel) == "" {
 		missing = append(missing, "EMBEDDING_MODEL")
+	}
+
+	if strings.TrimSpace(c.RerankerModel) == "" {
+		missing = append(missing, "RERANKER_MODEL")
 	}
 
 	if len(missing) > 0 {

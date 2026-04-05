@@ -64,6 +64,15 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	if extensionName != "vector" {
 		t.Fatalf("expected vector extension, got %q", extensionName)
 	}
+
+	var trigramExtension string
+	if err := pool.QueryRow(ctx, `SELECT extname FROM pg_extension WHERE extname = 'pg_trgm'`).Scan(&trigramExtension); err != nil {
+		t.Fatalf("query pg_trgm extension: %v", err)
+	}
+
+	if trigramExtension != "pg_trgm" {
+		t.Fatalf("expected pg_trgm extension, got %q", trigramExtension)
+	}
 }
 
 func TestResourceCRUD(t *testing.T) {
@@ -139,6 +148,71 @@ func TestResourceCRUD(t *testing.T) {
 
 	if filteredChunks[0].ResourceID != resource.ID {
 		t.Fatalf("expected filtered chunk resource id %q, got %q", resource.ID, filteredChunks[0].ResourceID)
+	}
+
+	otherResource, err := repo.Create(ctx, "考勤制度-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create other resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, otherResource.ID)
+	})
+
+	otherVersion, err := repo.CreateVersion(ctx, otherResource.ID, 1, "这是另一份制度文档", "original")
+	if err != nil {
+		t.Fatalf("create other version: %v", err)
+	}
+
+	attendanceChunk := &ResourceChunk{
+		ResourceID:   resource.ID,
+		VersionID:    version.ID,
+		ChunkIndex:   1,
+		SectionTitle: "考勤管理",
+		Content:      "员工必须按时完成考勤签到和签退。",
+		Embedding:    testVector(0.45),
+	}
+	if err := repo.CreateChunk(ctx, attendanceChunk); err != nil {
+		t.Fatalf("create attendance chunk: %v", err)
+	}
+
+	otherChunk := &ResourceChunk{
+		ResourceID:   otherResource.ID,
+		VersionID:    otherVersion.ID,
+		ChunkIndex:   0,
+		SectionTitle: "差旅制度",
+		Content:      "员工出差前需完成审批。",
+		Embedding:    testVector(0.55),
+	}
+	if err := repo.CreateChunk(ctx, otherChunk); err != nil {
+		t.Fatalf("create other chunk: %v", err)
+	}
+
+	lexicalChunks, err := repo.SearchChunksLexical(ctx, "考勤", 5)
+	if err != nil {
+		t.Fatalf("search lexical chunks: %v", err)
+	}
+
+	if len(lexicalChunks) == 0 {
+		t.Fatal("expected lexical search to return at least one chunk")
+	}
+
+	if lexicalChunks[0].ID != attendanceChunk.ID {
+		t.Fatalf("expected lexical search to rank attendance chunk first, got %q", lexicalChunks[0].ID)
+	}
+
+	filteredLexicalChunks, err := repo.SearchChunksLexicalByResource(ctx, "考勤", 5, resource.ID)
+	if err != nil {
+		t.Fatalf("search lexical chunks by resource: %v", err)
+	}
+
+	if len(filteredLexicalChunks) == 0 {
+		t.Fatal("expected lexical search by resource to return at least one chunk")
+	}
+
+	for _, chunk := range filteredLexicalChunks {
+		if chunk.ResourceID != resource.ID {
+			t.Fatalf("expected filtered lexical chunk resource id %q, got %q", resource.ID, chunk.ResourceID)
+		}
 	}
 
 	resources, err := repo.List(ctx)

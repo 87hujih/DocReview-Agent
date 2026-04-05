@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -172,6 +173,65 @@ func (r *ResourceRepo) SearchChunksByResource(ctx context.Context, embedding pgv
 	return collectResourceChunks(rows)
 }
 
+func (r *ResourceRepo) SearchChunksLexical(ctx context.Context, query string, limit int) ([]ResourceChunk, error) {
+	normalizedQuery := normalizeLexicalQuery(query)
+	if normalizedQuery == "" || limit <= 0 {
+		return []ResourceChunk{}, nil
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		FROM resource_chunks
+		WHERE lower(coalesce(section_title, '') || ' ' || content) LIKE '%' || $1 || '%'
+		   OR lower(coalesce(section_title, '') || ' ' || content) % $1
+		ORDER BY
+			CASE
+				WHEN lower(coalesce(section_title, '') || ' ' || content) LIKE '%' || $1 || '%' THEN 1
+				ELSE 0
+			END DESC,
+			similarity(lower(coalesce(section_title, '') || ' ' || content), $1) DESC,
+			chunk_index ASC
+		LIMIT $2
+	`, normalizedQuery, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectResourceChunks(rows)
+}
+
+func (r *ResourceRepo) SearchChunksLexicalByResource(ctx context.Context, query string, limit int, resourceID string) ([]ResourceChunk, error) {
+	normalizedQuery := normalizeLexicalQuery(query)
+	if normalizedQuery == "" || limit <= 0 {
+		return []ResourceChunk{}, nil
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		FROM resource_chunks
+		WHERE resource_id = $2
+		  AND (
+			lower(coalesce(section_title, '') || ' ' || content) LIKE '%' || $1 || '%'
+			OR lower(coalesce(section_title, '') || ' ' || content) % $1
+		  )
+		ORDER BY
+			CASE
+				WHEN lower(coalesce(section_title, '') || ' ' || content) LIKE '%' || $1 || '%' THEN 1
+				ELSE 0
+			END DESC,
+			similarity(lower(coalesce(section_title, '') || ' ' || content), $1) DESC,
+			chunk_index ASC
+		LIMIT $3
+	`, normalizedQuery, resourceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectResourceChunks(rows)
+}
+
 func collectResourceChunks(rows pgx.Rows) ([]ResourceChunk, error) {
 	var chunks []ResourceChunk
 	for rows.Next() {
@@ -240,4 +300,8 @@ func scanResourceChunk(row pgx.Row) (ResourceChunk, error) {
 	}
 
 	return chunk, nil
+}
+
+func normalizeLexicalQuery(query string) string {
+	return strings.ToLower(strings.TrimSpace(query))
 }

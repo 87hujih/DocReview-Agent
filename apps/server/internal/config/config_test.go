@@ -15,6 +15,7 @@ func TestLoadUsesYAMLDefaults(t *testing.T) {
 	t.Setenv("LLM_MODEL", "")
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -27,6 +28,7 @@ func TestLoadUsesYAMLDefaults(t *testing.T) {
 		"  llm_model: \"yaml-llm\"",
 		"  embedding_model: \"yaml-embedding\"",
 		"  embedding_dim: 1536",
+		"  reranker_model: \"yaml-reranker\"",
 	}, "\n"))
 
 	cfg := Load()
@@ -54,6 +56,10 @@ func TestLoadUsesYAMLDefaults(t *testing.T) {
 	if cfg.EmbeddingDim != 1536 {
 		t.Fatalf("expected yaml embedding dim 1536, got %d", cfg.EmbeddingDim)
 	}
+
+	if cfg.RerankerModel != "yaml-reranker" {
+		t.Fatalf("expected yaml reranker model, got %q", cfg.RerankerModel)
+	}
 }
 
 func TestLoadUsesDotEnvOverrides(t *testing.T) {
@@ -64,6 +70,7 @@ func TestLoadUsesDotEnvOverrides(t *testing.T) {
 	t.Setenv("LLM_MODEL", "")
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -74,6 +81,7 @@ func TestLoadUsesDotEnvOverrides(t *testing.T) {
 		"ai:",
 		"  embedding_model: \"yaml-embedding\"",
 		"  embedding_dim: 1024",
+		"  reranker_model: \"yaml-reranker\"",
 	}, "\n"))
 	writeTestFile(t, filepath.Join(tempDir, ".env"), strings.Join([]string{
 		"SERVER_PORT=8282",
@@ -81,6 +89,7 @@ func TestLoadUsesDotEnvOverrides(t *testing.T) {
 		"SILICONFLOW_API_KEY=dotenv-key",
 		"EMBEDDING_MODEL=dotenv-embedding",
 		"EMBEDDING_DIM=2048",
+		"RERANKER_MODEL=dotenv-reranker",
 	}, "\n"))
 
 	cfg := Load()
@@ -104,6 +113,10 @@ func TestLoadUsesDotEnvOverrides(t *testing.T) {
 	if cfg.EmbeddingDim != 2048 {
 		t.Fatalf("expected dotenv embedding dim 2048, got %d", cfg.EmbeddingDim)
 	}
+
+	if cfg.RerankerModel != "dotenv-reranker" {
+		t.Fatalf("expected dotenv reranker model, got %q", cfg.RerankerModel)
+	}
 }
 
 func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
@@ -111,6 +124,7 @@ func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://env-db")
 	t.Setenv("EMBEDDING_MODEL", "env-embedding")
 	t.Setenv("EMBEDDING_DIM", "3072")
+	t.Setenv("RERANKER_MODEL", "env-reranker")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -121,12 +135,14 @@ func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
 		"ai:",
 		"  embedding_model: \"yaml-embedding\"",
 		"  embedding_dim: 1024",
+		"  reranker_model: \"yaml-reranker\"",
 	}, "\n"))
 	writeTestFile(t, filepath.Join(tempDir, ".env"), strings.Join([]string{
 		"SERVER_PORT=8282",
 		"DATABASE_URL=postgres://dotenv-db",
 		"EMBEDDING_MODEL=dotenv-embedding",
 		"EMBEDDING_DIM=2048",
+		"RERANKER_MODEL=dotenv-reranker",
 	}, "\n"))
 
 	cfg := Load()
@@ -146,6 +162,10 @@ func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
 	if cfg.EmbeddingDim != 3072 {
 		t.Fatalf("expected env embedding dim 3072, got %d", cfg.EmbeddingDim)
 	}
+
+	if cfg.RerankerModel != "env-reranker" {
+		t.Fatalf("expected env reranker model, got %q", cfg.RerankerModel)
+	}
 }
 
 func TestValidateForServerRequiresDatabaseURL(t *testing.T) {
@@ -154,6 +174,7 @@ func TestValidateForServerRequiresDatabaseURL(t *testing.T) {
 		DatabaseURL:    "",
 		EmbeddingModel: "embedding-model",
 		EmbeddingDim:   1024,
+		RerankerModel:  "reranker-model",
 	}
 
 	err := cfg.ValidateForServer()
@@ -172,10 +193,29 @@ func TestValidateForServerAcceptsValidConfig(t *testing.T) {
 		DatabaseURL:    "postgres://example",
 		EmbeddingModel: "embedding-model",
 		EmbeddingDim:   1024,
+		RerankerModel:  "reranker-model",
 	}
 
 	if err := cfg.ValidateForServer(); err != nil {
 		t.Fatalf("expected valid config, got %v", err)
+	}
+}
+
+func TestValidateForServerRequiresRerankerModel(t *testing.T) {
+	cfg := Config{
+		ServerPort:     "8080",
+		DatabaseURL:    "postgres://example",
+		EmbeddingModel: "embedding-model",
+		EmbeddingDim:   1024,
+	}
+
+	err := cfg.ValidateForServer()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "RERANKER_MODEL") {
+		t.Fatalf("expected RERANKER_MODEL validation error, got %v", err)
 	}
 }
 
