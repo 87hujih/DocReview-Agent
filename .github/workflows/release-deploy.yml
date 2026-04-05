@@ -96,3 +96,44 @@ jobs:
           ssh -p ${{ secrets.DEPLOY_PORT }} ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
             "IMAGE_TAG=${{ env.IMAGE_TAG }} GHCR_OWNER=${{ github.repository_owner }} \
             docker compose -f /opt/agent-project/docker-compose.prod.yml --env-file /opt/agent-project/.env up -d"
+
+      - name: Verify server health
+        run: |
+          ssh -p ${{ secrets.DEPLOY_PORT }} ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            for attempt in \$(seq 1 12); do
+              if curl -fsS http://127.0.0.1:8080/healthz >/dev/null; then
+                echo 'Server health check passed'
+                exit 0
+              fi
+              sleep 5
+            done
+            echo 'Server health check failed' >&2
+            exit 1
+          "
+
+      - name: Verify web health
+        run: |
+          ssh -p ${{ secrets.DEPLOY_PORT }} ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            for attempt in \$(seq 1 12); do
+              if curl -fsS http://127.0.0.1:3000 >/dev/null; then
+                echo 'Web health check passed'
+                exit 0
+              fi
+              sleep 5
+            done
+            echo 'Web health check failed' >&2
+            exit 1
+          "
+
+      - name: Show remote diagnostics on failure
+        if: failure()
+        run: |
+          ssh -p ${{ secrets.DEPLOY_PORT }} ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+            echo '=== COMPOSE ==='
+            cd /opt/agent-project && docker compose -f docker-compose.prod.yml --env-file .env ps || true
+            echo '=== SERVER LOGS ==='
+            docker logs --tail 50 agent-project-server-1 || true
+            echo '=== WEB LOGS ==='
+            docker logs --tail 50 agent-project-web-1 || true
+          "
