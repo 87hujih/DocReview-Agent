@@ -10,6 +10,7 @@ type RootLayoutProps = {
   children: ReactNode;
 };
 
+// RootLayout 当前故意保持最小骨架，等后续再补共享导航和主题系统。
 export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="en">

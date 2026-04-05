@@ -42,6 +42,7 @@ func main() {
 
 	retrieverService := retriever.NewService(resourceRepo, emb)
 	ingestService := ingest.NewService(resourceRepo, emb)
+	// 演示数据导入采用尽力而为策略，样例目录缺失不应阻塞本地启动。
 	if err := ingestService.ImportDirectory(ctx, demoDataDir()); err != nil {
 		log.Printf("WARN: demo data import failed: %v", err)
 	}
@@ -56,6 +57,7 @@ func main() {
 	}
 }
 
+// demoDataDir 兼容从仓库根目录或 apps/server 目录启动服务。
 func demoDataDir() string {
 	candidates := []string{
 		filepath.Join("demo-data", "documents"),

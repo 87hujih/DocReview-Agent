@@ -16,11 +16,13 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
+// Service 负责把 Markdown 文档导入为资源、版本和带 embedding 的分块。
 type Service struct {
 	resourceRepo *postgres.ResourceRepo
 	embedder     *embedder.Embedder
 }
 
+// NewService 把导入流程依赖的存储层和 embedding 能力接起来。
 func NewService(repo *postgres.ResourceRepo, emb *embedder.Embedder) *Service {
 	return &Service{
 		resourceRepo: repo,
@@ -28,6 +30,7 @@ func NewService(repo *postgres.ResourceRepo, emb *embedder.Embedder) *Service {
 	}
 }
 
+// ImportDirectory 以尽力而为的方式导入目录中的 Markdown 文件；只有全部失败时才返回错误。
 func (s *Service) ImportDirectory(ctx context.Context, dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -59,6 +62,7 @@ func (s *Service) ImportDirectory(ctx context.Context, dir string) error {
 	return lastErr
 }
 
+// importFile 会落库原始文档、首个版本，以及后续检索使用的分块 embedding。
 func (s *Service) importFile(ctx context.Context, filePath string, fileName string) error {
 	title, err := extractTitle(filePath, fileName)
 	if err != nil {
@@ -123,6 +127,7 @@ func (s *Service) importFile(ctx context.Context, filePath string, fileName stri
 	return nil
 }
 
+// extractTitle 优先读取文件顶部附近的 H1 标题，读不到时再退回到基于文件名生成标题。
 func extractTitle(filePath string, fileName string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {

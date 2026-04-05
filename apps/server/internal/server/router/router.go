@@ -8,10 +8,12 @@ import (
 	"github.com/cloudwego/hertz/pkg/route"
 )
 
+// Deps 收集接入 HTTP 服务时需要注入的可选 handler。
 type Deps struct {
 	ResourceHandler *handlers.ResourceHandler
 }
 
+// New 构建 Hertz 服务，并只注册当前依赖已经就绪的路由。
 func New(cfg appconfig.Config, deps Deps) *server.Hertz {
 	h := server.Default(server.WithHostPorts(":" + cfg.ServerPort))
 	Register(h.Engine)
@@ -22,6 +24,7 @@ func New(cfg appconfig.Config, deps Deps) *server.Hertz {
 	return h
 }
 
+// Register 注册不依赖业务服务的基础路由。
 func Register(engine *route.Engine) {
 	engine.GET("/healthz", handlers.Health)
 }

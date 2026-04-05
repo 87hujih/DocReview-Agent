@@ -6,6 +6,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// Citation 是检索后返回给客户端的引用对象。
 type Citation struct {
 	CitationID   string `json:"citation_id"`
 	ResourceID   string `json:"resource_id"`
@@ -13,6 +14,7 @@ type Citation struct {
 	Snippet      string `json:"snippet"`
 }
 
+// BuildFromChunks 把检索命中的分块映射为稳定且适合前端消费的引用结果。
 func BuildFromChunks(chunks []postgres.ResourceChunk) []Citation {
 	citations := make([]Citation, 0, len(chunks))
 

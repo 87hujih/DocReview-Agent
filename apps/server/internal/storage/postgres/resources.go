@@ -10,10 +10,12 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
+// ResourceRepo 封装资源、版本和可检索分块的 PostgreSQL 访问。
 type ResourceRepo struct {
 	pool *pgxpool.Pool
 }
 
+// Resource 是对 API 消费方暴露的顶层文档记录。
 type Resource struct {
 	ID         string
 	Title      string
@@ -23,6 +25,7 @@ type Resource struct {
 	UpdatedAt  time.Time
 }
 
+// ResourceVersion 保存资源内容的不可变快照。
 type ResourceVersion struct {
 	ID            string
 	ResourceID    string
@@ -32,6 +35,7 @@ type ResourceVersion struct {
 	CreatedAt     time.Time
 }
 
+// ResourceChunk 是从某个资源版本切分出的、带 embedding 的检索单元。
 type ResourceChunk struct {
 	ID           string
 	ResourceID   string
@@ -43,10 +47,12 @@ type ResourceChunk struct {
 	CreatedAt    time.Time
 }
 
+// NewResourceRepo 使用给定连接池创建仓储实例。
 func NewResourceRepo(pool *pgxpool.Pool) *ResourceRepo {
 	return &ResourceRepo{pool: pool}
 }
 
+// List 按创建时间倒序返回资源列表，供资源浏览页使用。
 func (r *ResourceRepo) List(ctx context.Context) ([]Resource, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, title, source_type, source_ref, created_at, updated_at
@@ -71,6 +77,7 @@ func (r *ResourceRepo) List(ctx context.Context) ([]Resource, error) {
 	return resources, rows.Err()
 }
 
+// GetByID 在资源不存在时返回 nil，而不是把 pgx.ErrNoRows 直接暴露给上层。
 func (r *ResourceRepo) GetByID(ctx context.Context, id string) (*Resource, error) {
 	resource, err := scanResource(r.pool.QueryRow(ctx, `
 		SELECT id, title, source_type, source_ref, created_at, updated_at
@@ -88,6 +95,7 @@ func (r *ResourceRepo) GetByID(ctx context.Context, id string) (*Resource, error
 	return &resource, nil
 }
 
+// Create 新增一条顶层资源记录。
 func (r *ResourceRepo) Create(ctx context.Context, title string, sourceType string) (*Resource, error) {
 	resource, err := scanResource(r.pool.QueryRow(ctx, `
 		INSERT INTO resources (title, source_type)
@@ -101,6 +109,7 @@ func (r *ResourceRepo) Create(ctx context.Context, title string, sourceType stri
 	return &resource, nil
 }
 
+// CreateVersion 为已有资源追加一个版本记录。
 func (r *ResourceRepo) CreateVersion(ctx context.Context, resourceID string, versionNumber int, content string, source string) (*ResourceVersion, error) {
 	version, err := scanResourceVersion(r.pool.QueryRow(ctx, `
 		INSERT INTO resource_versions (resource_id, version_number, content, source)
@@ -114,6 +123,7 @@ func (r *ResourceRepo) CreateVersion(ctx context.Context, resourceID string, ver
 	return &version, nil
 }
 
+// GetCurrentVersion 返回 version_number 最大的版本；如果不存在则返回 nil。
 func (r *ResourceRepo) GetCurrentVersion(ctx context.Context, resourceID string) (*ResourceVersion, error) {
 	version, err := scanResourceVersion(r.pool.QueryRow(ctx, `
 		SELECT id, resource_id, version_number, content, source, created_at
@@ -133,6 +143,7 @@ func (r *ResourceRepo) GetCurrentVersion(ctx context.Context, resourceID string)
 	return &version, nil
 }
 
+// CreateChunk 持久化一个可检索分块，并把生成出的 ID 和时间戳回填到入参结构体。
 func (r *ResourceRepo) CreateChunk(ctx context.Context, chunk *ResourceChunk) error {
 	return r.pool.QueryRow(ctx, `
 		INSERT INTO resource_chunks (resource_id, version_id, chunk_index, section_title, content, embedding)
@@ -141,6 +152,7 @@ func (r *ResourceRepo) CreateChunk(ctx context.Context, chunk *ResourceChunk) er
 	`, chunk.ResourceID, chunk.VersionID, chunk.ChunkIndex, chunk.SectionTitle, chunk.Content, chunk.Embedding).Scan(&chunk.ID, &chunk.CreatedAt)
 }
 
+// SearchChunks 使用 pgvector 距离排序，在全部资源范围内执行语义检索。
 func (r *ResourceRepo) SearchChunks(ctx context.Context, embedding pgvector.Vector, limit int) ([]ResourceChunk, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
@@ -156,6 +168,7 @@ func (r *ResourceRepo) SearchChunks(ctx context.Context, embedding pgvector.Vect
 	return collectResourceChunks(rows)
 }
 
+// SearchChunksByResource 把语义检索范围收敛到单个资源。
 func (r *ResourceRepo) SearchChunksByResource(ctx context.Context, embedding pgvector.Vector, limit int, resourceID string) ([]ResourceChunk, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at

@@ -16,6 +16,7 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// NewPool 创建 pgx 连接池，并在每个新连接上注册 pgvector 类型。
 func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -39,6 +40,7 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// RunMigrations 按字典序执行内嵌 SQL 迁移，并在建表完成后重新注册 pgvector 类型。
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
@@ -80,6 +82,7 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+// registerVectorTypes 允许在 vector 扩展尚未创建前启动，迁移完成后会再次注册。
 func registerVectorTypes(ctx context.Context, conn *pgx.Conn) error {
 	err := pgxvector.RegisterTypes(ctx, conn)
 	if err != nil && strings.Contains(err.Error(), "vector type not found in the database") {

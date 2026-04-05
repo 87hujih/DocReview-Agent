@@ -13,6 +13,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
+// ResourceHandler 暴露由资源存储和语义检索支撑的 HTTP 接口。
 type ResourceHandler struct {
 	resourceRepo *postgres.ResourceRepo
 	retriever    *retriever.Service
@@ -47,6 +48,7 @@ type searchResourcesResponse struct {
 	Citations []citation.Citation `json:"citations"`
 }
 
+// NewResourceHandler 把资源相关 HTTP handler 依赖的存储层和检索服务接起来。
 func NewResourceHandler(repo *postgres.ResourceRepo, ret *retriever.Service) *ResourceHandler {
 	return &ResourceHandler{
 		resourceRepo: repo,
@@ -54,6 +56,7 @@ func NewResourceHandler(repo *postgres.ResourceRepo, ret *retriever.Service) *Re
 	}
 }
 
+// List 返回资源浏览页需要的资源摘要列表。
 func (h *ResourceHandler) List(requestCtx context.Context, ctx *app.RequestContext) {
 	resources, err := h.resourceRepo.List(requestCtx)
 	if err != nil {
@@ -76,6 +79,7 @@ func (h *ResourceHandler) List(requestCtx context.Context, ctx *app.RequestConte
 	ctx.JSON(consts.StatusOK, response)
 }
 
+// GetByID 返回资源详情页需要的资源信息和最新版本。
 func (h *ResourceHandler) GetByID(requestCtx context.Context, ctx *app.RequestContext) {
 	resourceID := ctx.Param("id")
 
@@ -116,6 +120,7 @@ func (h *ResourceHandler) GetByID(requestCtx context.Context, ctx *app.RequestCo
 	ctx.JSON(consts.StatusOK, response)
 }
 
+// Search 使用已配置的 retriever 返回单个资源下的引用结果。
 func (h *ResourceHandler) Search(requestCtx context.Context, ctx *app.RequestContext) {
 	query := strings.TrimSpace(ctx.Query("q"))
 	if query == "" {

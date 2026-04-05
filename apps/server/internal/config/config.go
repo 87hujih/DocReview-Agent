@@ -19,6 +19,7 @@ const (
 	defaultEmbeddingDim       = 1024
 )
 
+// Config 保存从环境变量、.env 和默认 YAML 配置解析出的运行时参数。
 type Config struct {
 	ServerPort  string
 	DatabaseURL string
@@ -46,21 +47,23 @@ type aiConfig struct {
 	EmbeddingDim       int    `yaml:"embedding_dim"`
 }
 
+// Load 按“进程环境变量 -> .env -> config/default.yaml -> 硬编码默认值”的优先级解析配置。
 func Load() Config {
 	defaults := loadDefaultFileConfig()
 	dotenvValues := loadDotEnvValues()
 
 	return Config{
-		ServerPort:          resolveString("SERVER_PORT", dotenvValues, defaults.Server.Port, defaultServerPort),
-		DatabaseURL:         resolveString("DATABASE_URL", dotenvValues, "", ""),
-		SiliconFlowAPIKey:   resolveString("SILICONFLOW_API_KEY", dotenvValues, "", ""),
-		SiliconFlowBaseURL:  resolveString("SILICONFLOW_BASE_URL", dotenvValues, defaults.AI.SiliconFlowBaseURL, defaultSiliconFlowBaseURL),
-		LLMModel:            resolveString("LLM_MODEL", dotenvValues, defaults.AI.LLMModel, defaultLLMModel),
-		EmbeddingModel:      resolveString("EMBEDDING_MODEL", dotenvValues, defaults.AI.EmbeddingModel, defaultEmbeddingModel),
-		EmbeddingDim:        resolveInt("EMBEDDING_DIM", dotenvValues, defaults.AI.EmbeddingDim, defaultEmbeddingDim),
+		ServerPort:         resolveString("SERVER_PORT", dotenvValues, defaults.Server.Port, defaultServerPort),
+		DatabaseURL:        resolveString("DATABASE_URL", dotenvValues, "", ""),
+		SiliconFlowAPIKey:  resolveString("SILICONFLOW_API_KEY", dotenvValues, "", ""),
+		SiliconFlowBaseURL: resolveString("SILICONFLOW_BASE_URL", dotenvValues, defaults.AI.SiliconFlowBaseURL, defaultSiliconFlowBaseURL),
+		LLMModel:           resolveString("LLM_MODEL", dotenvValues, defaults.AI.LLMModel, defaultLLMModel),
+		EmbeddingModel:     resolveString("EMBEDDING_MODEL", dotenvValues, defaults.AI.EmbeddingModel, defaultEmbeddingModel),
+		EmbeddingDim:       resolveInt("EMBEDDING_DIM", dotenvValues, defaults.AI.EmbeddingDim, defaultEmbeddingDim),
 	}
 }
 
+// ValidateForServer 校验启动 HTTP 服务和 embedding 客户端所需的最小配置。
 func (c Config) ValidateForServer() error {
 	var missing []string
 
@@ -87,6 +90,7 @@ func (c Config) ValidateForServer() error {
 	return nil
 }
 
+// loadDefaultFileConfig 允许命令从仓库根目录或嵌套应用目录启动时都能读取 config/default.yaml。
 func loadDefaultFileConfig() fileConfig {
 	path, ok := findUpward(filepath.Join("config", "default.yaml"))
 	if !ok {
@@ -106,6 +110,7 @@ func loadDefaultFileConfig() fileConfig {
 	return cfg
 }
 
+// loadDotEnvValues 以最小语义解析 dotenv 内容，但不会修改当前进程环境变量。
 func loadDotEnvValues() map[string]string {
 	path, ok := findUpward(".env")
 	if !ok {
@@ -190,6 +195,7 @@ func parseInt(value string) (int, bool) {
 	return number, true
 }
 
+// findUpward 会向上遍历父目录，让本地工具从不同工作目录执行时都能找到目标文件。
 func findUpward(target string) (string, bool) {
 	currentDir, err := os.Getwd()
 	if err != nil {

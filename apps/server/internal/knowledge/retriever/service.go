@@ -10,11 +10,13 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
+// Service 协调查询向量化和分块查找，完成语义检索。
 type Service struct {
 	resourceRepo *postgres.ResourceRepo
 	embedder     *embedder.Embedder
 }
 
+// NewService 把检索服务依赖的存储层和 embedding 能力接起来。
 func NewService(repo *postgres.ResourceRepo, emb *embedder.Embedder) *Service {
 	return &Service{
 		resourceRepo: repo,
@@ -22,6 +24,7 @@ func NewService(repo *postgres.ResourceRepo, emb *embedder.Embedder) *Service {
 	}
 }
 
+// Search 在全部资源范围内执行语义检索。
 func (s *Service) Search(ctx context.Context, query string, limit int) ([]citation.Citation, error) {
 	vector, err := s.queryVector(ctx, query)
 	if err != nil {
@@ -39,6 +42,7 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]citati
 	return citation.BuildFromChunks(chunks), nil
 }
 
+// SearchByResource 把语义检索范围限制到单个资源。
 func (s *Service) SearchByResource(ctx context.Context, resourceID string, query string, limit int) ([]citation.Citation, error) {
 	vector, err := s.queryVector(ctx, query)
 	if err != nil {
@@ -56,6 +60,7 @@ func (s *Service) SearchByResource(ctx context.Context, resourceID string, query
 	return citation.BuildFromChunks(chunks), nil
 }
 
+// queryVector 统一负责把用户查询转成向量，保证两个检索入口使用同一套向量生成逻辑。
 func (s *Service) queryVector(ctx context.Context, query string) (*pgvector.Vector, error) {
 	embeddings, err := s.embedder.Embed(ctx, []string{query})
 	if err != nil {

@@ -1,3 +1,4 @@
+// ResourcesPage 先占住未来的 app-router 路由段，避免后续功能开发时再搬路由。
 export default function ResourcesPage() {
   return (
     <main
