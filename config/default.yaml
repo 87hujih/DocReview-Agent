@@ -6,3 +6,4 @@ ai:
   llm_model: "MiniMax/MiniMax-M2.5"
   embedding_model: "Qwen/Qwen3-Embedding-8B"
   embedding_dim: 1024
+  reranker_model: "Qwen/Qwen3-Reranker-8B"

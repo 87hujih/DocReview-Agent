@@ -17,6 +17,7 @@ const (
 	defaultLLMModel           = "MiniMax/MiniMax-M2.5"
 	defaultEmbeddingModel     = "Qwen/Qwen3-Embedding-8B"
 	defaultEmbeddingDim       = 1024
+	defaultRerankerModel      = "Qwen/Qwen3-Reranker-8B"
 )
 
 // Config 保存从环境变量、.env 和默认 YAML 配置解析出的运行时参数。
@@ -29,6 +30,7 @@ type Config struct {
 	LLMModel           string
 	EmbeddingModel     string
 	EmbeddingDim       int
+	RerankerModel      string
 }
 
 // fileConfig 对应默认 YAML 配置文件的顶层结构。
@@ -48,6 +50,7 @@ type aiConfig struct {
 	LLMModel           string `yaml:"llm_model"`
 	EmbeddingModel     string `yaml:"embedding_model"`
 	EmbeddingDim       int    `yaml:"embedding_dim"`
+	RerankerModel      string `yaml:"reranker_model"`
 }
 
 // Load 按“进程环境变量 -> .env -> config/default.yaml -> 硬编码默认值”的优先级解析配置。
@@ -63,10 +66,11 @@ func Load() Config {
 		LLMModel:           resolveString("LLM_MODEL", dotenvValues, defaults.AI.LLMModel, defaultLLMModel),
 		EmbeddingModel:     resolveString("EMBEDDING_MODEL", dotenvValues, defaults.AI.EmbeddingModel, defaultEmbeddingModel),
 		EmbeddingDim:       resolveInt("EMBEDDING_DIM", dotenvValues, defaults.AI.EmbeddingDim, defaultEmbeddingDim),
+		RerankerModel:      resolveString("RERANKER_MODEL", dotenvValues, defaults.AI.RerankerModel, defaultRerankerModel),
 	}
 }
 
-// ValidateForServer 校验启动 HTTP 服务和 embedding 客户端所需的最小配置。
+// ValidateForServer 校验启动 HTTP 服务和 embedding / reranker 客户端所需的最小配置。
 func (c Config) ValidateForServer() error {
 	var missing []string
 
@@ -80,6 +84,10 @@ func (c Config) ValidateForServer() error {
 
 	if strings.TrimSpace(c.EmbeddingModel) == "" {
 		missing = append(missing, "EMBEDDING_MODEL")
+	}
+
+	if strings.TrimSpace(c.RerankerModel) == "" {
+		missing = append(missing, "RERANKER_MODEL")
 	}
 
 	if len(missing) > 0 {

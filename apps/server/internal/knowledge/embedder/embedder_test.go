@@ -2,51 +2,33 @@ package embedder
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
-// TestEmbedDoesNotPanicWhenHTTPClientIsUnsetInThirdPartyConfig 验证显式注入 HTTP client 后不会触发上游 typed nil 问题。
-func TestEmbedDoesNotPanicWhenHTTPClientIsUnsetInThirdPartyConfig(t *testing.T) {
+// TestEmbedUsesNonNilHTTPClient 验证显式注入 HTTP client 后不会触发上游 typed nil 问题。
+func TestEmbedUsesNonNilHTTPClient(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/embeddings" {
-			t.Fatalf("expected request path /embeddings, got %s", r.URL.Path)
-		}
-
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST request, got %s", r.Method)
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"object": "list",
-			"data": []map[string]any{
-				{
-					"object":    "embedding",
-					"embedding": []float32{0.1, 0.2, 0.3},
-					"index":     0,
-				},
-			},
-			"model": "test-model",
-			"usage": map[string]any{
-				"prompt_tokens":     1,
-				"completion_tokens": 0,
-				"total_tokens":      1,
-			},
-		}); err != nil {
-			t.Fatalf("encode response: %v", err)
+		if r.URL.Path != "/v1/embeddings" {
+			t.Fatalf("expected embeddings path, got %s", r.URL.Path)
 		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2,0.3],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`))
 	}))
 	defer server.Close()
 
-	emb, err := New(context.Background(), server.URL, "test-key", "test-model", 3)
+	emb, err := New(context.Background(), server.URL+"/v1", "test-key", "test-model", 3)
 	if err != nil {
 		t.Fatalf("new embedder: %v", err)
 	}
 
-	vectors, err := emb.Embed(context.Background(), []string{"hello"})
+	vectors, err := emb.Embed(context.Background(), []string{"考勤"})
 	if err != nil {
 		t.Fatalf("embed: %v", err)
 	}

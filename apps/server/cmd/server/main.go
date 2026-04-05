@@ -9,6 +9,7 @@ import (
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/embedder"
 	"agent_project/apps/server/internal/knowledge/ingest"
+	"agent_project/apps/server/internal/knowledge/reranker"
 	"agent_project/apps/server/internal/knowledge/retriever"
 	"agent_project/apps/server/internal/server/handlers"
 	"agent_project/apps/server/internal/server/router"
@@ -41,7 +42,8 @@ func main() {
 		log.Fatalf("embedder init failed: %v", err)
 	}
 
-	retrieverService := retriever.NewService(resourceRepo, emb)
+	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
+	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient)
 	ingestService := ingest.NewService(resourceRepo, emb)
 	// 演示数据导入采用尽力而为策略，样例目录缺失不应阻塞本地启动。
 	if err := ingestService.ImportDirectory(ctx, demoDataDir()); err != nil {

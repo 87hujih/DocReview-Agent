@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	openaiacl "github.com/cloudwego/eino-ext/libs/acl/openai"
 )
@@ -21,7 +22,7 @@ func New(ctx context.Context, baseURL string, apiKey string, model string, dim i
 		APIKey: apiKey,
 		Model:  model,
 		// 上游配置里的 HTTP client 是接口类型，这里显式传入真实 client，避免 typed nil 绕过空判断。
-		HTTPClient: http.DefaultClient,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	}
 	if strings.TrimSpace(baseURL) != "" {
 		config.BaseURL = baseURL

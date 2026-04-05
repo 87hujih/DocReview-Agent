@@ -94,6 +94,25 @@ func TestGetResourceNotFound(t *testing.T) {
 	}
 }
 
+func TestSearchResourceMissingQuery(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, nil)
+	engine := server.New()
+	engine.GET("/api/resources/:id/search", handler.Search)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/00000000-0000-0000-0000-000000000000/search", nil).Result()
+
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+
+	body := string(response.Body())
+	if !strings.Contains(body, "query parameter 'q' is required") {
+		t.Fatalf("expected missing query error, got %q", body)
+	}
+}
+
 // newHandlerTestPool 为 handler 测试创建已完成迁移的数据库连接池。
 func newHandlerTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
