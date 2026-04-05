@@ -4,6 +4,7 @@ coverage/
 apps/server/bin/
 .env
 .env.*
+!.env.example
 data/
 .idea/
 .worktrees/

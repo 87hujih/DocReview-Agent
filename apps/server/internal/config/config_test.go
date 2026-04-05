@@ -31,3 +31,29 @@ func TestLoadUsesEnvironmentOverrides(t *testing.T) {
 		t.Fatalf("expected overridden database url %q, got %q", "postgres://example", cfg.DatabaseURL)
 	}
 }
+
+func TestLoadAIConfigDefaults(t *testing.T) {
+	t.Setenv("SILICONFLOW_API_KEY", "")
+	t.Setenv("SILICONFLOW_BASE_URL", "")
+	t.Setenv("EMBEDDING_DIM", "")
+
+	cfg := Load()
+
+	if cfg.SiliconFlowBaseURL != "https://api.siliconflow.cn/v1" {
+		t.Fatalf("expected default base url, got %q", cfg.SiliconFlowBaseURL)
+	}
+
+	if cfg.EmbeddingDim != 1024 {
+		t.Fatalf("expected default embedding dim 1024, got %d", cfg.EmbeddingDim)
+	}
+}
+
+func TestLoadEmbeddingDimOverride(t *testing.T) {
+	t.Setenv("EMBEDDING_DIM", "2048")
+
+	cfg := Load()
+
+	if cfg.EmbeddingDim != 2048 {
+		t.Fatalf("expected embedding dim 2048, got %d", cfg.EmbeddingDim)
+	}
+}
