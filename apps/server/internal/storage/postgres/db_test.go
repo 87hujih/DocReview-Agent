@@ -211,6 +211,10 @@ func TestTaskAndStepsCRUD(t *testing.T) {
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
+	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
+		t.Skip("database not available")
+	}
+
 	ctx := testContext(t)
 	databaseURL := testDatabaseURL()
 
@@ -229,11 +233,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 
 func testDatabaseURL() string {
 	cfg := appconfig.Load()
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) != "" {
-		return cfg.DatabaseURL
-	}
-
-	return strings.Replace(cfg.DatabaseURL, "@localhost:", "@127.0.0.1:", 1)
+	return cfg.DatabaseURL
 }
 
 func cleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
