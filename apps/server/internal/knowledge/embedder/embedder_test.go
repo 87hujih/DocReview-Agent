@@ -8,6 +8,7 @@ import (
 	"testing"
 )
 
+// TestEmbedDoesNotPanicWhenHTTPClientIsUnsetInThirdPartyConfig 验证显式注入 HTTP client 后不会触发上游 typed nil 问题。
 func TestEmbedDoesNotPanicWhenHTTPClientIsUnsetInThirdPartyConfig(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/embeddings" {

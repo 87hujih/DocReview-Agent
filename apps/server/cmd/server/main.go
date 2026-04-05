@@ -15,6 +15,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// main 负责装配配置、数据库、检索能力和 HTTP 服务入口。
 func main() {
 	cfg := appconfig.Load()
 	if err := cfg.ValidateForServer(); err != nil {

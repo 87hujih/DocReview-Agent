@@ -16,6 +16,7 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
+// TestMigrationCreatesAllTables 验证迁移会创建所需表和 vector 扩展。
 func TestMigrationCreatesAllTables(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -66,6 +67,7 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	}
 }
 
+// TestResourceCRUD 验证资源、版本和分块的基本读写流程。
 func TestResourceCRUD(t *testing.T) {
 	pool := newTestPool(t)
 	repo := NewResourceRepo(pool)
@@ -151,6 +153,7 @@ func TestResourceCRUD(t *testing.T) {
 	}
 }
 
+// TestTaskAndStepsCRUD 验证任务与任务步骤相关表可正常写入。
 func TestTaskAndStepsCRUD(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -208,6 +211,7 @@ func TestTaskAndStepsCRUD(t *testing.T) {
 	}
 }
 
+// newTestPool 为 PostgreSQL 存储测试创建可复用连接池并执行迁移。
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -231,11 +235,13 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// testDatabaseURL 从当前配置中读取测试数据库地址。
 func testDatabaseURL() string {
 	cfg := appconfig.Load()
 	return cfg.DatabaseURL
 }
 
+// cleanupResource 按资源维度清理测试过程中插入的任务和资源数据。
 func cleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
@@ -249,6 +255,7 @@ func cleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	}
 }
 
+// testContext 为数据库测试创建带超时的上下文。
 func testContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -257,10 +264,12 @@ func testContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// uniqueSuffix 生成测试数据使用的唯一后缀。
 func uniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// testVector 生成固定维度的测试向量，便于插入和相似度查询。
 func testVector(seed float32) pgvector.Vector {
 	values := make([]float32, 1024)
 	for index := range values {
@@ -270,6 +279,7 @@ func testVector(seed float32) pgvector.Vector {
 	return pgvector.NewVector(values)
 }
 
+// containsResource 判断资源列表中是否包含目标资源。
 func containsResource(resources []Resource, id string) bool {
 	for _, resource := range resources {
 		if resource.ID == id {

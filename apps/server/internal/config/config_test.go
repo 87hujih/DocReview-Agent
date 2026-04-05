@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// TestLoadUsesYAMLDefaults 验证未被覆盖时会读取 YAML 默认配置。
 func TestLoadUsesYAMLDefaults(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -56,6 +57,7 @@ func TestLoadUsesYAMLDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadUsesDotEnvOverrides 验证 .env 会覆盖 YAML 中的默认值。
 func TestLoadUsesDotEnvOverrides(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -106,6 +108,7 @@ func TestLoadUsesDotEnvOverrides(t *testing.T) {
 	}
 }
 
+// TestLoadUsesEnvironmentOverridesOverDotEnv 验证进程环境变量优先级高于 .env。
 func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
 	t.Setenv("SERVER_PORT", "8383")
 	t.Setenv("DATABASE_URL", "postgres://env-db")
@@ -148,6 +151,7 @@ func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
 	}
 }
 
+// TestValidateForServerRequiresDatabaseURL 验证缺少数据库地址时会返回校验错误。
 func TestValidateForServerRequiresDatabaseURL(t *testing.T) {
 	cfg := Config{
 		ServerPort:     "8080",
@@ -166,6 +170,7 @@ func TestValidateForServerRequiresDatabaseURL(t *testing.T) {
 	}
 }
 
+// TestValidateForServerAcceptsValidConfig 验证完整配置可以通过服务启动前校验。
 func TestValidateForServerAcceptsValidConfig(t *testing.T) {
 	cfg := Config{
 		ServerPort:     "8080",
@@ -179,6 +184,7 @@ func TestValidateForServerAcceptsValidConfig(t *testing.T) {
 	}
 }
 
+// writeTestFile 为配置测试写入临时文件树。
 func writeTestFile(t *testing.T, path string, content string) {
 	t.Helper()
 

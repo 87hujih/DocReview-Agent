@@ -29,6 +29,7 @@ func Register(engine *route.Engine) {
 	engine.GET("/healthz", handlers.Health)
 }
 
+// registerResourceRoutes 注册依赖资源 handler 的 API 路由。
 func registerResourceRoutes(engine *route.Engine, h *handlers.ResourceHandler) {
 	api := engine.Group("/api")
 	api.GET("/resources", h.List)

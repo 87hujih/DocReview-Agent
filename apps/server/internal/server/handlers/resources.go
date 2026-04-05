@@ -19,6 +19,7 @@ type ResourceHandler struct {
 	retriever    *retriever.Service
 }
 
+// resourceSummary 是资源列表和详情接口共享的精简资源视图。
 type resourceSummary struct {
 	ID         string    `json:"id"`
 	Title      string    `json:"title"`
@@ -26,6 +27,7 @@ type resourceSummary struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// resourceVersionResponse 描述资源详情接口中的当前版本信息。
 type resourceVersionResponse struct {
 	ID            string    `json:"id"`
 	VersionNumber int       `json:"version_number"`
@@ -34,15 +36,18 @@ type resourceVersionResponse struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// listResourcesResponse 是资源列表接口的响应体。
 type listResourcesResponse struct {
 	Resources []resourceSummary `json:"resources"`
 }
 
+// getResourceResponse 是资源详情接口的响应体。
 type getResourceResponse struct {
 	Resource       resourceSummary          `json:"resource"`
 	CurrentVersion *resourceVersionResponse `json:"current_version"`
 }
 
+// searchResourcesResponse 是资源内检索接口的响应体。
 type searchResourcesResponse struct {
 	Query     string              `json:"query"`
 	Citations []citation.Citation `json:"citations"`

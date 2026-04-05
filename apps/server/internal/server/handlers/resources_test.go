@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestListResourcesHandler 验证资源列表接口会返回刚创建的资源。
 func TestListResourcesHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -45,6 +46,7 @@ func TestListResourcesHandler(t *testing.T) {
 	}
 }
 
+// TestGetResourceByIDHandler 验证资源详情接口会包含当前版本信息。
 func TestGetResourceByIDHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -77,6 +79,7 @@ func TestGetResourceByIDHandler(t *testing.T) {
 	}
 }
 
+// TestGetResourceNotFound 验证查询不存在的资源会返回 404。
 func TestGetResourceNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -91,6 +94,7 @@ func TestGetResourceNotFound(t *testing.T) {
 	}
 }
 
+// newHandlerTestPool 为 handler 测试创建已完成迁移的数据库连接池。
 func newHandlerTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -113,6 +117,7 @@ func newHandlerTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// cleanupResource 清理 handler 测试中创建的资源数据。
 func cleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
@@ -122,6 +127,7 @@ func cleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	}
 }
 
+// testContext 为 handler 测试创建带超时的上下文。
 func testContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -130,6 +136,7 @@ func testContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// uniqueSuffix 生成测试数据使用的唯一后缀。
 func uniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }

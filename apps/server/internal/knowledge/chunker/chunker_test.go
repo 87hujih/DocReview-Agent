@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestChunkMarkdownBasic 验证普通二级标题会被切成有序分块。
 func TestChunkMarkdownBasic(t *testing.T) {
 	input := strings.Join([]string{
 		"# Title",
@@ -49,6 +50,7 @@ func TestChunkMarkdownBasic(t *testing.T) {
 	}
 }
 
+// TestChunkMarkdownLongSection 验证超长章节会按段落拆成多个分块。
 func TestChunkMarkdownLongSection(t *testing.T) {
 	paragraph1 := strings.Repeat("第一段很长。", 40)
 	paragraph2 := strings.Repeat("第二段很长。", 40)
@@ -82,6 +84,7 @@ func TestChunkMarkdownLongSection(t *testing.T) {
 	}
 }
 
+// TestChunkMarkdownEmpty 验证空内容不会产出分块。
 func TestChunkMarkdownEmpty(t *testing.T) {
 	chunks := ChunkMarkdown("")
 

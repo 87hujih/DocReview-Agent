@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+// HomePage 渲染当前阶段的首页占位内容和已规划入口。
 export default function HomePage() {
   return (
     <main

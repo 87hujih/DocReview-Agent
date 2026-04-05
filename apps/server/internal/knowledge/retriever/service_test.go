@@ -15,6 +15,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// TestBuildCitationsFromChunks 验证检索分块会被映射成稳定的 citation 结构。
 func TestBuildCitationsFromChunks(t *testing.T) {
 	longContent := strings.Repeat("a", 205)
 	chunks := []postgres.ResourceChunk{
@@ -41,6 +42,7 @@ func TestBuildCitationsFromChunks(t *testing.T) {
 	}
 }
 
+// TestSearchIntegration 验证导入文档后能够通过真实 embedding 和数据库完成一次检索。
 func TestSearchIntegration(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("SILICONFLOW_API_KEY")) == "" {
 		t.Skip("skipping: SILICONFLOW_API_KEY not set")

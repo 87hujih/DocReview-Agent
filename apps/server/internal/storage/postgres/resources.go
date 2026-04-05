@@ -185,6 +185,7 @@ func (r *ResourceRepo) SearchChunksByResource(ctx context.Context, embedding pgv
 	return collectResourceChunks(rows)
 }
 
+// collectResourceChunks 把查询结果逐行扫描为 ResourceChunk 切片。
 func collectResourceChunks(rows pgx.Rows) ([]ResourceChunk, error) {
 	var chunks []ResourceChunk
 	for rows.Next() {
@@ -199,6 +200,7 @@ func collectResourceChunks(rows pgx.Rows) ([]ResourceChunk, error) {
 	return chunks, rows.Err()
 }
 
+// scanResource 从单行结果中解析 Resource。
 func scanResource(row pgx.Row) (Resource, error) {
 	var resource Resource
 
@@ -217,6 +219,7 @@ func scanResource(row pgx.Row) (Resource, error) {
 	return resource, nil
 }
 
+// scanResourceVersion 从单行结果中解析 ResourceVersion。
 func scanResourceVersion(row pgx.Row) (ResourceVersion, error) {
 	var version ResourceVersion
 
@@ -235,6 +238,7 @@ func scanResourceVersion(row pgx.Row) (ResourceVersion, error) {
 	return version, nil
 }
 
+// scanResourceChunk 从单行结果中解析 ResourceChunk。
 func scanResourceChunk(row pgx.Row) (ResourceChunk, error) {
 	var chunk ResourceChunk
 

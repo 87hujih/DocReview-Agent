@@ -30,6 +30,7 @@ func BuildFromChunks(chunks []postgres.ResourceChunk) []Citation {
 	return citations
 }
 
+// truncateSnippet 按 rune 长度截断内容，避免中文等多字节字符被截坏。
 func truncateSnippet(content string, maxLength int) string {
 	runes := []rune(content)
 	if len(runes) <= maxLength {

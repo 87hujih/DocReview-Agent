@@ -6,6 +6,7 @@ export const metadata: Metadata = {
   description: "Phase 1 scaffold for the enterprise document intelligence MVP."
 };
 
+// RootLayoutProps 描述根布局组件接收的子节点。
 type RootLayoutProps = {
   children: ReactNode;
 };

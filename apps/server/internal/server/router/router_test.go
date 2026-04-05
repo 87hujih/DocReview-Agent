@@ -9,6 +9,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
+// TestRegisterExposesHealthEndpoint 验证基础路由注册后会暴露健康检查接口。
 func TestRegisterExposesHealthEndpoint(t *testing.T) {
 	h := server.New()
 	Register(h.Engine)

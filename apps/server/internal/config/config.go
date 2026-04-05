@@ -31,15 +31,18 @@ type Config struct {
 	EmbeddingDim       int
 }
 
+// fileConfig 对应默认 YAML 配置文件的顶层结构。
 type fileConfig struct {
 	Server serverConfig `yaml:"server"`
 	AI     aiConfig     `yaml:"ai"`
 }
 
+// serverConfig 描述服务端口等服务级默认配置。
 type serverConfig struct {
 	Port string `yaml:"port"`
 }
 
+// aiConfig 描述模型、维度和上游地址等 AI 相关默认配置。
 type aiConfig struct {
 	SiliconFlowBaseURL string `yaml:"siliconflow_base_url"`
 	LLMModel           string `yaml:"llm_model"`
@@ -150,6 +153,7 @@ func loadDotEnvValues() map[string]string {
 	return values
 }
 
+// resolveString 按既定优先级解析字符串配置项。
 func resolveString(key string, dotenvValues map[string]string, fileValue string, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value
@@ -166,6 +170,7 @@ func resolveString(key string, dotenvValues map[string]string, fileValue string,
 	return fallback
 }
 
+// resolveInt 按既定优先级解析整型配置项。
 func resolveInt(key string, dotenvValues map[string]string, fileValue int, fallback int) int {
 	if value, ok := parseInt(strings.TrimSpace(os.Getenv(key))); ok {
 		return value
@@ -182,6 +187,7 @@ func resolveInt(key string, dotenvValues map[string]string, fileValue int, fallb
 	return fallback
 }
 
+// parseInt 在解析失败时返回 false，便于上层继续走回退逻辑。
 func parseInt(value string) (int, bool) {
 	if value == "" {
 		return 0, false
