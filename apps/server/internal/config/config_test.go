@@ -171,6 +171,71 @@ func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
 	}
 }
 
+func TestLoadUsesHardcodedLLMDefault(t *testing.T) {
+	t.Setenv("SERVER_PORT", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("SILICONFLOW_API_KEY", "")
+	t.Setenv("SILICONFLOW_BASE_URL", "")
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
+
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	cfg := Load()
+
+	if cfg.LLMModel != "Qwen/Qwen2.5-7B-Instruct" {
+		t.Fatalf("expected hardcoded llm model %q, got %q", "Qwen/Qwen2.5-7B-Instruct", cfg.LLMModel)
+	}
+}
+
+func TestLoadStopsDotEnvSearchAtWorktreeRoot(t *testing.T) {
+	t.Setenv("SERVER_PORT", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("SILICONFLOW_API_KEY", "")
+	t.Setenv("SILICONFLOW_BASE_URL", "")
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
+
+	tempDir := t.TempDir()
+	parentRepoRoot := filepath.Join(tempDir, "repo")
+	worktreeRoot := filepath.Join(parentRepoRoot, ".worktrees", "task3-agent-workflow")
+	worktreeAppDir := filepath.Join(worktreeRoot, "apps", "server")
+
+	writeTestFile(t, filepath.Join(parentRepoRoot, ".env"), strings.Join([]string{
+		"LLM_MODEL=parent-dotenv-llm",
+		"DATABASE_URL=postgres://parent-dotenv-db",
+	}, "\n"))
+	writeTestFile(t, filepath.Join(worktreeRoot, ".git"), "gitdir: ../.git/worktrees/task3-agent-workflow")
+	writeTestFile(t, filepath.Join(worktreeRoot, "config", "default.yaml"), strings.Join([]string{
+		"server:",
+		"  port: \"8181\"",
+		"ai:",
+		"  llm_model: \"worktree-yaml-llm\"",
+		"  embedding_model: \"yaml-embedding\"",
+		"  embedding_dim: 1024",
+		"  reranker_model: \"yaml-reranker\"",
+	}, "\n"))
+	if err := os.MkdirAll(worktreeAppDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", worktreeAppDir, err)
+	}
+	t.Chdir(worktreeAppDir)
+
+	cfg := Load()
+
+	if cfg.LLMModel != "worktree-yaml-llm" {
+		t.Fatalf("expected worktree yaml llm model %q, got %q", "worktree-yaml-llm", cfg.LLMModel)
+	}
+
+	if cfg.DatabaseURL != "" {
+		t.Fatalf("expected parent dotenv DATABASE_URL to be ignored at worktree root, got %q", cfg.DatabaseURL)
+	}
+}
+
 // TestValidateForServerRequiresDatabaseURL 验证缺少数据库地址时会返回校验错误。
 func TestValidateForServerRequiresDatabaseURL(t *testing.T) {
 	cfg := Config{
@@ -194,11 +259,13 @@ func TestValidateForServerRequiresDatabaseURL(t *testing.T) {
 // TestValidateForServerAcceptsValidConfig 验证完整配置可以通过服务启动前校验。
 func TestValidateForServerAcceptsValidConfig(t *testing.T) {
 	cfg := Config{
-		ServerPort:     "8080",
-		DatabaseURL:    "postgres://example",
-		EmbeddingModel: "embedding-model",
-		EmbeddingDim:   1024,
-		RerankerModel:  "reranker-model",
+		ServerPort:        "8080",
+		DatabaseURL:       "postgres://example",
+		SiliconFlowAPIKey: "api-key",
+		LLMModel:          "llm-model",
+		EmbeddingModel:    "embedding-model",
+		EmbeddingDim:      1024,
+		RerankerModel:     "reranker-model",
 	}
 
 	if err := cfg.ValidateForServer(); err != nil {
@@ -221,6 +288,50 @@ func TestValidateForServerRequiresRerankerModel(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "RERANKER_MODEL") {
 		t.Fatalf("expected RERANKER_MODEL validation error, got %v", err)
+	}
+}
+
+func TestValidateForServerRequiresSiliconFlowAPIKey(t *testing.T) {
+	cfg := Config{
+		ServerPort:         "8080",
+		DatabaseURL:        "postgres://example",
+		SiliconFlowAPIKey:  "",
+		LLMModel:           "llm-model",
+		EmbeddingModel:     "embedding-model",
+		EmbeddingDim:       1024,
+		RerankerModel:      "reranker-model",
+		SiliconFlowBaseURL: "https://example.invalid/v1",
+	}
+
+	err := cfg.ValidateForServer()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "SILICONFLOW_API_KEY") {
+		t.Fatalf("expected SILICONFLOW_API_KEY validation error, got %v", err)
+	}
+}
+
+func TestValidateForServerRequiresLLMModel(t *testing.T) {
+	cfg := Config{
+		ServerPort:         "8080",
+		DatabaseURL:        "postgres://example",
+		SiliconFlowAPIKey:  "api-key",
+		LLMModel:           "",
+		EmbeddingModel:     "embedding-model",
+		EmbeddingDim:       1024,
+		RerankerModel:      "reranker-model",
+		SiliconFlowBaseURL: "https://example.invalid/v1",
+	}
+
+	err := cfg.ValidateForServer()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "LLM_MODEL") {
+		t.Fatalf("expected LLM_MODEL validation error, got %v", err)
 	}
 }
 

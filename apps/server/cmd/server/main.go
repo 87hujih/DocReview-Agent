@@ -6,6 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"agent_project/apps/server/internal/agent/editor"
+	"agent_project/apps/server/internal/agent/planner"
+	"agent_project/apps/server/internal/agent/reviewer"
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/embedder"
 	"agent_project/apps/server/internal/knowledge/ingest"
@@ -14,6 +17,8 @@ import (
 	"agent_project/apps/server/internal/server/handlers"
 	"agent_project/apps/server/internal/server/router"
 	"agent_project/apps/server/internal/storage/postgres"
+	taskservice "agent_project/apps/server/internal/task/service"
+	"agent_project/apps/server/internal/task/workflow"
 )
 
 // main 负责装配配置、数据库、检索能力和 HTTP 服务入口。
@@ -36,6 +41,8 @@ func main() {
 	}
 
 	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
 
 	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
 	if err != nil {
@@ -45,14 +52,34 @@ func main() {
 	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
 	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient)
 	ingestService := ingest.NewService(resourceRepo, emb)
+
+	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
+	if err != nil {
+		log.Fatalf("planner agent init failed: %v", err)
+	}
+
+	reviewerAgent, err := reviewer.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
+	if err != nil {
+		log.Fatalf("reviewer agent init failed: %v", err)
+	}
+
+	editorAgent, err := editor.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
+	if err != nil {
+		log.Fatalf("editor agent init failed: %v", err)
+	}
+
 	// 演示数据导入采用尽力而为策略，样例目录缺失不应阻塞本地启动。
 	if err := ingestService.ImportDirectory(ctx, demoDataDir()); err != nil {
 		log.Printf("WARN: demo data import failed: %v", err)
 	}
 
 	resourceHandler := handlers.NewResourceHandler(resourceRepo, retrieverService)
+	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService)
+	taskService := taskservice.New(taskRepo, resourceRepo, orchestrator)
+	taskHandler := handlers.NewTaskHandler(taskService, taskRepo)
 	h := router.New(cfg, router.Deps{
 		ResourceHandler: resourceHandler,
+		TaskHandler:     taskHandler,
 	})
 
 	if err := h.Run(); err != nil {

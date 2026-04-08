@@ -11,6 +11,7 @@ import (
 // Deps 收集接入 HTTP 服务时需要注入的可选 handler。
 type Deps struct {
 	ResourceHandler *handlers.ResourceHandler
+	TaskHandler     *handlers.TaskHandler
 }
 
 // New 构建 Hertz 服务，并只注册当前依赖已经就绪的路由。
@@ -19,6 +20,9 @@ func New(cfg appconfig.Config, deps Deps) *server.Hertz {
 	Register(h.Engine)
 	if deps.ResourceHandler != nil {
 		registerResourceRoutes(h.Engine, deps.ResourceHandler)
+	}
+	if deps.TaskHandler != nil {
+		registerTaskRoutes(h.Engine, deps.TaskHandler)
 	}
 
 	return h
@@ -35,4 +39,13 @@ func registerResourceRoutes(engine *route.Engine, h *handlers.ResourceHandler) {
 	api.GET("/resources", h.List)
 	api.GET("/resources/:id", h.GetByID)
 	api.GET("/resources/:id/search", h.Search)
+}
+
+// registerTaskRoutes 注册依赖任务 handler 的 API 路由。
+func registerTaskRoutes(engine *route.Engine, h *handlers.TaskHandler) {
+	api := engine.Group("/api")
+	api.POST("/tasks", h.Create)
+	api.GET("/tasks", h.List)
+	api.GET("/tasks/:id", h.GetByID)
+	api.GET("/tasks/:id/artifacts", h.GetArtifacts)
 }

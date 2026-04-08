@@ -14,7 +14,7 @@ import (
 const (
 	defaultServerPort         = "8080"
 	defaultSiliconFlowBaseURL = "https://api.siliconflow.cn/v1"
-	defaultLLMModel           = "MiniMax/MiniMax-M2.5"
+	defaultLLMModel           = "Qwen/Qwen2.5-7B-Instruct"
 	defaultEmbeddingModel     = "Qwen/Qwen3-Embedding-8B"
 	defaultEmbeddingDim       = 1024
 	defaultRerankerModel      = "Qwen/Qwen3-Reranker-8B"
@@ -80,6 +80,14 @@ func (c Config) ValidateForServer() error {
 
 	if strings.TrimSpace(c.DatabaseURL) == "" {
 		missing = append(missing, "DATABASE_URL")
+	}
+
+	if strings.TrimSpace(c.SiliconFlowAPIKey) == "" {
+		missing = append(missing, "SILICONFLOW_API_KEY")
+	}
+
+	if strings.TrimSpace(c.LLMModel) == "" {
+		missing = append(missing, "LLM_MODEL")
 	}
 
 	if strings.TrimSpace(c.EmbeddingModel) == "" {
@@ -222,6 +230,9 @@ func findUpward(target string) (string, bool) {
 		if err == nil && !info.IsDir() {
 			return candidate, true
 		}
+		if isGitBoundary(currentDir) {
+			return "", false
+		}
 
 		parentDir := filepath.Dir(currentDir)
 		if parentDir == currentDir {
@@ -230,4 +241,9 @@ func findUpward(target string) (string, bool) {
 
 		currentDir = parentDir
 	}
+}
+
+func isGitBoundary(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
 }

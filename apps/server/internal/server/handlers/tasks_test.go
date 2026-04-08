@@ -1,0 +1,225 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"agent_project/apps/server/internal/storage/postgres"
+	taskservice "agent_project/apps/server/internal/task/service"
+
+	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/cloudwego/hertz/pkg/common/ut"
+	"github.com/cloudwego/hertz/pkg/protocol/consts"
+)
+
+func TestCreateTaskHandler(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo)
+	engine := server.New()
+	engine.POST("/api/tasks", handler.Create)
+
+	ctx := testContext(t)
+	resource, err := resourceRepo.Create(ctx, "任务创建测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "当前版本内容", "original"); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/tasks",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"resource_id":"` + resource.ID + `","instruction":"优化第三章数据分类条款"}`),
+			Len:  len(`{"resource_id":"` + resource.ID + `","instruction":"优化第三章数据分类条款"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusCreated {
+		t.Fatalf("expected status %d, got %d", consts.StatusCreated, response.StatusCode())
+	}
+
+	body := string(response.Body())
+	if !strings.Contains(body, `"status":"pending"`) {
+		t.Fatalf("expected pending status, got %q", body)
+	}
+}
+
+func TestCreateTaskHandlerMissingVersion(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo)
+	engine := server.New()
+	engine.POST("/api/tasks", handler.Create)
+
+	ctx := testContext(t)
+	resource, err := resourceRepo.Create(ctx, "缺少版本测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/tasks",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"resource_id":"` + resource.ID + `","instruction":"优化第三章数据分类条款"}`),
+			Len:  len(`{"resource_id":"` + resource.ID + `","instruction":"优化第三章数据分类条款"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+}
+
+func TestListTasksHandler(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo)
+	engine := server.New()
+	engine.GET("/api/tasks", handler.List)
+
+	ctx := testContext(t)
+	resource, err := resourceRepo.Create(ctx, "任务列表测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	if _, err := taskRepo.Create(ctx, resource.ID, "请整理列表接口"); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/tasks", nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+}
+
+func TestGetTaskByIDHandler(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo)
+	engine := server.New()
+	engine.GET("/api/tasks/:id", handler.GetByID)
+
+	ctx := testContext(t)
+	resource, err := resourceRepo.Create(ctx, "任务详情测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	task, err := taskRepo.Create(ctx, resource.ID, "请整理详情接口")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/tasks/"+task.ID, nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	body := string(response.Body())
+	if !strings.Contains(body, `"steps":[]`) {
+		t.Fatalf("expected empty steps array, got %q", body)
+	}
+}
+
+func TestGetTaskArtifactsHandler(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo)
+	engine := server.New()
+	engine.GET("/api/tasks/:id/artifacts", handler.GetArtifacts)
+
+	ctx := testContext(t)
+	resource, err := resourceRepo.Create(ctx, "任务产物测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	task, err := taskRepo.Create(ctx, resource.ID, "请整理产物接口")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if _, err := taskRepo.AddArtifact(ctx, task.ID, "review_summary", []byte(`{"summary":"需要补充分级定义"}`)); err != nil {
+		t.Fatalf("add artifact: %v", err)
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/tasks/"+task.ID+"/artifacts", nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	var payload struct {
+		Artifacts []struct {
+			ArtifactType string          `json:"artifact_type"`
+			Content      json.RawMessage `json:"content"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(response.Body(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.Artifacts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(payload.Artifacts))
+	}
+	if payload.Artifacts[0].ArtifactType != "review_summary" {
+		t.Fatalf("expected artifact type %q, got %q", "review_summary", payload.Artifacts[0].ArtifactType)
+	}
+	if !json.Valid(payload.Artifacts[0].Content) {
+		t.Fatalf("expected artifact content to stay as json, got %s", payload.Artifacts[0].Content)
+	}
+}
+
+func TestGetTaskNotFound(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo)
+	engine := server.New()
+	engine.GET("/api/tasks/:id", handler.GetByID)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/tasks/00000000-0000-0000-0000-000000000000", nil).Result()
+
+	if response.StatusCode() != consts.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", consts.StatusNotFound, response.StatusCode())
+	}
+}
