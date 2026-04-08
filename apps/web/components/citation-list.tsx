@@ -11,12 +11,12 @@ type CitationListProps = {
 export function CitationList({ citations }: CitationListProps) {
   return (
     <TerminalFrame
-      label="CITATIONS"
-      title="RETRIEVAL_EVIDENCE"
+      label="引用"
+      title="检索证据"
       description="引用结果直接映射后端 citations artifact，便于和 diff_preview 做交叉校验。"
     >
       {citations.length === 0 ? (
-        <p className={styles.empty}>NO_CITATIONS_CAPTURED</p>
+        <p className={styles.empty}>当前没有检索到引用证据</p>
       ) : (
         <ol className={styles.list}>
           {citations.map((citation) => (
@@ -27,8 +27,8 @@ export function CitationList({ citations }: CitationListProps) {
               </div>
 
               <div className={styles.meta}>
-                <MetaRow label="section_title" value={citation.section_title} />
-                <MetaRow label="snippet" value={citation.snippet} />
+                <MetaRow label="章节标题" value={citation.section_title} />
+                <MetaRow label="引用摘录" value={citation.snippet} />
               </div>
             </li>
           ))}

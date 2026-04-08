@@ -33,7 +33,7 @@ export default function HomePage() {
         setTasks(
           taskItems.slice(0, 5).map((task) => ({
             ...task,
-            resourceTitle: resourceMap.get(task.resource_id) || `RESOURCE ${truncateId(task.resource_id, 8, 4)}`
+            resourceTitle: resourceMap.get(task.resource_id) || `资源 ${truncateId(task.resource_id, 8, 4)}`
           }))
         );
         setErrorMessage(null);
@@ -61,31 +61,31 @@ export default function HomePage() {
         actions={
           <div className={styles.actions}>
             <Link className={styles.actionButton} href="/resources">
-              BROWSE_RESOURCES
+              浏览资源
             </Link>
             <Link className={styles.actionButton} href="/approvals">
-              OPEN_APPROVALS
+              打开审批中心
             </Link>
           </div>
         }
-        label="WORKBENCH"
+        label="工作台"
         title="工作台"
         description="集中查看最近任务流和两个关键入口，不做监控墙式信息堆砌。"
       >
-        <p className={styles.banner}>STDOUT &gt; READY_FOR_AGENT_WORKFLOWS</p>
+        <p className={styles.banner}>输出 &gt; 已就绪，可发起审阅工作流</p>
       </TerminalFrame>
 
       <TerminalFrame
-        label="RECENT_TASKS"
-        title="LAST_5_ENTRIES"
+        label="最近任务"
+        title="最近 5 条记录"
         description="最近 5 条任务按时间倒序输出，状态、文档标题和创建时间一并展示。"
       >
-        {errorMessage ? <p className={styles.error}>STDERR &gt; {errorMessage}</p> : null}
+        {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
 
         {isLoading ? (
-          <p className={styles.placeholder}>LOADING_TASK_STREAM</p>
+          <p className={styles.placeholder}>正在加载任务流</p>
         ) : tasks.length === 0 ? (
-          <p className={styles.placeholder}>NO_TASKS_FOUND</p>
+          <p className={styles.placeholder}>暂无任务</p>
         ) : (
           <ul className={styles.taskList}>
             {tasks.map((task) => (
@@ -98,7 +98,7 @@ export default function HomePage() {
 
                   <div className={styles.taskMeta}>
                     <span>ID: {truncateId(task.id, 8, 4)}</span>
-                    <span>CREATED_AT {toIsoSeconds(task.created_at)}</span>
+                    <span>创建时间 {toIsoSeconds(task.created_at)}</span>
                   </div>
                 </Link>
               </li>

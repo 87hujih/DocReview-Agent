@@ -42,24 +42,24 @@ export function TaskCreateForm({
 
   return (
     <TerminalFrame
-      label="TASK_CREATE"
-      title="SUBMIT_TASK"
+      label="创建任务"
+      title="提交任务"
       description="提交一条结构化修订指令，触发 planner -> retriever -> reviewer -> editor 流程。"
     >
       <form className={styles.form} onSubmit={handleSubmit}>
         <div className={styles.resourcePanel}>
-          <MetaRow label="resource_id" value={resource ? resource.id : "NOT_SELECTED"} />
-          <MetaRow label="resource_title" value={resource ? resource.title : "SELECT_RESOURCE"} />
-          <MetaRow label="source_type" value={resource ? resource.sourceType : "UNKNOWN"} />
+          <MetaRow label="资源 ID" value={resource ? resource.id : "未选择"} />
+          <MetaRow label="资源标题" value={resource ? resource.title : "请选择资源"} />
+          <MetaRow label="来源类型" value={resource ? resource.sourceType : "未知"} />
           <MetaRow
             highlight
-            label="created_at"
-            value={resource ? toIsoSeconds(resource.createdAt) : "N/A"}
+            label="创建时间"
+            value={resource ? toIsoSeconds(resource.createdAt) : "未提供"}
           />
         </div>
 
         <label className={styles.field} htmlFor="task-instruction">
-          <span className={styles.label}>INSTRUCTION</span>
+          <span className={styles.label}>修订指令</span>
           <textarea
             id="task-instruction"
             className={styles.textarea}
@@ -71,10 +71,10 @@ export function TaskCreateForm({
           />
         </label>
 
-        {errorMessage ? <p className={styles.error}>STDERR &gt; {errorMessage}</p> : null}
+        {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
 
         <button className={styles.button} disabled={!resource || isSubmitting} type="submit">
-          {isSubmitting ? "SUBMITTING" : "SUBMIT_TASK"}
+          {isSubmitting ? "提交中" : "提交任务"}
         </button>
       </form>
     </TerminalFrame>

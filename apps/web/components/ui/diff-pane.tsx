@@ -21,11 +21,11 @@ export function DiffPane({
     <article className={styles.pane} data-testid={testId}>
       <header className={styles.header}>
         <div className={styles.headerBlock}>
-          <span className={styles.label}>SECTION_TITLE</span>
+          <span className={styles.label}>章节标题</span>
           <span className={styles.value}>{sectionTitle}</span>
         </div>
         <div className={styles.headerBlock}>
-          <span className={styles.label}>CITATION_IDS</span>
+          <span className={styles.label}>引用编号</span>
           <div className={styles.citations}>
             {citationIds.map((citationId) => (
               <span key={citationId} className={styles.citation}>
@@ -38,18 +38,18 @@ export function DiffPane({
 
       <div className={styles.columns}>
         <section className={styles.column}>
-          <span className={styles.label}>ORIGINAL</span>
+          <span className={styles.label}>原文</span>
           <p className={styles.original}>{original}</p>
         </section>
 
         <section className={styles.column}>
-          <span className={styles.label}>REVISED</span>
+          <span className={styles.label}>修订后</span>
           <p className={styles.revised}>{revised}</p>
         </section>
       </div>
 
       <footer className={styles.reason}>
-        <span className={styles.label}>REASON</span>
+        <span className={styles.label}>修改原因</span>
         <p className={styles.reasonText}>{reason}</p>
       </footer>
     </article>

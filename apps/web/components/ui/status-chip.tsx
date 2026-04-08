@@ -10,7 +10,7 @@ type StatusChipProps = {
 export function StatusChip({ className, label, status }: StatusChipProps) {
   const tone = getStatusTone(status);
   const resolvedLabel = label || formatStatusLabel(status);
-  const content = tone === "running" ? "[ RUNNING ... █ ]" : `[${resolvedLabel}]`;
+  const content = tone === "running" ? "[ 运行中 ... █ ]" : `[${resolvedLabel}]`;
 
   return (
     <span className={[styles.chip, className].filter(Boolean).join(" ")} data-status={tone}>

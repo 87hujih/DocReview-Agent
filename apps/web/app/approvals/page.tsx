@@ -58,7 +58,7 @@ export default function ApprovalsPage() {
 
     const trimmedReason = reason.trim();
     if (!trimmedReason) {
-      setErrorMessage("reject reason is required");
+      setErrorMessage("拒绝原因不能为空");
       return;
     }
 
@@ -77,24 +77,24 @@ export default function ApprovalsPage() {
   return (
     <div className={styles.page}>
       <TerminalFrame
-        label="APPROVAL_QUEUE"
+        label="审批队列"
         title="审批中心"
-        description="pending 审批按队列列出，可直接查看详情或执行 approve / reject。"
+        description="待审批任务按队列列出，可直接查看详情或执行批准、拒绝操作。"
       >
-        <p className={styles.banner}>STDOUT &gt; GET /api/approvals?status=pending</p>
+        <p className={styles.banner}>输出 &gt; 正在调用 /api/approvals?status=pending</p>
       </TerminalFrame>
 
       <TerminalFrame
-        label="PENDING_ITEMS"
-        title={`QUEUE_DEPTH ${approvals.length}`}
+        label="待处理项"
+        title={`队列深度 ${approvals.length}`}
         description="审批状态保持终端高对比风格，避免企业后台式柔和 badge。"
       >
-        {errorMessage ? <p className={styles.error}>STDERR &gt; {errorMessage}</p> : null}
+        {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
 
         {isLoading ? (
-          <p className={styles.placeholder}>LOADING_APPROVAL_QUEUE</p>
+          <p className={styles.placeholder}>正在加载审批队列</p>
         ) : approvals.length === 0 ? (
-          <p className={styles.placeholder}>NO_PENDING_APPROVALS</p>
+          <p className={styles.placeholder}>当前没有待审批任务</p>
         ) : (
           <ul className={styles.list}>
             {approvals.map((approval) => {
@@ -114,13 +114,13 @@ export default function ApprovalsPage() {
 
                   <div className={styles.actions}>
                     <Link className={styles.actionButton} href={`/tasks/${approval.task_id}`}>
-                      VIEW_TASK
+                      查看任务
                     </Link>
                     <button className={styles.actionButton} disabled={isBusy} onClick={() => void handleApprove(approval.id)} type="button">
-                      {isBusy ? "RUNNING" : "APPROVE"}
+                      {isBusy ? "处理中" : "批准"}
                     </button>
                     <button className={styles.actionButton} disabled={isBusy} onClick={() => void handleReject(approval.id)} type="button">
-                      {isBusy ? "RUNNING" : "REJECT"}
+                      {isBusy ? "处理中" : "拒绝"}
                     </button>
                   </div>
                 </li>

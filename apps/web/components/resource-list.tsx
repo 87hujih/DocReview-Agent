@@ -15,8 +15,8 @@ type ResourceListProps = {
 
 export function ResourceList({
   actionHrefBuilder = (resource) => `/tasks/new?resource_id=${resource.id}`,
-  actionLabel = "OPEN_TASK_CREATE",
-  emptyMessage = "NO_RESOURCES_AVAILABLE",
+  actionLabel = "创建任务",
+  emptyMessage = "当前没有可用资源",
   resources,
   selectedResourceId
 }: ResourceListProps) {
@@ -34,16 +34,16 @@ export function ResourceList({
           href={actionHrefBuilder(resource)}
         >
           <div className={styles.header}>
-            <span className={styles.index}>RESOURCE {String(index + 1).padStart(2, "0")}</span>
+            <span className={styles.index}>资源 {String(index + 1).padStart(2, "0")}</span>
             <span className={styles.action}>{actionLabel}</span>
           </div>
 
           <h3 className={styles.title}>{resource.title}</h3>
 
           <div className={styles.meta}>
-            <MetaRow label="resource_id" value={truncateId(resource.id, 8, 4)} />
-            <MetaRow label="source_type" value={resource.source_type} />
-            <MetaRow label="created_at" value={toIsoSeconds(resource.created_at)} />
+            <MetaRow label="资源 ID" value={truncateId(resource.id, 8, 4)} />
+            <MetaRow label="来源类型" value={resource.source_type} />
+            <MetaRow label="创建时间" value={toIsoSeconds(resource.created_at)} />
           </div>
         </Link>
       ))}

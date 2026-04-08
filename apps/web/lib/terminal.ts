@@ -3,16 +3,47 @@ const RUNNING_STATUSES = new Set(["drafting", "executing", "planning", "retrievi
 const WARNING_STATUSES = new Set(["awaiting_approval", "pending", "rejected"]);
 const ERROR_STATUSES = new Set(["error", "failed"]);
 
+const LOCALIZED_STATUS_LABELS: Record<string, string> = {
+  approved: "已批准",
+  awaiting_approval: "待审批",
+  completed: "已完成",
+  drafting: "起草中",
+  error: "异常",
+  executing: "执行中",
+  failed: "失败",
+  pending: "待处理",
+  planning: "规划中",
+  rejected: "已拒绝",
+  retrieving: "检索中",
+  running: "运行中",
+  unknown: "未知"
+};
+
+const LOCALIZED_STEP_LABELS: Record<string, string> = {
+  editor: "编辑器",
+  planner: "规划器",
+  retriever: "检索器",
+  reviewer: "审阅器"
+};
+
 export function formatToken(value: string): string {
-  return value
-    .trim()
+  const trimmed = value.trim();
+  const asciiToken = trimmed
     .replace(/[^a-zA-Z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .toUpperCase();
+
+  return asciiToken || trimmed;
 }
 
 export function formatStatusLabel(status?: string | null): string {
-  return formatToken(status || "unknown");
+  const normalized = (status || "unknown").trim().toLowerCase();
+  return LOCALIZED_STATUS_LABELS[normalized] || formatToken(status || "unknown");
+}
+
+export function formatStepLabel(stepName?: string | null): string {
+  const normalized = (stepName || "").trim().toLowerCase();
+  return LOCALIZED_STEP_LABELS[normalized] || formatToken(stepName || "未知步骤");
 }
 
 export function getStatusTone(status?: string | null): "default" | "success" | "running" | "warning" | "error" {
@@ -40,7 +71,7 @@ export function isTerminalStatus(status?: string | null): boolean {
 
 export function toIsoSeconds(value?: Date | string | null): string {
   if (!value) {
-    return "N/A";
+    return "未提供";
   }
 
   const date = value instanceof Date ? value : new Date(value);
@@ -72,17 +103,17 @@ export function formatDuration(start?: string | null, end?: string | null): stri
 
   const diffMs = completedAt - startedAt;
   if (diffMs < 1000) {
-    return `latency: ${diffMs}ms`;
+    return `耗时 ${diffMs} 毫秒`;
   }
 
   const diffSeconds = Math.round(diffMs / 1000);
   if (diffSeconds < 60) {
-    return `duration: ${diffSeconds}s`;
+    return `耗时 ${diffSeconds} 秒`;
   }
 
   const minutes = Math.floor(diffSeconds / 60);
   const seconds = diffSeconds % 60;
-  return `duration: ${minutes}m ${seconds}s`;
+  return `耗时 ${minutes} 分 ${seconds} 秒`;
 }
 
 export function getErrorMessage(error: unknown): string {
@@ -90,5 +121,5 @@ export function getErrorMessage(error: unknown): string {
     return error.message;
   }
 
-  return "unexpected error";
+  return "发生未知错误";
 }

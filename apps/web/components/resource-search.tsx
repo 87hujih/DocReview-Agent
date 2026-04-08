@@ -43,13 +43,13 @@ export function ResourceSearch({ resourceId }: ResourceSearchProps) {
 
   return (
     <TerminalFrame
-      label="RESOURCE_SEARCH"
-      title="CITATION_LOOKUP"
+      label="资源检索"
+      title="引用查找"
       description="用真实检索接口预览当前文档里的证据片段。"
     >
       <form className={styles.form} onSubmit={handleSubmit}>
         <label className={styles.field} htmlFor="resource-search-query">
-          <span className={styles.label}>SEARCH_QUERY</span>
+          <span className={styles.label}>检索词</span>
           <input
             id="resource-search-query"
             className={styles.input}
@@ -61,13 +61,13 @@ export function ResourceSearch({ resourceId }: ResourceSearchProps) {
         </label>
 
         <button className={styles.button} disabled={isLoading} type="submit">
-          {isLoading ? "SEARCHING" : "SEARCH_CITATIONS"}
+          {isLoading ? "检索中" : "检索引用"}
         </button>
       </form>
 
-      {lastRunAt ? <p className={styles.timestamp}>LAST_RUN_AT {toIsoSeconds(lastRunAt)}</p> : null}
+      {lastRunAt ? <p className={styles.timestamp}>上次检索时间 {toIsoSeconds(lastRunAt)}</p> : null}
 
-      {errorMessage ? <p className={styles.error}>STDERR &gt; {errorMessage}</p> : null}
+      {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
 
       {results.length > 0 ? (
         <ul className={styles.results}>
@@ -84,7 +84,7 @@ export function ResourceSearch({ resourceId }: ResourceSearchProps) {
         </ul>
       ) : (
         <p className={styles.placeholder}>
-          {query.trim() ? "NO_CITATIONS_MATCHED" : "READY_FOR_QUERY_INPUT"}
+          {query.trim() ? "没有匹配到引用片段" : "请输入检索词"}
         </p>
       )}
     </TerminalFrame>

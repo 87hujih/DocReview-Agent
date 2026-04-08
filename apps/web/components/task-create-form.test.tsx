@@ -19,7 +19,7 @@ describe("TaskCreateForm", () => {
       />
     );
 
-    const textarea = screen.getByLabelText("INSTRUCTION");
+    const textarea = screen.getByLabelText("修订指令");
 
     fireEvent.change(textarea, {
       target: { value: "请把风险提示段落改得更明确。" }
@@ -27,7 +27,7 @@ describe("TaskCreateForm", () => {
 
     expect(textarea).toHaveValue("请把风险提示段落改得更明确。");
 
-    fireEvent.click(screen.getByRole("button", { name: "SUBMIT_TASK" }));
+    fireEvent.click(screen.getByRole("button", { name: "提交任务" }));
 
     await waitFor(() => {
       expect(handleSubmit).toHaveBeenCalledWith("请把风险提示段落改得更明确。");

@@ -6,9 +6,9 @@ import { usePathname } from "next/navigation";
 import styles from "./nav.module.css";
 
 const NAV_ITEMS = [
-  { href: "/", label: "WORKBENCH" },
-  { href: "/resources", label: "RESOURCES" },
-  { href: "/approvals", label: "APPROVALS" }
+  { href: "/", label: "工作台" },
+  { href: "/resources", label: "资源库" },
+  { href: "/approvals", label: "审批中心" }
 ];
 
 function isActivePath(pathname: string, href: string): boolean {
@@ -29,8 +29,8 @@ export default function Nav() {
   return (
     <nav className={styles.bar}>
       <div className={styles.identity}>
-        <span className={styles.product}>DOCREVIEW_AGENT</span>
-        <span className={styles.environment}>ENV: TASK_4 / API: {apiLabel}</span>
+        <span className={styles.product}>文档审阅代理</span>
+        <span className={styles.environment}>环境：Task 4 / 接口：{apiLabel}</span>
       </div>
 
       <div className={styles.links}>
