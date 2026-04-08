@@ -7,21 +7,21 @@ import (
 	"strings"
 	"time"
 
-	openaiacl "github.com/cloudwego/eino-ext/libs/acl/openai"
+	openaiembedding "github.com/cloudwego/eino-ext/components/embedding/openai"
 )
 
 // Embedder 封装兼容 OpenAI 协议的 embedding 客户端，并校验向量维度。
 type Embedder struct {
-	client *openaiacl.EmbeddingClient
+	client *openaiembedding.Embedder
 	dim    int
 }
 
 // New 构造一个始终带非空 HTTP client 的 embedder，避免上游 typed nil 导致 panic。
 func New(ctx context.Context, baseURL string, apiKey string, model string, dim int) (*Embedder, error) {
-	config := &openaiacl.EmbeddingConfig{
+	config := &openaiembedding.EmbeddingConfig{
 		APIKey: apiKey,
 		Model:  model,
-		// 上游配置里的 HTTP client 是接口类型，这里显式传入真实 client，避免 typed nil 绕过空判断。
+		// 官方 embedding 组件底层仍会转发到 ACL client，这里继续显式传入真实 client，避免 typed nil 绕过空判断。
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	}
 	if strings.TrimSpace(baseURL) != "" {
@@ -31,7 +31,7 @@ func New(ctx context.Context, baseURL string, apiKey string, model string, dim i
 		config.Dimensions = &dim
 	}
 
-	client, err := openaiacl.NewEmbeddingClient(ctx, config)
+	client, err := openaiembedding.NewEmbedder(ctx, config)
 	if err != nil {
 		return nil, err
 	}
