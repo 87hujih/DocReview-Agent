@@ -1,0 +1,42 @@
+.form {
+  display: grid;
+  gap: var(--terminal-space-4);
+}
+
+.resourcePanel {
+  display: grid;
+  gap: var(--terminal-space-2);
+  padding: var(--terminal-space-4);
+  border: var(--terminal-border-width) dashed var(--terminal-border);
+}
+
+.field {
+  display: grid;
+  gap: var(--terminal-space-2);
+}
+
+.label {
+  color: var(--terminal-text-dim);
+  letter-spacing: 0.1em;
+}
+
+.textarea {
+  width: 100%;
+  min-height: 220px;
+  padding: var(--terminal-space-3);
+  border: var(--terminal-border-width) solid var(--terminal-border);
+  background: var(--terminal-bg);
+  resize: vertical;
+  line-height: 1.7;
+}
+
+.error {
+  margin: 0;
+  color: var(--terminal-warning);
+}
+
+.button {
+  min-height: 42px;
+  padding: 0 var(--terminal-space-4);
+  justify-self: start;
+}

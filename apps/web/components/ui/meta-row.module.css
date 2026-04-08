@@ -1,0 +1,25 @@
+.row {
+  display: grid;
+  grid-template-columns: minmax(100px, 160px) minmax(0, 1fr);
+  gap: var(--terminal-space-3);
+  align-items: start;
+}
+
+.label {
+  color: var(--terminal-text-dim);
+}
+
+.value {
+  color: var(--terminal-text);
+  word-break: break-word;
+}
+
+.row[data-highlight="true"] .value {
+  color: var(--terminal-text-strong);
+}
+
+@media (max-width: 640px) {
+  .row {
+    grid-template-columns: 1fr;
+  }
+}

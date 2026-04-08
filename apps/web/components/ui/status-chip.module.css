@@ -1,0 +1,26 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--terminal-space-3);
+  border: var(--terminal-border-width) solid currentColor;
+  color: var(--terminal-text);
+  background: transparent;
+  letter-spacing: 0.08em;
+}
+
+.chip[data-status="success"] {
+  color: var(--terminal-success);
+}
+
+.chip[data-status="running"] {
+  color: var(--terminal-info);
+}
+
+.chip[data-status="warning"] {
+  color: var(--terminal-warning);
+}
+
+.chip[data-status="error"] {
+  color: var(--terminal-warning);
+}

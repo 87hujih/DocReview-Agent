@@ -23,6 +23,12 @@
     "next-env.d.ts",
     "app/**/*.ts",
     "app/**/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "lib/**/*.ts",
+    "lib/**/*.tsx",
+    "vitest.config.ts",
+    "vitest.setup.ts",
     ".next/types/**/*.ts"
   ],
   "exclude": ["node_modules"]

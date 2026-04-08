@@ -1,29 +1,71 @@
-// ResourcesPage 先占住未来的 app-router 路由段，避免后续功能开发时再搬路由。
+"use client";
+
+import { useEffect, useState } from "react";
+
+import { ResourceList } from "../../components/resource-list";
+import { TerminalFrame } from "../../components/ui/terminal-frame";
+import { getResources, type Resource } from "../../lib/api/resources";
+import { getErrorMessage } from "../../lib/terminal";
+import styles from "./page.module.css";
+
 export default function ResourcesPage() {
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [resources, setResources] = useState<Resource[]>([]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadResources() {
+      try {
+        const items = await getResources();
+        if (!active) {
+          return;
+        }
+
+        setResources(items);
+        setErrorMessage(null);
+      } catch (error) {
+        if (active) {
+          setErrorMessage(getErrorMessage(error));
+        }
+      } finally {
+        if (active) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void loadResources();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   return (
-    <main
-      style={{
-        maxWidth: 960,
-        margin: "0 auto",
-        padding: "64px 24px"
-      }}
-    >
-      <section
-        style={{
-          padding: 32,
-          backgroundColor: "#ffffff",
-          borderRadius: 20,
-          boxShadow: "0 12px 40px rgba(15, 23, 42, 0.08)"
-        }}
+    <div className={styles.page}>
+      <TerminalFrame
+        label="RESOURCE_INDEX"
+        title="资源库"
+        description="资源列表直接映射 /api/resources，点击任意条目即可跳入任务创建页。"
       >
-        <p style={{ marginTop: 0, color: "#52606d", fontWeight: 600 }}>Reserved route</p>
-        <h1 style={{ margin: "0 0 16px", fontSize: 36 }}>Resources</h1>
-        <p style={{ margin: 0, fontSize: 18, lineHeight: 1.6 }}>
-          The full resource browser, document detail view, and citation search UI will land in Task
-          5. This placeholder fixes the App Router boundary now so later work does not need to move
-          routes around.
-        </p>
-      </section>
-    </main>
+        <p className={styles.banner}>STDOUT &gt; GET /api/resources</p>
+      </TerminalFrame>
+
+      <TerminalFrame
+        label="RESOURCE_STREAM"
+        title={`RESOURCE_COUNT ${resources.length}`}
+        description="资源元数据强调 RESOURCE_ID、SOURCE_TYPE、CREATED_AT，不做营销式卡片装饰。"
+      >
+        {errorMessage ? <p className={styles.error}>STDERR &gt; {errorMessage}</p> : null}
+
+        {isLoading ? (
+          <p className={styles.placeholder}>LOADING_RESOURCE_INDEX</p>
+        ) : (
+          <ResourceList resources={resources} />
+        )}
+      </TerminalFrame>
+    </div>
   );
 }
