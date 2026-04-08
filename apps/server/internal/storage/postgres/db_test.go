@@ -76,6 +76,44 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	}
 }
 
+// TestRunMigrationsWaitsForAdvisoryLock 验证迁移会等待数据库级 advisory lock，避免并发执行。
+func TestRunMigrationsWaitsForAdvisoryLock(t *testing.T) {
+	pool := newRawTestPool(t)
+	lockPool := newRawTestPool(t)
+
+	lockCtx := testContext(t)
+	lockConn, err := lockPool.Acquire(lockCtx)
+	if err != nil {
+		t.Fatalf("acquire lock connection: %v", err)
+	}
+
+	if _, err := lockConn.Exec(lockCtx, `SELECT pg_advisory_lock($1, $2)`, migrationLockNamespace, migrationLockKey); err != nil {
+		t.Fatalf("acquire advisory lock: %v", err)
+	}
+	t.Cleanup(func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if _, err := lockConn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1, $2)`, migrationLockNamespace, migrationLockKey); err != nil {
+			t.Fatalf("release advisory lock: %v", err)
+		}
+
+		lockConn.Release()
+	})
+
+	blockedCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err = RunMigrations(blockedCtx, pool)
+	if err == nil {
+		t.Fatal("expected run migrations to wait for advisory lock and time out")
+	}
+
+	if !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("expected migration lock wait to end with context deadline, got %v", err)
+	}
+}
+
 // TestResourceCRUD 验证资源、版本和分块的基本读写流程。
 func TestResourceCRUD(t *testing.T) {
 	pool := newTestPool(t)
@@ -305,6 +343,26 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	if err := RunMigrations(ctx, pool); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
+
+	return pool
+}
+
+// newRawTestPool 为需要自行控制迁移时机的测试创建数据库连接池。
+func newRawTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+
+	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
+		t.Skip("database not available")
+	}
+
+	ctx := testContext(t)
+	databaseURL := testDatabaseURL()
+
+	pool, err := NewPool(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("new raw pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
 
 	return pool
 }

@@ -16,6 +16,11 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+const (
+	migrationLockNamespace int32 = 20260408
+	migrationLockKey       int32 = 1
+)
+
 // NewPool 创建 pgx 连接池，并在每个新连接上注册 pgvector 类型。
 func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
@@ -58,22 +63,39 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 
 	sort.Strings(migrationNames)
 
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection for migrations: %w", err)
+	}
+	defer conn.Release()
+
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin migration transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	// 迁移会创建数据库级 extension，必须串行化，避免多个进程并发执行时冲撞系统表唯一索引。
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, migrationLockNamespace, migrationLockKey); err != nil {
+		return fmt.Errorf("acquire migration advisory lock: %w", err)
+	}
+
 	for _, migrationName := range migrationNames {
 		statement, err := migrationsFS.ReadFile("migrations/" + migrationName)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", migrationName, err)
 		}
 
-		if _, err := pool.Exec(ctx, string(statement)); err != nil {
+		if _, err := tx.Exec(ctx, string(statement)); err != nil {
 			return fmt.Errorf("run migration %s: %w", migrationName, err)
 		}
 	}
 
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire connection for vector registration: %w", err)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
 	}
-	defer conn.Release()
 
 	if err := pgxvector.RegisterTypes(ctx, conn.Conn()); err != nil {
 		return fmt.Errorf("register vector types after migrations: %w", err)
