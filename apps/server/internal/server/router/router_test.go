@@ -34,7 +34,7 @@ func TestRegisterExposesHealthEndpoint(t *testing.T) {
 }
 
 func TestNewRegistersApprovalRoutesWhenHandlerProvided(t *testing.T) {
-	h := New(appconfig.Config{ServerPort: "0"}, Deps{
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		ApprovalHandler: handlers.NewApprovalHandler(nil),
 	})
 
