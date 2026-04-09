@@ -11,6 +11,7 @@ import (
 	executoragent "agent_project/apps/server/internal/agent/executor"
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/storage/postgres"
+	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,6 +23,7 @@ func TestWorkerProcessesJob(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	ctx := jobTestContext(t)
 
 	resource, err := resourceRepo.Create(ctx, "Worker 集成测试-"+jobUniqueSuffix(), "upload")
@@ -75,7 +77,8 @@ func TestWorkerProcessesJob(t *testing.T) {
 	}
 
 	exec := executoragent.New(taskRepo, resourceRepo)
-	worker := New(jobRepo, exec, taskRepo, 1)
+	eventService := taskevents.New(eventRepo)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService)
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -113,6 +116,20 @@ func TestWorkerProcessesJob(t *testing.T) {
 			}
 			if !strings.Contains(currentVersion.Content, "修订后的第一章内容") {
 				t.Fatalf("expected revised content in version, got %q", currentVersion.Content)
+			}
+
+			events, err := eventRepo.ListByTask(ctx, task.ID)
+			if err != nil {
+				t.Fatalf("list task events: %v", err)
+			}
+			if len(events) != 2 {
+				t.Fatalf("expected 2 task events, got %d", len(events))
+			}
+			if events[0].EventType != "job.claimed" {
+				t.Fatalf("expected first event type %q, got %q", "job.claimed", events[0].EventType)
+			}
+			if events[1].EventType != "job.completed" {
+				t.Fatalf("expected second event type %q, got %q", "job.completed", events[1].EventType)
 			}
 			return
 		}

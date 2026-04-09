@@ -48,7 +48,7 @@ func (s *Service) ImportDirectory(ctx context.Context, dir string) error {
 		filePath := filepath.Join(dir, entry.Name())
 		if err := s.importFile(ctx, filePath, entry.Name()); err != nil {
 			lastErr = err
-			log.Printf("WARN: import %s failed: %v", filePath, err)
+			log.Printf("警告：导入 %s 失败：%v", filePath, err)
 			continue
 		}
 
@@ -75,7 +75,7 @@ func (s *Service) importFile(ctx context.Context, filePath string, fileName stri
 	}
 	for _, resource := range existingResources {
 		if resource.Title == title {
-			log.Printf("skipping already imported: %s", title)
+			log.Printf("跳过已导入文件：%s", title)
 			return nil
 		}
 	}
@@ -107,7 +107,7 @@ func (s *Service) importFile(ctx context.Context, filePath string, fileName stri
 		return err
 	}
 	if len(vectors) != len(chunks) {
-		return fmt.Errorf("embedding count mismatch: got %d vectors for %d chunks", len(vectors), len(chunks))
+		return fmt.Errorf("embedding 数量不匹配：得到 %d 个向量，对应 %d 个分块", len(vectors), len(chunks))
 	}
 
 	for index, chunk := range chunks {

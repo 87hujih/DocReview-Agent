@@ -27,7 +27,7 @@ func New(taskRepo *postgres.TaskRepo, resourceRepo *postgres.ResourceRepo) *Exec
 // Execute 读取任务产物中的 diff_preview，并将修订内容落成新的资源版本。
 func (e *Executor) Execute(ctx context.Context, job *postgres.ExecutionJob) (string, error) {
 	if job == nil {
-		return "", fmt.Errorf("execution job is required")
+		return "", fmt.Errorf("执行作业不能为空")
 	}
 
 	artifacts, err := e.taskRepo.GetArtifacts(ctx, job.TaskID)
@@ -45,7 +45,7 @@ func (e *Executor) Execute(ctx context.Context, job *postgres.ExecutionJob) (str
 		return "", err
 	}
 	if task == nil {
-		return "", fmt.Errorf("task not found")
+		return "", fmt.Errorf("任务不存在")
 	}
 
 	currentVersion, err := e.resourceRepo.GetCurrentVersion(ctx, task.ResourceID)
@@ -53,7 +53,7 @@ func (e *Executor) Execute(ctx context.Context, job *postgres.ExecutionJob) (str
 		return "", err
 	}
 	if currentVersion == nil {
-		return "", fmt.Errorf("resource current version not found")
+		return "", fmt.Errorf("资源当前版本不存在")
 	}
 
 	newContent, matchedTitles := applySectionReplacementsDetailed(currentVersion.Content, preview.Sections)
@@ -67,7 +67,7 @@ func (e *Executor) Execute(ctx context.Context, job *postgres.ExecutionJob) (str
 			missingTitles = append(missingTitles, section.SectionTitle)
 		}
 
-		return "", fmt.Errorf("diff preview sections not found in document: %s", strings.Join(missingTitles, ", "))
+		return "", fmt.Errorf("文档中未找到 diff 预览对应章节：%s", strings.Join(missingTitles, ", "))
 	}
 
 	newVersion, err := e.resourceRepo.CreateVersion(
@@ -92,13 +92,13 @@ func extractDiffPreview(artifacts []postgres.TaskArtifact) (*editor.DiffPreview,
 
 		var preview editor.DiffPreview
 		if err := json.Unmarshal(artifact.Content, &preview); err != nil {
-			return nil, fmt.Errorf("parse diff preview: %w", err)
+			return nil, fmt.Errorf("解析 diff 预览失败：%w", err)
 		}
 
 		return &preview, nil
 	}
 
-	return nil, fmt.Errorf("diff preview artifact not found")
+	return nil, fmt.Errorf("未找到 diff 预览产物")
 }
 
 func applySectionReplacements(content string, sections []editor.DiffSection) string {

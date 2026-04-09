@@ -65,7 +65,7 @@ func NewResourceHandler(repo *postgres.ResourceRepo, ret *retriever.Service) *Re
 func (h *ResourceHandler) List(requestCtx context.Context, ctx *app.RequestContext) {
 	resources, err := h.resourceRepo.List(requestCtx)
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to list resources"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询资源列表失败"})
 		return
 	}
 
@@ -90,17 +90,17 @@ func (h *ResourceHandler) GetByID(requestCtx context.Context, ctx *app.RequestCo
 
 	resource, err := h.resourceRepo.GetByID(requestCtx, resourceID)
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get resource"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询资源失败"})
 		return
 	}
 	if resource == nil {
-		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "resource not found"})
+		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "资源不存在"})
 		return
 	}
 
 	version, err := h.resourceRepo.GetCurrentVersion(requestCtx, resourceID)
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get resource version"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询资源版本失败"})
 		return
 	}
 
@@ -129,17 +129,17 @@ func (h *ResourceHandler) GetByID(requestCtx context.Context, ctx *app.RequestCo
 func (h *ResourceHandler) Search(requestCtx context.Context, ctx *app.RequestContext) {
 	query := strings.TrimSpace(ctx.Query("q"))
 	if query == "" {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "query parameter 'q' is required"})
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "查询参数 q 不能为空"})
 		return
 	}
 	if h.retriever == nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "retriever not configured"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "检索服务未配置"})
 		return
 	}
 
 	citations, err := h.retriever.SearchByResource(requestCtx, ctx.Param("id"), query, 5)
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to search resource"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "检索资源失败"})
 		return
 	}
 

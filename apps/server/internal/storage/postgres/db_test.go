@@ -47,6 +47,7 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 		"tasks",
 		"task_steps",
 		"task_artifacts",
+		"task_events",
 		"approvals",
 		"execution_jobs",
 	}

@@ -1,8 +1,11 @@
 package router
 
 import (
+	"log/slog"
+
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/server/handlers"
+	servermiddleware "agent_project/apps/server/internal/server/middleware"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/route"
@@ -16,8 +19,11 @@ type Deps struct {
 }
 
 // New 构建 Hertz 服务，并只注册当前依赖已经就绪的路由。
-func New(cfg appconfig.Config, deps Deps) *server.Hertz {
+func New(cfg appconfig.Config, logger *slog.Logger, deps Deps) *server.Hertz {
 	h := server.Default(server.WithHostPorts(":" + cfg.ServerPort))
+	if logger != nil {
+		h.Use(servermiddleware.RequestContext("server", logger))
+	}
 	Register(h.Engine)
 	if deps.ResourceHandler != nil {
 		registerResourceRoutes(h.Engine, deps.ResourceHandler)

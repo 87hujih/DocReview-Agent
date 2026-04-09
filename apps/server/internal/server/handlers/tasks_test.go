@@ -3,9 +3,12 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
+	servermiddleware "agent_project/apps/server/internal/server/middleware"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskservice "agent_project/apps/server/internal/task/service"
 
@@ -221,5 +224,23 @@ func TestGetTaskNotFound(t *testing.T) {
 
 	if response.StatusCode() != consts.StatusNotFound {
 		t.Fatalf("expected status %d, got %d", consts.StatusNotFound, response.StatusCode())
+	}
+}
+
+func TestHealthHandlerSetsRequestIDHeader(t *testing.T) {
+	engine := server.New()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	engine.Use(servermiddleware.RequestContext("server", logger))
+	engine.GET("/healthz", Health)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/healthz", nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	requestID := string(response.Header.Peek("X-Request-ID"))
+	if strings.TrimSpace(requestID) == "" {
+		t.Fatalf("expected X-Request-ID header, got empty value")
 	}
 }

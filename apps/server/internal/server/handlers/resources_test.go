@@ -108,7 +108,7 @@ func TestSearchResourceMissingQuery(t *testing.T) {
 	}
 
 	body := string(response.Body())
-	if !strings.Contains(body, "query parameter 'q' is required") {
+	if !strings.Contains(body, "查询参数 q 不能为空") {
 		t.Fatalf("expected missing query error, got %q", body)
 	}
 }

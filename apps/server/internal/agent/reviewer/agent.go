@@ -72,7 +72,7 @@ func (a *Agent) Review(ctx context.Context, resourceContent string, citations []
 
 	summary := strings.TrimSpace(trimCodeFence(response.Content))
 	if summary == "" {
-		return "", fmt.Errorf("reviewer returned empty summary")
+		return "", fmt.Errorf("审阅代理返回了空摘要")
 	}
 
 	return summary, nil

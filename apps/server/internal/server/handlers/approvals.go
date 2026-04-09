@@ -48,13 +48,13 @@ func NewApprovalHandler(svc *approval.Service) *ApprovalHandler {
 // List 返回审批列表，可按状态过滤。
 func (h *ApprovalHandler) List(requestCtx context.Context, ctx *app.RequestContext) {
 	if h.approvalService == nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "approval service not configured"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "审批服务未配置"})
 		return
 	}
 
 	approvals, err := h.approvalService.List(requestCtx, ctx.Query("status"))
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to list approvals"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询审批列表失败"})
 		return
 	}
 
@@ -71,7 +71,7 @@ func (h *ApprovalHandler) List(requestCtx context.Context, ctx *app.RequestConte
 // Approve 将指定审批切换为 approved。
 func (h *ApprovalHandler) Approve(requestCtx context.Context, ctx *app.RequestContext) {
 	if h.approvalService == nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "approval service not configured"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "审批服务未配置"})
 		return
 	}
 
@@ -79,11 +79,11 @@ func (h *ApprovalHandler) Approve(requestCtx context.Context, ctx *app.RequestCo
 	if err != nil {
 		switch {
 		case errors.Is(err, approval.ErrApprovalNotFound):
-			ctx.JSON(consts.StatusNotFound, map[string]string{"error": "approval not found"})
+			ctx.JSON(consts.StatusNotFound, map[string]string{"error": "审批不存在"})
 		case errors.Is(err, approval.ErrApprovalAlreadyDecided):
-			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "approval already decided"})
+			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "审批已处理"})
 		default:
-			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to approve task"})
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "通过审批失败"})
 		}
 		return
 	}
@@ -97,17 +97,17 @@ func (h *ApprovalHandler) Approve(requestCtx context.Context, ctx *app.RequestCo
 func (h *ApprovalHandler) Reject(requestCtx context.Context, ctx *app.RequestContext) {
 	var request rejectApprovalRequest
 	if err := json.Unmarshal(ctx.Request.Body(), &request); err != nil {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "reason is required"})
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "必须提供原因"})
 		return
 	}
 
 	request.Reason = strings.TrimSpace(request.Reason)
 	if request.Reason == "" {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "reason is required"})
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "必须提供原因"})
 		return
 	}
 	if h.approvalService == nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "approval service not configured"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "审批服务未配置"})
 		return
 	}
 
@@ -115,11 +115,11 @@ func (h *ApprovalHandler) Reject(requestCtx context.Context, ctx *app.RequestCon
 	if err != nil {
 		switch {
 		case errors.Is(err, approval.ErrApprovalNotFound):
-			ctx.JSON(consts.StatusNotFound, map[string]string{"error": "approval not found"})
+			ctx.JSON(consts.StatusNotFound, map[string]string{"error": "审批不存在"})
 		case errors.Is(err, approval.ErrApprovalAlreadyDecided), errors.Is(err, approval.ErrReasonRequired):
 			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
 		default:
-			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to reject task"})
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "拒绝审批失败"})
 		}
 		return
 	}

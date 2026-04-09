@@ -11,11 +11,11 @@ import (
 
 var (
 	// ErrInstructionRequired 表示任务指令为空。
-	ErrInstructionRequired = errors.New("instruction is required")
+	ErrInstructionRequired = errors.New("任务指令不能为空")
 	// ErrResourceNotFound 表示资源不存在。
-	ErrResourceNotFound = errors.New("resource not found")
+	ErrResourceNotFound = errors.New("资源不存在")
 	// ErrResourceCurrentVersionNotFound 表示资源缺少当前版本。
-	ErrResourceCurrentVersionNotFound = errors.New("resource current version not found")
+	ErrResourceCurrentVersionNotFound = errors.New("资源当前版本不存在")
 )
 
 // Service 协调任务创建、查询和后台编排启动。

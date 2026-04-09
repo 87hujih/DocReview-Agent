@@ -32,11 +32,11 @@ var validTransitions = map[string]map[string]bool{
 func Transition(from string, to string) error {
 	targets, ok := validTransitions[from]
 	if !ok {
-		return fmt.Errorf("invalid transition: %s is a terminal state", from)
+		return fmt.Errorf("非法状态流转：%s 是终态", from)
 	}
 
 	if !targets[to] {
-		return fmt.Errorf("invalid transition: %s -> %s", from, to)
+		return fmt.Errorf("非法状态流转：%s -> %s", from, to)
 	}
 
 	return nil

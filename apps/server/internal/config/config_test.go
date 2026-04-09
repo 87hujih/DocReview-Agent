@@ -17,6 +17,9 @@ func TestLoadUsesYAMLDefaults(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
 	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -73,6 +76,9 @@ func TestLoadUsesDotEnvOverrides(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
 	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -128,6 +134,9 @@ func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "env-embedding")
 	t.Setenv("EMBEDDING_DIM", "3072")
 	t.Setenv("RERANKER_MODEL", "env-reranker")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -180,6 +189,9 @@ func TestLoadUsesHardcodedLLMDefault(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
 	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -188,6 +200,18 @@ func TestLoadUsesHardcodedLLMDefault(t *testing.T) {
 
 	if cfg.LLMModel != "Qwen/Qwen2.5-7B-Instruct" {
 		t.Fatalf("expected hardcoded llm model %q, got %q", "Qwen/Qwen2.5-7B-Instruct", cfg.LLMModel)
+	}
+
+	if cfg.LogLevel != "info" {
+		t.Fatalf("expected hardcoded log level %q, got %q", "info", cfg.LogLevel)
+	}
+
+	if cfg.LogFormat != "json" {
+		t.Fatalf("expected hardcoded log format %q, got %q", "json", cfg.LogFormat)
+	}
+
+	if cfg.LogAddSource {
+		t.Fatalf("expected hardcoded log add_source %v, got %v", false, cfg.LogAddSource)
 	}
 }
 
@@ -200,6 +224,9 @@ func TestLoadStopsDotEnvSearchAtWorktreeRoot(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
 	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
 
 	tempDir := t.TempDir()
 	parentRepoRoot := filepath.Join(tempDir, "repo")
@@ -233,6 +260,88 @@ func TestLoadStopsDotEnvSearchAtWorktreeRoot(t *testing.T) {
 
 	if cfg.DatabaseURL != "" {
 		t.Fatalf("expected parent dotenv DATABASE_URL to be ignored at worktree root, got %q", cfg.DatabaseURL)
+	}
+}
+
+func TestLoadUsesLogDefaultsFromYAML(t *testing.T) {
+	t.Setenv("SERVER_PORT", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("SILICONFLOW_API_KEY", "")
+	t.Setenv("SILICONFLOW_BASE_URL", "")
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
+
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	writeTestFile(t, filepath.Join(tempDir, "config", "default.yaml"), strings.Join([]string{
+		"server:",
+		"  port: \"8181\"",
+		"ai:",
+		"  embedding_model: \"yaml-embedding\"",
+		"  embedding_dim: 1024",
+		"  reranker_model: \"yaml-reranker\"",
+		"log:",
+		"  level: \"debug\"",
+		"  format: \"text\"",
+		"  add_source: true",
+	}, "\n"))
+
+	cfg := Load()
+
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("expected yaml log level %q, got %q", "debug", cfg.LogLevel)
+	}
+
+	if cfg.LogFormat != "text" {
+		t.Fatalf("expected yaml log format %q, got %q", "text", cfg.LogFormat)
+	}
+
+	if !cfg.LogAddSource {
+		t.Fatalf("expected yaml log add_source %v, got %v", true, cfg.LogAddSource)
+	}
+}
+
+func TestLoadUsesEnvironmentOverridesForLogging(t *testing.T) {
+	t.Setenv("SERVER_PORT", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("SILICONFLOW_API_KEY", "")
+	t.Setenv("SILICONFLOW_BASE_URL", "")
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "warn")
+	t.Setenv("LOG_FORMAT", "text")
+	t.Setenv("LOG_ADD_SOURCE", "true")
+
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	writeTestFile(t, filepath.Join(tempDir, "config", "default.yaml"), strings.Join([]string{
+		"log:",
+		"  level: \"debug\"",
+		"  format: \"json\"",
+		"  add_source: false",
+	}, "\n"))
+
+	cfg := Load()
+
+	if cfg.LogLevel != "warn" {
+		t.Fatalf("expected env log level %q, got %q", "warn", cfg.LogLevel)
+	}
+
+	if cfg.LogFormat != "text" {
+		t.Fatalf("expected env log format %q, got %q", "text", cfg.LogFormat)
+	}
+
+	if !cfg.LogAddSource {
+		t.Fatalf("expected env log add_source %v, got %v", true, cfg.LogAddSource)
 	}
 }
 

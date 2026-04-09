@@ -10,7 +10,7 @@ import (
 	"agent_project/apps/server/internal/task/models"
 )
 
-var errTaskNotFound = errors.New("task not found")
+var errTaskNotFound = errors.New("任务不存在")
 
 // Worker 负责消费执行作业并推动任务完成。
 type Worker struct {
@@ -68,7 +68,7 @@ func (w *Worker) processPendingJobs(ctx context.Context) {
 	for {
 		job, err := w.jobRepo.ClaimNext(ctx)
 		if err != nil {
-			log.Printf("ERROR: claim execution job failed: %v", err)
+			log.Printf("错误：领取执行任务失败：%v", err)
 			return
 		}
 		if job == nil {
@@ -84,20 +84,20 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 	if err != nil {
 		errorMessage := err.Error()
 		if updateErr := w.jobRepo.UpdateStatus(ctx, job.ID, "failed", &errorMessage, nil); updateErr != nil {
-			log.Printf("ERROR: update failed job status failed: job=%s err=%v", job.ID, updateErr)
+			log.Printf("错误：更新失败作业状态失败：job=%s err=%v", job.ID, updateErr)
 		}
 		if updateErr := w.transitionTask(ctx, job.TaskID, models.StatusFailed, &errorMessage); updateErr != nil {
-			log.Printf("ERROR: transition task to failed failed: task=%s err=%v", job.TaskID, updateErr)
+			log.Printf("错误：将任务切换为失败状态时出错：task=%s err=%v", job.TaskID, updateErr)
 		}
 		return
 	}
 
 	if err := w.jobRepo.UpdateStatus(ctx, job.ID, "done", nil, &newVersionID); err != nil {
-		log.Printf("ERROR: update finished job status failed: job=%s err=%v", job.ID, err)
+		log.Printf("错误：更新已完成作业状态失败：job=%s err=%v", job.ID, err)
 		return
 	}
 	if err := w.transitionTask(ctx, job.TaskID, models.StatusCompleted, nil); err != nil {
-		log.Printf("ERROR: transition task to completed failed: task=%s err=%v", job.TaskID, err)
+		log.Printf("错误：将任务切换为已完成状态时出错：task=%s err=%v", job.TaskID, err)
 	}
 }
 

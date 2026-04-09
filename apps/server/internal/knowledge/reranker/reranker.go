@@ -66,30 +66,30 @@ func (c *Client) Rerank(ctx context.Context, query string, documents []string, t
 		ReturnDocuments: false,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal rerank request: %w", err)
+		return nil, fmt.Errorf("序列化 rerank 请求失败：%w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/rerank", bytes.NewReader(requestBody))
 	if err != nil {
-		return nil, fmt.Errorf("create rerank request: %w", err)
+		return nil, fmt.Errorf("创建 rerank 请求失败：%w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send rerank request: %w", err)
+		return nil, fmt.Errorf("发送 rerank 请求失败：%w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("rerank request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("rerank 请求失败：状态码 %d：%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var parsed rerankResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("decode rerank response: %w", err)
+		return nil, fmt.Errorf("解析 rerank 响应失败：%w", err)
 	}
 
 	results := make([]Result, 0, len(parsed.Results))

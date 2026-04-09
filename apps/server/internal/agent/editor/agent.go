@@ -106,7 +106,7 @@ func (a *Agent) Edit(ctx context.Context, resourceContent string, reviewSummary 
 
 	var preview DiffPreview
 	if err := json.Unmarshal([]byte(normalized), &preview); err != nil {
-		return nil, fmt.Errorf("parse editor result: %w; raw output: %s", err, raw)
+		return nil, fmt.Errorf("解析编辑代理结果失败：%w；原始输出：%s", err, raw)
 	}
 
 	for index := range preview.Sections {

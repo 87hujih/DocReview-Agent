@@ -56,7 +56,7 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 	vectors := make([][]float32, len(embeddings))
 	for index, embedding := range embeddings {
 		if e.dim > 0 && len(embedding) != e.dim {
-			return nil, fmt.Errorf("unexpected embedding dimension %d, want %d", len(embedding), e.dim)
+			return nil, fmt.Errorf("embedding 维度异常：实际 %d，期望 %d", len(embedding), e.dim)
 		}
 
 		vector := make([]float32, len(embedding))

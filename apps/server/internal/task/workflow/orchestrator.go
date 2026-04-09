@@ -57,7 +57,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		return
 	}
 	if resource == nil {
-		o.failTask(ctx, task, nil, fmt.Errorf("resource not found"))
+		o.failTask(ctx, task, nil, fmt.Errorf("资源不存在"))
 		return
 	}
 
@@ -67,7 +67,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		return
 	}
 	if version == nil {
-		o.failTask(ctx, task, nil, fmt.Errorf("resource current version not found"))
+		o.failTask(ctx, task, nil, fmt.Errorf("资源当前版本不存在"))
 		return
 	}
 
@@ -153,7 +153,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 	}
 	reviewSummary = strings.TrimSpace(reviewSummary)
 	if reviewSummary == "" {
-		o.failTask(ctx, task, reviewerStep, fmt.Errorf("reviewer returned empty summary"))
+		o.failTask(ctx, task, reviewerStep, fmt.Errorf("审阅代理返回了空摘要"))
 		return
 	}
 
@@ -276,13 +276,13 @@ func dedupeCitations(input []citation.Citation) []citation.Citation {
 
 func validatePlanResult(result *planner.PlanResult) error {
 	if result == nil {
-		return fmt.Errorf("planner returned nil result")
+		return fmt.Errorf("规划代理返回了空结果")
 	}
 	if strings.TrimSpace(result.Intent) == "" {
-		return fmt.Errorf("planner returned empty intent")
+		return fmt.Errorf("规划代理返回的意图为空")
 	}
 	if len(result.SearchQueries) == 0 {
-		return fmt.Errorf("planner returned no search queries")
+		return fmt.Errorf("规划代理未返回检索查询")
 	}
 
 	return nil
@@ -290,7 +290,7 @@ func validatePlanResult(result *planner.PlanResult) error {
 
 func validateDiffPreview(preview *editor.DiffPreview, citations []citation.Citation) error {
 	if preview == nil {
-		return fmt.Errorf("editor returned nil diff preview")
+		return fmt.Errorf("编辑代理返回了空 diff 预览")
 	}
 
 	knownCitationIDs := make(map[string]struct{}, len(citations))
@@ -300,12 +300,12 @@ func validateDiffPreview(preview *editor.DiffPreview, citations []citation.Citat
 
 	for index, section := range preview.Sections {
 		if len(section.CitationIDs) == 0 {
-			return fmt.Errorf("diff section %d has empty citation_ids", index)
+			return fmt.Errorf("diff 预览第 %d 个章节的 citation_ids 为空", index)
 		}
 
 		for _, citationID := range section.CitationIDs {
 			if _, ok := knownCitationIDs[citationID]; !ok {
-				return fmt.Errorf("diff section %d references unknown citation_id %s", index, citationID)
+				return fmt.Errorf("diff 预览第 %d 个章节引用了未知 citation_id %s", index, citationID)
 			}
 		}
 	}

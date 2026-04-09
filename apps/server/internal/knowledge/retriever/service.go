@@ -63,7 +63,7 @@ func (s *Service) search(
 		return []citation.Citation{}, nil
 	}
 	if s.reranker == nil {
-		return nil, errors.New("reranker not configured")
+		return nil, errors.New("reranker 未配置")
 	}
 
 	normalizedQuery := strings.TrimSpace(query)

@@ -19,7 +19,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     const errorMessage =
       typeof body === "object" && body && "error" in body && typeof body.error === "string"
         ? body.error
-        : `Request failed: ${response.status}`;
+        : `请求失败：${response.status}`;
     throw new Error(errorMessage);
   }
 

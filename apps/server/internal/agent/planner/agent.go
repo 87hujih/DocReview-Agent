@@ -85,7 +85,7 @@ func (a *Agent) Plan(ctx context.Context, instruction string, resourceTitle stri
 
 	var result PlanResult
 	if err := json.Unmarshal([]byte(normalized), &result); err != nil {
-		return nil, fmt.Errorf("parse planner result: %w; raw output: %s", err, raw)
+		return nil, fmt.Errorf("解析规划代理结果失败：%w；原始输出：%s", err, raw)
 	}
 
 	result.Intent = strings.TrimSpace(result.Intent)

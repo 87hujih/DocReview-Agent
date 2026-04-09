@@ -10,6 +10,7 @@ import (
 
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/storage/postgres"
+	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,6 +22,7 @@ func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	ctx := approvalTestContext(t)
 
 	resource, err := resourceRepo.Create(ctx, "审批服务测试-"+approvalUniqueSuffix(), "upload")
@@ -45,7 +47,8 @@ func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 	}
 
 	jobCh := make(chan postgres.ExecutionJob, 1)
-	service := NewService(approvalRepo, jobRepo, taskRepo, jobCh)
+	eventService := taskevents.New(eventRepo)
+	service := NewService(approvalRepo, jobRepo, taskRepo, jobCh, eventService)
 
 	updatedApproval, err := service.Approve(ctx, approvalRecord.ID)
 	if err != nil {
@@ -83,6 +86,20 @@ func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 	if updatedTask.Status != models.StatusExecuting {
 		t.Fatalf("expected task status %q, got %q", models.StatusExecuting, updatedTask.Status)
 	}
+
+	events, err := eventRepo.ListByTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("list task events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 task events, got %d", len(events))
+	}
+	if events[0].EventType != "approval.approved" {
+		t.Fatalf("expected first event type %q, got %q", "approval.approved", events[0].EventType)
+	}
+	if events[1].EventType != "job.queued" {
+		t.Fatalf("expected second event type %q, got %q", "job.queued", events[1].EventType)
+	}
 }
 
 func TestRejectUpdatesApprovalAndTask(t *testing.T) {
@@ -91,6 +108,7 @@ func TestRejectUpdatesApprovalAndTask(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	ctx := approvalTestContext(t)
 
 	resource, err := resourceRepo.Create(ctx, "审批拒绝测试-"+approvalUniqueSuffix(), "upload")
@@ -114,7 +132,8 @@ func TestRejectUpdatesApprovalAndTask(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 1))
+	eventService := taskevents.New(eventRepo)
+	service := NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 1), eventService)
 	reason := "方案不完善"
 
 	updatedApproval, err := service.Reject(ctx, approvalRecord.ID, reason)
@@ -140,6 +159,17 @@ func TestRejectUpdatesApprovalAndTask(t *testing.T) {
 	}
 	if updatedTask.ErrorMessage == nil || *updatedTask.ErrorMessage != reason {
 		t.Fatalf("expected task error message %q, got %#v", reason, updatedTask.ErrorMessage)
+	}
+
+	events, err := eventRepo.ListByTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("list task events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 task event, got %d", len(events))
+	}
+	if events[0].EventType != "approval.rejected" {
+		t.Fatalf("expected event type %q, got %q", "approval.rejected", events[0].EventType)
 	}
 }
 
@@ -172,7 +202,7 @@ func TestApproveAlreadyDecidedReturnsError(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2))
+	service := NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2), nil)
 	if _, err := service.Approve(ctx, approvalRecord.ID); err != nil {
 		t.Fatalf("first approve: %v", err)
 	}

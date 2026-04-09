@@ -18,6 +18,8 @@ const (
 	defaultEmbeddingModel     = "Qwen/Qwen3-Embedding-8B"
 	defaultEmbeddingDim       = 1024
 	defaultRerankerModel      = "Qwen/Qwen3-Reranker-8B"
+	defaultLogLevel           = "info"
+	defaultLogFormat          = "json"
 )
 
 // Config 保存从环境变量、.env 和默认 YAML 配置解析出的运行时参数。
@@ -31,12 +33,17 @@ type Config struct {
 	EmbeddingModel     string
 	EmbeddingDim       int
 	RerankerModel      string
+
+	LogLevel     string
+	LogFormat    string
+	LogAddSource bool
 }
 
 // fileConfig 对应默认 YAML 配置文件的顶层结构。
 type fileConfig struct {
 	Server serverConfig `yaml:"server"`
 	AI     aiConfig     `yaml:"ai"`
+	Log    logConfig    `yaml:"log"`
 }
 
 // serverConfig 描述服务端口等服务级默认配置。
@@ -53,6 +60,13 @@ type aiConfig struct {
 	RerankerModel      string `yaml:"reranker_model"`
 }
 
+// logConfig 描述日志级别、输出格式和是否附带源码位置。
+type logConfig struct {
+	Level     string `yaml:"level"`
+	Format    string `yaml:"format"`
+	AddSource bool   `yaml:"add_source"`
+}
+
 // Load 按“进程环境变量 -> .env -> config/default.yaml -> 硬编码默认值”的优先级解析配置。
 func Load() Config {
 	defaults := loadDefaultFileConfig()
@@ -67,6 +81,9 @@ func Load() Config {
 		EmbeddingModel:     resolveString("EMBEDDING_MODEL", dotenvValues, defaults.AI.EmbeddingModel, defaultEmbeddingModel),
 		EmbeddingDim:       resolveInt("EMBEDDING_DIM", dotenvValues, defaults.AI.EmbeddingDim, defaultEmbeddingDim),
 		RerankerModel:      resolveString("RERANKER_MODEL", dotenvValues, defaults.AI.RerankerModel, defaultRerankerModel),
+		LogLevel:           resolveString("LOG_LEVEL", dotenvValues, defaults.Log.Level, defaultLogLevel),
+		LogFormat:          resolveString("LOG_FORMAT", dotenvValues, defaults.Log.Format, defaultLogFormat),
+		LogAddSource:       resolveBool("LOG_ADD_SOURCE", dotenvValues, defaults.Log.AddSource, false),
 	}
 }
 
@@ -99,11 +116,11 @@ func (c Config) ValidateForServer() error {
 	}
 
 	if len(missing) > 0 {
-		return fmt.Errorf("missing required config: %s", strings.Join(missing, ", "))
+		return fmt.Errorf("缺少必填配置：%s", strings.Join(missing, ", "))
 	}
 
 	if c.EmbeddingDim <= 0 {
-		return fmt.Errorf("invalid EMBEDDING_DIM: %d", c.EmbeddingDim)
+		return fmt.Errorf("EMBEDDING_DIM 无效：%d", c.EmbeddingDim)
 	}
 
 	return nil
@@ -203,6 +220,23 @@ func resolveInt(key string, dotenvValues map[string]string, fileValue int, fallb
 	return fallback
 }
 
+// resolveBool 按既定优先级解析布尔配置项。
+func resolveBool(key string, dotenvValues map[string]string, fileValue bool, fallback bool) bool {
+	if value, ok := parseBool(strings.TrimSpace(os.Getenv(key))); ok {
+		return value
+	}
+
+	if value, ok := parseBool(strings.TrimSpace(dotenvValues[key])); ok {
+		return value
+	}
+
+	if fileValue {
+		return true
+	}
+
+	return fallback
+}
+
 // parseInt 在解析失败时返回 false，便于上层继续走回退逻辑。
 func parseInt(value string) (int, bool) {
 	if value == "" {
@@ -215,6 +249,20 @@ func parseInt(value string) (int, bool) {
 	}
 
 	return number, true
+}
+
+// parseBool 在解析失败时返回 false，便于上层继续走回退逻辑。
+func parseBool(value string) (bool, bool) {
+	if value == "" {
+		return false, false
+	}
+
+	boolean, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, false
+	}
+
+	return boolean, true
 }
 
 // findUpward 会向上遍历父目录，让本地工具从不同工作目录执行时都能找到目标文件。

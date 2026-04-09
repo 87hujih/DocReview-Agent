@@ -86,14 +86,14 @@ func NewTaskHandler(svc *taskservice.Service, repo *postgres.TaskRepo) *TaskHand
 func (h *TaskHandler) Create(requestCtx context.Context, ctx *app.RequestContext) {
 	var request createTaskRequest
 	if err := json.Unmarshal(ctx.Request.Body(), &request); err != nil {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "resource_id and instruction are required"})
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "resource_id 和 instruction 不能为空"})
 		return
 	}
 
 	request.ResourceID = strings.TrimSpace(request.ResourceID)
 	request.Instruction = strings.TrimSpace(request.Instruction)
 	if request.ResourceID == "" || request.Instruction == "" {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "resource_id and instruction are required"})
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "resource_id 和 instruction 不能为空"})
 		return
 	}
 
@@ -101,13 +101,13 @@ func (h *TaskHandler) Create(requestCtx context.Context, ctx *app.RequestContext
 	if err != nil {
 		switch {
 		case errors.Is(err, taskservice.ErrInstructionRequired):
-			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "resource_id and instruction are required"})
+			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "resource_id 和 instruction 不能为空"})
 		case errors.Is(err, taskservice.ErrResourceNotFound):
-			ctx.JSON(consts.StatusNotFound, map[string]string{"error": "resource not found"})
+			ctx.JSON(consts.StatusNotFound, map[string]string{"error": "资源不存在"})
 		case errors.Is(err, taskservice.ErrResourceCurrentVersionNotFound):
-			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "resource current version not found"})
+			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "资源当前版本不存在"})
 		default:
-			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to create task"})
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "创建任务失败"})
 		}
 		return
 	}
@@ -121,7 +121,7 @@ func (h *TaskHandler) Create(requestCtx context.Context, ctx *app.RequestContext
 func (h *TaskHandler) List(requestCtx context.Context, ctx *app.RequestContext) {
 	tasks, err := h.taskService.ListTasks(requestCtx)
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to list tasks"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务列表失败"})
 		return
 	}
 
@@ -139,11 +139,11 @@ func (h *TaskHandler) List(requestCtx context.Context, ctx *app.RequestContext) 
 func (h *TaskHandler) GetByID(requestCtx context.Context, ctx *app.RequestContext) {
 	task, steps, err := h.taskService.GetTask(requestCtx, ctx.Param("id"))
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get task"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务失败"})
 		return
 	}
 	if task == nil {
-		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "task not found"})
+		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "任务不存在"})
 		return
 	}
 
@@ -162,17 +162,17 @@ func (h *TaskHandler) GetByID(requestCtx context.Context, ctx *app.RequestContex
 func (h *TaskHandler) GetArtifacts(requestCtx context.Context, ctx *app.RequestContext) {
 	task, err := h.taskRepo.GetByID(requestCtx, ctx.Param("id"))
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get task"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务失败"})
 		return
 	}
 	if task == nil {
-		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "task not found"})
+		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "任务不存在"})
 		return
 	}
 
 	artifacts, err := h.taskRepo.GetArtifacts(requestCtx, task.ID)
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "failed to get task artifacts"})
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务产物失败"})
 		return
 	}
 

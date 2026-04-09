@@ -12,13 +12,13 @@ import (
 
 var (
 	// ErrApprovalNotFound 表示审批记录不存在。
-	ErrApprovalNotFound = errors.New("approval not found")
+	ErrApprovalNotFound = errors.New("审批不存在")
 	// ErrApprovalAlreadyDecided 表示审批已做出决策，不能重复操作。
-	ErrApprovalAlreadyDecided = errors.New("approval already decided")
+	ErrApprovalAlreadyDecided = errors.New("审批已处理")
 	// ErrReasonRequired 表示拒绝审批时必须提供原因。
-	ErrReasonRequired = errors.New("reason is required")
+	ErrReasonRequired = errors.New("必须提供原因")
 	// ErrTaskNotFound 表示审批对应的任务不存在。
-	ErrTaskNotFound = errors.New("task not found")
+	ErrTaskNotFound = errors.New("任务不存在")
 )
 
 // Service 负责审批通过/拒绝时的业务协调。
@@ -132,6 +132,6 @@ func (s *Service) enqueueJob(job postgres.ExecutionJob) {
 	select {
 	case s.jobCh <- job:
 	default:
-		log.Printf("WARN: execution job channel is full, job=%s", job.ID)
+		log.Printf("警告：执行任务通道已满，job=%s", job.ID)
 	}
 }
