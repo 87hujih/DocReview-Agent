@@ -1,0 +1,38 @@
+.list {
+  display: grid;
+  gap: var(--terminal-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  gap: var(--terminal-space-3);
+  padding-left: var(--terminal-space-4);
+  border-left: var(--terminal-border-width) solid var(--terminal-border);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--terminal-space-3);
+  align-items: center;
+}
+
+.stepName {
+  color: var(--terminal-text-strong);
+  letter-spacing: 0.12em;
+}
+
+.meta {
+  display: grid;
+  gap: var(--terminal-space-2);
+}
+
+@media (max-width: 640px) {
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

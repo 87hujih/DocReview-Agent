@@ -1,0 +1,32 @@
+.line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--terminal-space-3);
+  align-items: baseline;
+  color: var(--terminal-text);
+}
+
+.prefix {
+  color: var(--terminal-info);
+}
+
+.timestamp {
+  color: var(--terminal-text-dim);
+}
+
+.message {
+  color: inherit;
+  word-break: break-word;
+}
+
+.line[data-tone="success"] {
+  color: var(--terminal-success);
+}
+
+.line[data-tone="warning"] {
+  color: var(--terminal-warning);
+}
+
+.line[data-tone="error"] {
+  color: var(--terminal-warning);
+}
