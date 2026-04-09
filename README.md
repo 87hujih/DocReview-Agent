@@ -1,128 +1,95 @@
-# 企业文档智能协作平台 MVP
+# DocReview Agent
 
-这份文档是独立于根目录 `README.md` 的补充说明，专门服务当前的简历可用 MVP 版本，不替代原有项目主说明。
+一个支持企业文档检索问答、修订建议生成、人工审批和异步执行的任务型 AI 应用。
 
-## 项目简介
+## 核心功能
 
-企业文档智能协作平台 MVP 是一个面向 `AI 应用开发实习` 场景收敛出来的可演示项目。  
-它不是纯聊天 Demo，也不是抽象 Agent 框架，而是一个围绕企业文档处理闭环构建的任务型 AI 应用。
+- **Citation-aware RAG**：基于 pgvector 的语义检索 + pg_trgm 词法检索 + Reranker 混合排序，chunk 级别引用追踪
+- **任务驱动多 Agent 工作流**：Planner → Retriever → Reviewer → Editor 四步编排，每步产出结构化 artifact
+- **Human-in-the-loop 审批**：Agent 产出的修订方案需人工审批确认后才执行，支持批准与拒绝
+- **异步执行与文档版本管理**：channel-based worker pool，审批通过后异步将 diff 应用到文档，生成新版本
+- **结构化 Diff 提案**：逐章节 original/revised 对比，每条修订附带 reason 和 citation 来源引用
+- **全链路可观测性**：结构化 JSON 日志（slog）、HTTP 请求追踪（X-Request-ID）、任务事件审计（task_events 表）
 
-当前 MVP 的核心目标是打通这条链路：
+## 本地启动
 
-`资源浏览 -> 检索引用 -> 任务创建 -> 修订提案 -> 人工审批 -> 异步执行 -> 新版本沉淀`
+### 前置条件
 
-## 一句话定位
+- Go >= 1.26
+- Node.js >= 18
+- Docker（用于启动本地 PostgreSQL）
+- 硅基流动 API Key（[SiliconFlow](https://siliconflow.cn)）
 
-`一个支持企业文档检索问答、修订建议生成、人工审批和异步执行的任务型 AI 应用。`
+### 步骤
 
-## MVP 范围
+```bash
+# 1. 克隆仓库
+git clone https://github.com/87hujih/Agent_Project.git
+cd Agent_Project
 
-第一版必须完成：
+# 2. 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入 SILICONFLOW_API_KEY 和 DATABASE_URL
 
-- 文档资源浏览
-- 文档内容检索与 citation 展示
-- 基于指定文档创建“审阅与修订”任务
-- 生成结构化审阅结论与 diff 预览
-- 人工审批通过或拒绝提案
-- 审批通过后异步执行并生成新文档版本
-- 在任务详情页回看状态、步骤、产物和结果
+# 3. 启动 PostgreSQL（pgvector/pgvector:pg16）
+docker compose up -d
 
-第一版明确不优先做：
+# 4. 启动后端（迁移在启动时自动执行）
+cd apps/server && go run ./cmd/server
 
-- 飞书真实写回
-- 多连接器接入
-- 多租户
-- 重权限系统
-- 通用 Agent 平台配置中心
+# 5. 新开终端，启动前端
+cd apps/web && npm install && npm run dev
 
-## 当前技术方案
+# 6. 打开浏览器
+# http://localhost:3000
+```
 
-- 前端：`Next.js`、`React`、`TypeScript`
-- 后端：`Go`、`Eino`、`Hertz`
-- 数据库：`PostgreSQL`
-- 向量能力：`pgvector`
-- 部署：`Docker Compose`
+> 如果使用远程或已有的 PostgreSQL 实例，跳过步骤 3，直接在 `.env` 中配置 `DATABASE_URL` 即可。数据库需要预装 `pgvector` 和 `pg_trgm` 扩展，迁移脚本会自动创建。
 
-## 核心对象
+## 演示走查
 
-第一版围绕以下对象组织：
+1. 打开「资源库」页面（`/resources`），浏览已导入的企业文档（employee-handbook、security-policy）
+2. 选择一份文档，点击「创建修订任务」，输入修订要求（如"检查考勤相关条款是否有歧义"）
+3. 系统自动执行 Agent 工作流，在「任务详情」页面观察实时状态流转：`pending → planning → retrieving → reviewing → drafting → awaiting_approval`
+4. 工作流完成后，打开「审批中心」页面（`/approvals`），查看修订提案的结构化 diff 预览，点击「批准」
+5. 返回任务详情页，确认状态变为 `completed`，新文档版本已生成
 
-- `Resource`
-- `ResourceVersion`
-- `Task`
-- `TaskStep`
-- `TaskArtifact`
-- `Approval`
-- `ExecutionJob`
+## 技术亮点
 
-其中 `Task` 是主对象，聊天不是主对象。
+1. **Citation-aware RAG pipeline**：pgvector 语义检索 + pg_trgm 词法检索 + SiliconFlow Reranker 混合排序，chunk 级别引用追踪，检索结果携带任务内展示用 `citation_id` 和 `section_title`
+2. **任务驱动多 Agent 工作流**：Planner → Retriever → Reviewer → Editor 四步编排，每步产出结构化 artifact（review_summary、citations、diff_preview）
+3. **Human-in-the-loop 审批**：Agent 产出的修订方案不直接生效，需人工审批确认后才执行
+4. **异步执行与文档版本管理**：channel-based worker pool，审批通过后异步将 diff 应用到文档，生成新版本，支持版本追溯
+5. **结构化 Diff 提案**：逐章节 original/revised 对比，每条修订附带 reason 和 citation 来源引用
+6. **全链路可观测性**：基于标准库 slog 的结构化 JSON 日志，HTTP 请求自动注入 X-Request-ID，任务全生命周期事件审计落库（task_events），日志失败不阻塞业务流程
 
-## 页面形态
+## 目录结构
 
-MVP 最终应至少包含以下页面：
+```
+Agent_Project/
+├── apps/
+│   ├── server/                Go 后端（Hertz 框架）
+│   │   ├── cmd/server/        入口
+│   │   └── internal/
+│   │       ├── agent/         LLM Agent（planner、reviewer、editor、executor）
+│   │       ├── approval/      审批服务
+│   │       ├── config/        配置加载（YAML + .env + 环境变量）
+│   │       ├── job/           异步执行 worker pool
+│   │       ├── knowledge/     知识层（chunker、embedder、ingest、retriever、reranker、citation）
+│   │       ├── observability/ 可观测性（结构化日志、context 传播）
+│   │       ├── server/        HTTP 层（handlers、router、middleware）
+│   │       ├── storage/       数据持久化（postgres、migrations）
+│   │       └── task/          任务模型、服务、工作流编排、事件记录
+│   └── web/                   Next.js 14 前端
+│       ├── app/               App Router 页面
+│       ├── components/        UI 组件
+│       └── lib/api/           API client 层
+├── config/                    默认配置（default.yaml）
+├── demo-data/documents/       演示文档
+├── deploy/                    生产部署配置
+└── .github/workflows/         CI/CD
+```
 
-- `首页工作台`
-- `资源页`
-- `任务创建页`
-- `任务详情页`
-- `审批页`
+## 许可证
 
-聊天页如果保留，也只作为辅助入口，不作为产品主入口。
-
-## 后端能力边界
-
-后端当前应优先完成：
-
-- 资源导入与读取
-- 文档切片、检索与 citation
-- `Planner -> Retriever -> Reviewer -> Editor` 最小 Agent 工作流
-- 审批状态流转
-- 异步执行与新版本落库
-
-## 演示流程
-
-适合面试或作品展示的演示顺序：
-
-1. 打开资源页，查看系统内 demo 文档
-2. 选择一份文档发起“审阅与修订”任务
-3. 在任务详情页查看 citation、审阅摘要和 diff 预览
-4. 在审批页批准提案
-5. 返回任务详情页查看异步执行完成和新版本生成结果
-
-## 适合写进简历的亮点
-
-- 基于 `RAG + citation` 实现文档检索与证据引用
-- 设计了任务驱动的 Agent 工作流，而不是单纯聊天交互
-- 实现了 `修订提案 -> 审批 -> 异步执行` 的业务闭环
-- 使用结构化产物和 diff 预览提升结果可解释性
-- 支持任务状态追踪、执行结果沉淀和版本回看
-
-## 相关文档
-
-- [简历版 MVP 实施计划](/G:/gofile/Agent_Project/docs/superpowers/plans/2026-04-01-resume-ready-enterprise-document-ai-mvp.md)
-- [CI/CD 部署文档](/G:/gofile/Agent_Project/docs/deployment.md)
-- [根目录 README](/G:/gofile/Agent_Project/README.md)
-
-## 当前说明
-
-根目录 `README.md` 保留为原始主说明文档。  
-本文件只服务当前 MVP 收敛与简历表达，不覆盖原文档。
-
-## CI/CD
-
-当前仓库已规划为：
-
-- `CI`: `pull_request` 与 `push main` 触发
-- `CD`: `v*` tag 触发正式发布
-- 镜像仓库：`GHCR`
-- 部署方式：`SSH + Docker Compose`
-
-镜像命名约定：
-
-- `ghcr.io/87hujih/docreview-agent-server:<tag>`
-- `ghcr.io/87hujih/docreview-agent-web:<tag>`
-
-远程访问方式：
-
-- 前端：`http://<server-ip>:3000`
-- 后端：`http://<server-ip>:8080`
+MIT
