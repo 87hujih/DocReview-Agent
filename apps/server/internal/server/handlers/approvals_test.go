@@ -20,7 +20,7 @@ func TestListApprovalsHandler(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2)))
+	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2), nil))
 	engine := server.New()
 	engine.GET("/api/approvals", handler.List)
 
@@ -59,7 +59,7 @@ func TestApproveApprovalHandler(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2)))
+	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2), nil))
 	engine := server.New()
 	engine.POST("/api/approvals/:id/approve", handler.Approve)
 
@@ -103,7 +103,7 @@ func TestRejectApprovalHandler(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2)))
+	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2), nil))
 	engine := server.New()
 	engine.POST("/api/approvals/:id/reject", handler.Reject)
 
@@ -179,7 +179,7 @@ func TestApproveApprovalNotFound(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2)))
+	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2), nil))
 	engine := server.New()
 	engine.POST("/api/approvals/:id/approve", handler.Approve)
 

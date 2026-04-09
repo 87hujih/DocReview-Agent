@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 
 	"agent_project/apps/server/internal/storage/postgres"
+	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/workflow"
 )
 
@@ -23,14 +25,21 @@ type Service struct {
 	taskRepo     *postgres.TaskRepo
 	resourceRepo *postgres.ResourceRepo
 	orchestrator *workflow.Orchestrator
+	eventService *taskevents.Service
 }
 
 // New 创建任务服务。
-func New(taskRepo *postgres.TaskRepo, resourceRepo *postgres.ResourceRepo, orch *workflow.Orchestrator) *Service {
+func New(
+	taskRepo *postgres.TaskRepo,
+	resourceRepo *postgres.ResourceRepo,
+	orch *workflow.Orchestrator,
+	eventService *taskevents.Service,
+) *Service {
 	return &Service{
 		taskRepo:     taskRepo,
 		resourceRepo: resourceRepo,
 		orchestrator: orch,
+		eventService: eventService,
 	}
 }
 
@@ -62,6 +71,18 @@ func (s *Service) CreateTask(ctx context.Context, resourceID string, instruction
 		return nil, err
 	}
 
+	s.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "task_service",
+		Level:     "info",
+		EventType: "task.created",
+		Message:   "任务已创建，等待编排执行",
+		Payload: map[string]any{
+			"resource_id": task.ResourceID,
+			"status":      task.Status,
+		},
+	})
+
 	if s.orchestrator != nil {
 		go s.orchestrator.Orchestrate(context.Background(), task)
 	}
@@ -90,4 +111,14 @@ func (s *Service) GetTask(ctx context.Context, id string) (*postgres.Task, []pos
 // ListTasks 返回任务列表。
 func (s *Service) ListTasks(ctx context.Context) ([]postgres.Task, error) {
 	return s.taskRepo.List(ctx)
+}
+
+func (s *Service) recordEvent(ctx context.Context, input taskevents.RecordInput) {
+	if s.eventService == nil {
+		return
+	}
+
+	if _, err := s.eventService.Record(ctx, input); err != nil {
+		log.Printf("警告：记录任务事件失败：task=%s event=%s err=%v", input.TaskID, input.EventType, err)
+	}
 }

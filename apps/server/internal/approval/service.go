@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"agent_project/apps/server/internal/storage/postgres"
+	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
 )
 
@@ -27,6 +28,7 @@ type Service struct {
 	jobRepo      *postgres.JobRepo
 	taskRepo     *postgres.TaskRepo
 	jobCh        chan<- postgres.ExecutionJob
+	eventService *taskevents.Service
 }
 
 // NewService 构造审批服务。
@@ -35,12 +37,14 @@ func NewService(
 	jobRepo *postgres.JobRepo,
 	taskRepo *postgres.TaskRepo,
 	jobCh chan<- postgres.ExecutionJob,
+	eventService *taskevents.Service,
 ) *Service {
 	return &Service{
 		approvalRepo: approvalRepo,
 		jobRepo:      jobRepo,
 		taskRepo:     taskRepo,
 		jobCh:        jobCh,
+		eventService: eventService,
 	}
 }
 
@@ -69,6 +73,33 @@ func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.App
 		return nil, err
 	}
 
+	s.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		RunID:     stringPointer(job.ID),
+		Source:    "approval_service",
+		Level:     "info",
+		EventType: "approval.approved",
+		Message:   "审批已通过，任务进入执行阶段",
+		Payload: map[string]any{
+			"approval_id": approvalRecord.ID,
+			"job_id":      job.ID,
+			"status":      models.StatusExecuting,
+		},
+	})
+	s.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		RunID:     stringPointer(job.ID),
+		Source:    "approval_service",
+		Level:     "info",
+		EventType: "job.queued",
+		Message:   "执行作业已创建，等待 worker 领取",
+		Payload: map[string]any{
+			"approval_id": approvalRecord.ID,
+			"job_id":      job.ID,
+			"job_status":  job.Status,
+		},
+	})
+
 	s.enqueueJob(*job)
 
 	return s.approvalRepo.GetByID(ctx, approvalID)
@@ -93,6 +124,19 @@ func (s *Service) Reject(ctx context.Context, approvalID string, reason string) 
 	if err := s.taskRepo.UpdateStatus(ctx, task.ID, models.StatusFailed, &reason); err != nil {
 		return nil, err
 	}
+
+	s.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "approval_service",
+		Level:     "warn",
+		EventType: "approval.rejected",
+		Message:   "审批已拒绝，任务已标记为失败",
+		Payload: map[string]any{
+			"approval_id": approvalRecord.ID,
+			"reason":      reason,
+			"status":      models.StatusFailed,
+		},
+	})
 
 	return s.approvalRepo.GetByID(ctx, approvalRecord.ID)
 }
@@ -134,4 +178,18 @@ func (s *Service) enqueueJob(job postgres.ExecutionJob) {
 	default:
 		log.Printf("警告：执行任务通道已满，job=%s", job.ID)
 	}
+}
+
+func (s *Service) recordEvent(ctx context.Context, input taskevents.RecordInput) {
+	if s.eventService == nil {
+		return
+	}
+
+	if _, err := s.eventService.Record(ctx, input); err != nil {
+		log.Printf("警告：记录任务事件失败：task=%s event=%s err=%v", input.TaskID, input.EventType, err)
+	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }

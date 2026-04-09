@@ -33,6 +33,7 @@ type TaskEventCreateParams struct {
 	EventType string
 	Message   string
 	Payload   []byte
+	CreatedAt time.Time
 }
 
 // TaskEventRepo 封装 task_events 表的访问能力。
@@ -51,12 +52,16 @@ func (r *TaskEventRepo) Add(ctx context.Context, params TaskEventCreateParams) (
 	if len(payload) == 0 {
 		payload = []byte(`{}`)
 	}
+	createdAt := params.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
 
 	event, err := scanTaskEvent(r.pool.QueryRow(ctx, `
-		INSERT INTO task_events (task_id, run_id, step_name, source, level, event_type, message, payload)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+		INSERT INTO task_events (task_id, run_id, step_name, source, level, event_type, message, payload, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
 		RETURNING id, task_id, run_id, step_name, source, level, event_type, message, payload, created_at
-	`, params.TaskID, params.RunID, params.StepName, params.Source, params.Level, params.EventType, params.Message, string(payload)))
+	`, params.TaskID, params.RunID, params.StepName, params.Source, params.Level, params.EventType, params.Message, string(payload), createdAt))
 	if err != nil {
 		return nil, err
 	}

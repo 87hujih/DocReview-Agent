@@ -7,6 +7,7 @@ import (
 
 	executoragent "agent_project/apps/server/internal/agent/executor"
 	"agent_project/apps/server/internal/storage/postgres"
+	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
 )
 
@@ -18,6 +19,7 @@ type Worker struct {
 	jobRepo  *postgres.JobRepo
 	executor *executoragent.Executor
 	taskRepo *postgres.TaskRepo
+	eventSvc *taskevents.Service
 }
 
 // New 构造 channel-based worker。
@@ -26,6 +28,7 @@ func New(
 	executor *executoragent.Executor,
 	taskRepo *postgres.TaskRepo,
 	bufSize int,
+	eventService *taskevents.Service,
 ) *Worker {
 	if bufSize <= 0 {
 		bufSize = 1
@@ -36,6 +39,7 @@ func New(
 		jobRepo:  jobRepo,
 		executor: executor,
 		taskRepo: taskRepo,
+		eventSvc: eventService,
 	}
 }
 
@@ -75,6 +79,10 @@ func (w *Worker) processPendingJobs(ctx context.Context) {
 			return
 		}
 
+		w.recordJobEvent(ctx, job, "info", "job.claimed", "执行作业已被 worker 领取", map[string]any{
+			"approval_id": job.ApprovalID,
+			"job_status":  job.Status,
+		})
 		w.processJob(ctx, job)
 	}
 }
@@ -89,6 +97,10 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 		if updateErr := w.transitionTask(ctx, job.TaskID, models.StatusFailed, &errorMessage); updateErr != nil {
 			log.Printf("错误：将任务切换为失败状态时出错：task=%s err=%v", job.TaskID, updateErr)
 		}
+		w.recordJobEvent(ctx, job, "error", "job.failed", "执行作业执行失败", map[string]any{
+			"approval_id":   job.ApprovalID,
+			"error_message": errorMessage,
+		})
 		return
 	}
 
@@ -96,6 +108,10 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 		log.Printf("错误：更新已完成作业状态失败：job=%s err=%v", job.ID, err)
 		return
 	}
+	w.recordJobEvent(ctx, job, "info", "job.completed", "执行作业已完成", map[string]any{
+		"approval_id":    job.ApprovalID,
+		"new_version_id": newVersionID,
+	})
 	if err := w.transitionTask(ctx, job.TaskID, models.StatusCompleted, nil); err != nil {
 		log.Printf("错误：将任务切换为已完成状态时出错：task=%s err=%v", job.TaskID, err)
 	}
@@ -115,4 +131,30 @@ func (w *Worker) transitionTask(ctx context.Context, taskID string, to string, e
 	}
 
 	return w.taskRepo.UpdateStatus(ctx, taskID, to, errorMessage)
+}
+
+func (w *Worker) recordJobEvent(
+	ctx context.Context,
+	job *postgres.ExecutionJob,
+	level string,
+	eventType string,
+	message string,
+	payload map[string]any,
+) {
+	if w.eventSvc == nil {
+		return
+	}
+
+	runID := job.ID
+	if _, err := w.eventSvc.Record(ctx, taskevents.RecordInput{
+		TaskID:    job.TaskID,
+		RunID:     &runID,
+		Source:    "job_worker",
+		Level:     level,
+		EventType: eventType,
+		Message:   message,
+		Payload:   payload,
+	}); err != nil {
+		log.Printf("警告：记录任务事件失败：task=%s run=%s event=%s err=%v", job.TaskID, job.ID, eventType, err)
+	}
 }
