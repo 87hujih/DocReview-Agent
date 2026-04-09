@@ -7,9 +7,12 @@ import (
 	"path/filepath"
 
 	"agent_project/apps/server/internal/agent/editor"
+	"agent_project/apps/server/internal/agent/executor"
 	"agent_project/apps/server/internal/agent/planner"
 	"agent_project/apps/server/internal/agent/reviewer"
+	"agent_project/apps/server/internal/approval"
 	appconfig "agent_project/apps/server/internal/config"
+	"agent_project/apps/server/internal/job"
 	"agent_project/apps/server/internal/knowledge/embedder"
 	"agent_project/apps/server/internal/knowledge/ingest"
 	"agent_project/apps/server/internal/knowledge/reranker"
@@ -43,6 +46,7 @@ func main() {
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
 
 	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
 	if err != nil {
@@ -73,13 +77,20 @@ func main() {
 		log.Printf("WARN: demo data import failed: %v", err)
 	}
 
+	exec := executor.New(taskRepo, resourceRepo)
+	worker := job.New(jobRepo, exec, taskRepo, 100)
+	worker.Start(ctx, 3)
+
 	resourceHandler := handlers.NewResourceHandler(resourceRepo, retrieverService)
 	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService)
 	taskService := taskservice.New(taskRepo, resourceRepo, orchestrator)
 	taskHandler := handlers.NewTaskHandler(taskService, taskRepo)
+	approvalService := approval.NewService(approvalRepo, jobRepo, taskRepo, worker.JobCh())
+	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	h := router.New(cfg, router.Deps{
 		ResourceHandler: resourceHandler,
 		TaskHandler:     taskHandler,
+		ApprovalHandler: approvalHandler,
 	})
 
 	if err := h.Run(); err != nil {

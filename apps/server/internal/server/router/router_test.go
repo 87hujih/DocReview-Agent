@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	appconfig "agent_project/apps/server/internal/config"
+	"agent_project/apps/server/internal/server/handlers"
+
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
@@ -27,5 +30,17 @@ func TestRegisterExposesHealthEndpoint(t *testing.T) {
 
 	if !strings.Contains(body, "\"service\":\"server\"") {
 		t.Fatalf("expected body to contain service field, got %q", body)
+	}
+}
+
+func TestNewRegistersApprovalRoutesWhenHandlerProvided(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, Deps{
+		ApprovalHandler: handlers.NewApprovalHandler(nil),
+	})
+
+	response := ut.PerformRequest(h.Engine, "GET", "/api/approvals", nil).Result()
+
+	if response.StatusCode() != consts.StatusInternalServerError {
+		t.Fatalf("expected status %d when approval route is registered without service, got %d", consts.StatusInternalServerError, response.StatusCode())
 	}
 }

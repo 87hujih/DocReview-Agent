@@ -183,6 +183,237 @@ func TestApprovalRepoCreate(t *testing.T) {
 	}
 }
 
+func TestApprovalRepoReadListAndUpdateStatus(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "审批扩展测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	firstTask, err := taskRepo.Create(ctx, resource.ID, "请审批第一份修订")
+	if err != nil {
+		t.Fatalf("create first task: %v", err)
+	}
+
+	firstApproval, err := approvalRepo.Create(ctx, firstTask.ID)
+	if err != nil {
+		t.Fatalf("create first approval: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	secondTask, err := taskRepo.Create(ctx, resource.ID, "请审批第二份修订")
+	if err != nil {
+		t.Fatalf("create second task: %v", err)
+	}
+
+	secondApproval, err := approvalRepo.Create(ctx, secondTask.ID)
+	if err != nil {
+		t.Fatalf("create second approval: %v", err)
+	}
+
+	gotByID, err := approvalRepo.GetByID(ctx, firstApproval.ID)
+	if err != nil {
+		t.Fatalf("get approval by id: %v", err)
+	}
+	if gotByID == nil {
+		t.Fatal("expected approval, got nil")
+	}
+	if gotByID.TaskID != firstTask.ID {
+		t.Fatalf("expected task id %q, got %q", firstTask.ID, gotByID.TaskID)
+	}
+
+	gotByTaskID, err := approvalRepo.GetByTaskID(ctx, secondTask.ID)
+	if err != nil {
+		t.Fatalf("get approval by task id: %v", err)
+	}
+	if gotByTaskID == nil {
+		t.Fatal("expected approval by task id, got nil")
+	}
+	if gotByTaskID.ID != secondApproval.ID {
+		t.Fatalf("expected approval id %q, got %q", secondApproval.ID, gotByTaskID.ID)
+	}
+
+	rejectReason := "方案需要补充证据"
+	if err := approvalRepo.UpdateStatus(ctx, firstApproval.ID, "rejected", &rejectReason); err != nil {
+		t.Fatalf("update approval status: %v", err)
+	}
+
+	updatedApproval, err := approvalRepo.GetByID(ctx, firstApproval.ID)
+	if err != nil {
+		t.Fatalf("get updated approval: %v", err)
+	}
+	if updatedApproval == nil {
+		t.Fatal("expected updated approval, got nil")
+	}
+	if updatedApproval.Status != "rejected" {
+		t.Fatalf("expected status %q, got %q", "rejected", updatedApproval.Status)
+	}
+	if updatedApproval.RejectReason == nil || *updatedApproval.RejectReason != rejectReason {
+		t.Fatalf("expected reject reason %q, got %#v", rejectReason, updatedApproval.RejectReason)
+	}
+	if updatedApproval.DecidedAt == nil || updatedApproval.DecidedAt.IsZero() {
+		t.Fatal("expected decided_at to be set")
+	}
+
+	allApprovals, err := approvalRepo.List(ctx, "")
+	if err != nil {
+		t.Fatalf("list approvals: %v", err)
+	}
+	if len(allApprovals) < 2 {
+		t.Fatalf("expected at least 2 approvals, got %d", len(allApprovals))
+	}
+	if allApprovals[0].ID != secondApproval.ID {
+		t.Fatalf("expected latest approval %q first, got %q", secondApproval.ID, allApprovals[0].ID)
+	}
+
+	rejectedApprovals, err := approvalRepo.List(ctx, "rejected")
+	if err != nil {
+		t.Fatalf("list rejected approvals: %v", err)
+	}
+	if len(rejectedApprovals) != 1 {
+		t.Fatalf("expected 1 rejected approval, got %d", len(rejectedApprovals))
+	}
+	if rejectedApprovals[0].ID != firstApproval.ID {
+		t.Fatalf("expected rejected approval id %q, got %q", firstApproval.ID, rejectedApprovals[0].ID)
+	}
+}
+
+func TestJobRepoCRUD(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	jobRepo := NewJobRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "执行作业测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原文内容", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	firstTask, err := taskRepo.Create(ctx, resource.ID, "执行第一份修订")
+	if err != nil {
+		t.Fatalf("create first task: %v", err)
+	}
+	firstApproval, err := approvalRepo.Create(ctx, firstTask.ID)
+	if err != nil {
+		t.Fatalf("create first approval: %v", err)
+	}
+	firstJob, err := jobRepo.Create(ctx, firstTask.ID, firstApproval.ID)
+	if err != nil {
+		t.Fatalf("create first job: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	secondTask, err := taskRepo.Create(ctx, resource.ID, "执行第二份修订")
+	if err != nil {
+		t.Fatalf("create second task: %v", err)
+	}
+	secondApproval, err := approvalRepo.Create(ctx, secondTask.ID)
+	if err != nil {
+		t.Fatalf("create second approval: %v", err)
+	}
+	secondJob, err := jobRepo.Create(ctx, secondTask.ID, secondApproval.ID)
+	if err != nil {
+		t.Fatalf("create second job: %v", err)
+	}
+
+	gotJob, err := jobRepo.GetByID(ctx, firstJob.ID)
+	if err != nil {
+		t.Fatalf("get job by id: %v", err)
+	}
+	if gotJob == nil {
+		t.Fatal("expected job, got nil")
+	}
+	if gotJob.TaskID != firstTask.ID {
+		t.Fatalf("expected task id %q, got %q", firstTask.ID, gotJob.TaskID)
+	}
+	if gotJob.Status != "pending" {
+		t.Fatalf("expected status %q, got %q", "pending", gotJob.Status)
+	}
+
+	claimedJob, err := jobRepo.ClaimNext(ctx)
+	if err != nil {
+		t.Fatalf("claim next job: %v", err)
+	}
+	if claimedJob == nil {
+		t.Fatal("expected claimed job, got nil")
+	}
+	if claimedJob.ID != firstJob.ID {
+		t.Fatalf("expected earliest job %q, got %q", firstJob.ID, claimedJob.ID)
+	}
+	if claimedJob.Status != "running" {
+		t.Fatalf("expected running status, got %q", claimedJob.Status)
+	}
+	if claimedJob.StartedAt == nil || claimedJob.StartedAt.IsZero() {
+		t.Fatal("expected started_at to be set")
+	}
+
+	newVersionID := version.ID
+	if err := jobRepo.UpdateStatus(ctx, claimedJob.ID, "done", nil, &newVersionID); err != nil {
+		t.Fatalf("update claimed job status: %v", err)
+	}
+
+	updatedJob, err := jobRepo.GetByID(ctx, claimedJob.ID)
+	if err != nil {
+		t.Fatalf("get updated job: %v", err)
+	}
+	if updatedJob == nil {
+		t.Fatal("expected updated job, got nil")
+	}
+	if updatedJob.Status != "done" {
+		t.Fatalf("expected status %q, got %q", "done", updatedJob.Status)
+	}
+	if updatedJob.NewVersionID == nil || *updatedJob.NewVersionID != version.ID {
+		t.Fatalf("expected new version id %q, got %#v", version.ID, updatedJob.NewVersionID)
+	}
+	if updatedJob.CompletedAt == nil || updatedJob.CompletedAt.IsZero() {
+		t.Fatal("expected completed_at to be set")
+	}
+
+	secondClaimedJob, err := jobRepo.ClaimNext(ctx)
+	if err != nil {
+		t.Fatalf("claim second job: %v", err)
+	}
+	if secondClaimedJob == nil {
+		t.Fatal("expected second claimed job, got nil")
+	}
+	if secondClaimedJob.ID != secondJob.ID {
+		t.Fatalf("expected second job %q, got %q", secondJob.ID, secondClaimedJob.ID)
+	}
+
+	errMsg := "executor failed"
+	if err := jobRepo.UpdateStatus(ctx, secondClaimedJob.ID, "failed", &errMsg, nil); err != nil {
+		t.Fatalf("update failed job status: %v", err)
+	}
+
+	noPendingJob, err := jobRepo.ClaimNext(ctx)
+	if err != nil {
+		t.Fatalf("claim when no pending job: %v", err)
+	}
+	if noPendingJob != nil {
+		t.Fatalf("expected nil when no pending job, got %#v", noPendingJob)
+	}
+}
+
 func jsonEqual(left []byte, right []byte) bool {
 	leftNormalized := normalizeJSON(left)
 	rightNormalized := normalizeJSON(right)

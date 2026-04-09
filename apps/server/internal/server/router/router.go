@@ -12,6 +12,7 @@ import (
 type Deps struct {
 	ResourceHandler *handlers.ResourceHandler
 	TaskHandler     *handlers.TaskHandler
+	ApprovalHandler *handlers.ApprovalHandler
 }
 
 // New 构建 Hertz 服务，并只注册当前依赖已经就绪的路由。
@@ -23,6 +24,9 @@ func New(cfg appconfig.Config, deps Deps) *server.Hertz {
 	}
 	if deps.TaskHandler != nil {
 		registerTaskRoutes(h.Engine, deps.TaskHandler)
+	}
+	if deps.ApprovalHandler != nil {
+		registerApprovalRoutes(h.Engine, deps.ApprovalHandler)
 	}
 
 	return h
@@ -48,4 +52,12 @@ func registerTaskRoutes(engine *route.Engine, h *handlers.TaskHandler) {
 	api.GET("/tasks", h.List)
 	api.GET("/tasks/:id", h.GetByID)
 	api.GET("/tasks/:id/artifacts", h.GetArtifacts)
+}
+
+// registerApprovalRoutes 注册依赖审批 handler 的 API 路由。
+func registerApprovalRoutes(engine *route.Engine, h *handlers.ApprovalHandler) {
+	api := engine.Group("/api")
+	api.GET("/approvals", h.List)
+	api.POST("/approvals/:id/approve", h.Approve)
+	api.POST("/approvals/:id/reject", h.Reject)
 }
