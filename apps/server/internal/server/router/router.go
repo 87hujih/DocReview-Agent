@@ -13,14 +13,16 @@ import (
 
 // Deps 收集接入 HTTP 服务时需要注入的可选 handler。
 type Deps struct {
-	ResourceHandler *handlers.ResourceHandler
-	TaskHandler     *handlers.TaskHandler
-	ApprovalHandler *handlers.ApprovalHandler
+	ResourceHandler  *handlers.ResourceHandler
+	TaskHandler      *handlers.TaskHandler
+	ApprovalHandler  *handlers.ApprovalHandler
+	AssistantHandler *handlers.AssistantHandler
 }
 
 // New 构建 Hertz 服务，并只注册当前依赖已经就绪的路由。
 func New(cfg appconfig.Config, logger *slog.Logger, deps Deps) *server.Hertz {
 	h := server.Default(server.WithHostPorts(":" + cfg.ServerPort))
+	h.Use(servermiddleware.CORS())
 	if logger != nil {
 		h.Use(servermiddleware.RequestContext("server", logger))
 	}
@@ -34,6 +36,9 @@ func New(cfg appconfig.Config, logger *slog.Logger, deps Deps) *server.Hertz {
 	if deps.ApprovalHandler != nil {
 		registerApprovalRoutes(h.Engine, deps.ApprovalHandler)
 	}
+	if deps.AssistantHandler != nil {
+		registerAssistantRoutes(h.Engine, deps.AssistantHandler)
+	}
 
 	return h
 }
@@ -41,6 +46,7 @@ func New(cfg appconfig.Config, logger *slog.Logger, deps Deps) *server.Hertz {
 // Register 注册不依赖业务服务的基础路由。
 func Register(engine *route.Engine) {
 	engine.GET("/healthz", handlers.Health)
+	engine.OPTIONS("/api/*path", handlers.Preflight)
 }
 
 // registerResourceRoutes 注册依赖资源 handler 的 API 路由。
@@ -66,4 +72,16 @@ func registerApprovalRoutes(engine *route.Engine, h *handlers.ApprovalHandler) {
 	api.GET("/approvals", h.List)
 	api.POST("/approvals/:id/approve", h.Approve)
 	api.POST("/approvals/:id/reject", h.Reject)
+}
+
+// registerAssistantRoutes 注册助手会话相关 API 路由。
+func registerAssistantRoutes(engine *route.Engine, h *handlers.AssistantHandler) {
+	api := engine.Group("/api/assistant")
+	api.GET("/sessions", h.ListSessions)
+	api.GET("/sessions/:id", h.GetConversation)
+	api.DELETE("/sessions/:id", h.DeleteSession)
+	api.POST("/conversations", h.CreateConversation)
+	api.POST("/sessions/:id/messages", h.AppendMessage)
+	api.POST("/sessions/:id/files", h.UploadFile)
+	api.POST("/task-suggestions/:id/confirm", h.ConfirmTaskSuggestion)
 }

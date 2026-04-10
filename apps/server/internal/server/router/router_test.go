@@ -44,3 +44,49 @@ func TestNewRegistersApprovalRoutesWhenHandlerProvided(t *testing.T) {
 		t.Fatalf("expected status %d when approval route is registered without service, got %d", consts.StatusInternalServerError, response.StatusCode())
 	}
 }
+
+func TestNewAddsCORSHeadersToAPIResponses(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
+		ApprovalHandler: handlers.NewApprovalHandler(nil),
+	})
+
+	response := ut.PerformRequest(
+		h.Engine,
+		"GET",
+		"/api/approvals",
+		nil,
+		ut.Header{Key: "Origin", Value: "http://127.0.0.1:3000"},
+	).Result()
+
+	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "*" {
+		t.Fatalf("expected Access-Control-Allow-Origin header '*', got %q", value)
+	}
+}
+
+func TestNewHandlesAssistantPreflightOPTIONS(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
+		ApprovalHandler: handlers.NewApprovalHandler(nil),
+	})
+
+	response := ut.PerformRequest(
+		h.Engine,
+		"OPTIONS",
+		"/api/approvals/test-approval/approve",
+		nil,
+		ut.Header{Key: "Origin", Value: "http://127.0.0.1:3000"},
+		ut.Header{Key: "Access-Control-Request-Method", Value: "POST"},
+		ut.Header{Key: "Access-Control-Request-Headers", Value: "content-type"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", consts.StatusNoContent, response.StatusCode())
+	}
+
+	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "*" {
+		t.Fatalf("expected Access-Control-Allow-Origin header '*', got %q", value)
+	}
+
+	if value := string(response.Header.Peek("Access-Control-Allow-Methods")); !strings.Contains(value, "POST") {
+		t.Fatalf("expected Access-Control-Allow-Methods to contain POST, got %q", value)
+	}
+}

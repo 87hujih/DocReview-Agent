@@ -1,0 +1,137 @@
+.sidebar {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  border: 1px solid rgba(92, 113, 125, 0.28);
+  background:
+    linear-gradient(180deg, rgba(10, 18, 24, 0.96), rgba(6, 12, 17, 0.98)),
+    radial-gradient(circle at top left, rgba(0, 170, 255, 0.08), transparent 42%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.top {
+  display: grid;
+  gap: 18px;
+  padding: 16px 14px 14px;
+  border-bottom: 1px solid rgba(92, 113, 125, 0.22);
+}
+
+.identity {
+  display: grid;
+  gap: 8px;
+}
+
+.label {
+  margin: 0;
+  color: #73d7ff;
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  color: #f5fbff;
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.caption {
+  margin: 0;
+  color: rgba(206, 224, 235, 0.68);
+  font-size: 0.88rem;
+}
+
+.newButton {
+  justify-content: center;
+  min-height: 38px;
+  border-color: rgba(115, 215, 255, 0.32);
+  background: linear-gradient(180deg, rgba(10, 35, 46, 0.82), rgba(7, 20, 28, 0.9));
+  color: #eff9ff;
+}
+
+.listWrap {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+  padding: 12px 10px 10px;
+}
+
+.sectionLabel {
+  margin: 0;
+  padding: 0 6px;
+  color: rgba(206, 224, 235, 0.54);
+  font-size: 0.74rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.placeholder {
+  margin: 0;
+  padding: 0 6px;
+  color: rgba(206, 224, 235, 0.54);
+  font-size: 0.9rem;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  list-style: none;
+}
+
+.list::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.sessionButton {
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 12px;
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.02);
+  color: rgba(226, 239, 247, 0.78);
+}
+
+.sessionButton[data-active="true"] {
+  border-color: rgba(115, 215, 255, 0.34);
+  background: rgba(18, 55, 72, 0.82);
+  color: #f4fbff;
+}
+
+.sessionTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deleteButton {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: rgba(206, 224, 235, 0.42);
+}
+
+.deleteButton:hover,
+.deleteButton:focus-visible {
+  color: #ffb7a8;
+}

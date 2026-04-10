@@ -1,0 +1,95 @@
+.form {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px 16px;
+  border-top: 1px solid rgba(92, 113, 125, 0.22);
+  background: linear-gradient(180deg, rgba(9, 17, 23, 0.96), rgba(6, 12, 17, 0.98));
+}
+
+.field {
+  display: grid;
+  gap: 10px;
+}
+
+.label {
+  color: rgba(206, 224, 235, 0.7);
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+}
+
+.textarea {
+  min-height: 88px;
+  padding: 12px 14px;
+  resize: vertical;
+  border-color: rgba(92, 113, 125, 0.26);
+  background: rgba(4, 9, 13, 0.92);
+  color: #f4fbff;
+}
+
+.textarea::placeholder {
+  color: rgba(206, 224, 235, 0.38);
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.uploadGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.uploadButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid rgba(92, 113, 125, 0.26);
+  cursor: pointer;
+}
+
+.uploadButton[data-disabled="true"] {
+  cursor: not-allowed;
+  color: rgba(206, 224, 235, 0.34);
+}
+
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.uploadHint {
+  color: rgba(206, 224, 235, 0.56);
+  font-size: 0.84rem;
+}
+
+.submitButton {
+  min-width: 92px;
+  border-color: rgba(115, 215, 255, 0.34);
+  background: linear-gradient(180deg, rgba(11, 43, 56, 0.82), rgba(6, 23, 30, 0.92));
+  color: #f4fbff;
+}
+
+@media (max-width: 680px) {
+  .footer {
+    align-items: stretch;
+  }
+
+  .uploadGroup {
+    width: 100%;
+  }
+
+  .submitButton {
+    width: 100%;
+  }
+}

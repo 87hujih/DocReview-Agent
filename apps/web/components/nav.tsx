@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import styles from "./nav.module.css";
 
 const NAV_ITEMS = [
-  { href: "/", label: "工作台" },
+  { href: "/", label: "助手" },
   { href: "/resources", label: "资源库" },
   { href: "/approvals", label: "审批中心" }
 ];
@@ -21,16 +21,10 @@ function isActivePath(pathname: string, href: string): boolean {
 
 export default function Nav() {
   const pathname = usePathname();
-  const apiLabel = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(
-    /^https?:\/\//,
-    ""
-  );
-
   return (
     <nav className={styles.bar}>
       <div className={styles.identity}>
-        <span className={styles.product}>文档审阅代理</span>
-        <span className={styles.environment}>环境：Task 4 / 接口：{apiLabel}</span>
+        <span className={styles.product}>个人助手控制台</span>
       </div>
 
       <div className={styles.links}>

@@ -1,0 +1,626 @@
+package assistant
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+
+	"agent_project/apps/server/internal/knowledge/citation"
+	"agent_project/apps/server/internal/storage/postgres"
+)
+
+func TestStartConversationUsesResponderReply(t *testing.T) {
+	repo := newFakeSessionRepo()
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "当然可以，我们先把目标和限制条件说清楚。",
+		},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, fakeResourceSearcher{})
+
+	result, err := service.StartConversation(context.Background(), "我想先聊聊这周要做什么")
+	if err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result.Messages))
+	}
+
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if reply.Content != "当然可以，我们先把目标和限制条件说清楚。" {
+		t.Fatalf("expected responder reply to be persisted, got %q", reply.Content)
+	}
+}
+
+func TestStartConversationDoesNotSuggestTaskForCapabilityQuestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "我可以回答问题、整理信息，也可以在需要时给出任务建议。",
+		},
+	}, fakeResourceSearcher{})
+
+	result, err := service.StartConversation(context.Background(), "帮我简单介绍一下你能做什么，再顺带说下什么时候适合创建任务。")
+	if err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected 2 messages without task suggestion, got %d", len(result.Messages))
+	}
+}
+
+func TestAppendMessageCreatesTaskSuggestionFromResponderInstruction(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	instruction := "请把学生手册第二章整理成可执行的修订任务"
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply:           "这件事已经适合进入任务流了，我先给你一张建议卡。",
+			TaskInstruction: &instruction,
+		},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, fakeResourceSearcher{})
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第二章做成后续事项")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected 3 new messages, got %d", len(result.Messages))
+	}
+
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if reply.Content != "这件事已经适合进入任务流了，我先给你一张建议卡。" {
+		t.Fatalf("expected responder text reply, got %q", reply.Content)
+	}
+
+	suggestion := decodeTaskSuggestionPayload(t, result.Messages[2].Payload)
+	if suggestion.Instruction != instruction {
+		t.Fatalf("expected suggestion instruction %q, got %q", instruction, suggestion.Instruction)
+	}
+}
+
+func TestAppendMessagePassesLatestResourceContextAndCitationsToResponder(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	resourceID := "resource-1"
+
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "学生手册.md",
+			ResourceID:    resourceID,
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "我先根据你刚上传的资料梳理考勤条款。",
+		},
+	}
+	searcher := fakeResourceSearcher{
+		result: []postgres.ResourceChunk{
+			{
+				ResourceID:   resourceID,
+				SectionTitle: "第二章 考勤",
+				Content:      "员工迟到早退需要登记并按制度处理。",
+			},
+		},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, searcher)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "考勤条款有什么风险"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if responder.lastInput == nil {
+		t.Fatal("expected responder to receive chat input")
+	}
+
+	if responder.lastInput.Resource == nil || responder.lastInput.Resource.ID != resourceID {
+		t.Fatalf("expected responder to receive latest resource %q, got %#v", resourceID, responder.lastInput.Resource)
+	}
+
+	if len(responder.lastInput.Citations) != 1 {
+		t.Fatalf("expected 1 citation, got %d", len(responder.lastInput.Citations))
+	}
+
+	if responder.lastInput.Citations[0].SectionTitle != "第二章 考勤" {
+		t.Fatalf("expected citation section title %q, got %q", "第二章 考勤", responder.lastInput.Citations[0].SectionTitle)
+	}
+}
+
+func TestStartConversationCreatesSessionAndTaskSuggestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "我先帮你梳理这份学生守则，再给你任务建议。",
+		},
+	}, fakeResourceSearcher{})
+
+	result, err := service.StartConversation(context.Background(), "请帮我修改这份学生守则，并整理成任务")
+	if err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+
+	if result.Session.ID == "" {
+		t.Fatal("expected session id to be set")
+	}
+
+	if result.Session.Title == "" {
+		t.Fatal("expected session title to be generated")
+	}
+
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result.Messages))
+	}
+
+	if result.Messages[0].Role != RoleUser || result.Messages[0].Kind != KindText {
+		t.Fatalf("expected first message to be user text, got role=%q kind=%q", result.Messages[0].Role, result.Messages[0].Kind)
+	}
+
+	if result.Messages[2].Kind != KindTaskSuggestion {
+		t.Fatalf("expected third message to be task suggestion, got %q", result.Messages[2].Kind)
+	}
+
+	suggestion := decodeTaskSuggestionPayload(t, result.Messages[2].Payload)
+	if suggestion.CanCreate {
+		t.Fatal("expected task suggestion without uploaded resource to be non-creatable")
+	}
+
+	if suggestion.Instruction != "请帮我修改这份学生守则，并整理成任务" {
+		t.Fatalf("expected suggestion instruction to match input, got %q", suggestion.Instruction)
+	}
+}
+
+func TestAppendMessageUsesLatestUploadedResourceForTaskSuggestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	resourceID := "resource-1"
+
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "学生手册.md",
+			ResourceID:    resourceID,
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "我先基于当前资料看第二章，再帮你收敛成任务。",
+		},
+	}, fakeResourceSearcher{})
+	result, err := service.AppendMessage(context.Background(), session.ID, "请帮我检查并修订第二章")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected 3 new messages, got %d", len(result.Messages))
+	}
+
+	suggestion := decodeTaskSuggestionPayload(t, result.Messages[2].Payload)
+	if !suggestion.CanCreate {
+		t.Fatal("expected task suggestion to be creatable when session already has a resource")
+	}
+
+	if suggestion.ResourceID == nil || *suggestion.ResourceID != resourceID {
+		t.Fatalf("expected suggestion resource id %q, got %#v", resourceID, suggestion.ResourceID)
+	}
+}
+
+func TestUploadFilePersistsSessionFileMessage(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("空白会话")
+	importer := fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-uploaded",
+				Title:      "学生手册",
+				SourceType: "upload",
+			},
+		},
+	}
+
+	service := NewService(repo, importer, fakeTaskCreator{}, &fakeChatResponder{}, fakeResourceSearcher{})
+	result, err := service.UploadFile(context.Background(), session.ID, "学生手册.md", []byte("# 学生手册\n内容"))
+	if err != nil {
+		t.Fatalf("upload file: %v", err)
+	}
+
+	if result.Resource == nil || result.Resource.ID != "resource-uploaded" {
+		t.Fatalf("expected uploaded resource to be returned, got %#v", result.Resource)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 appended message, got %d", len(result.Messages))
+	}
+
+	if result.Messages[0].Kind != KindSessionFile {
+		t.Fatalf("expected session file message, got %q", result.Messages[0].Kind)
+	}
+
+	filePayload := decodeSessionFilePayload(t, result.Messages[0].Payload)
+	if filePayload.ResourceID != "resource-uploaded" {
+		t.Fatalf("expected payload resource id %q, got %q", "resource-uploaded", filePayload.ResourceID)
+	}
+}
+
+func TestConfirmTaskSuggestionCreatesTaskCreatedMessage(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	resourceID := "resource-1"
+
+	suggestionMessage := repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-suggestion",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindTaskSuggestion,
+		SequenceNo: 1,
+		Payload: mustJSON(t, TaskSuggestionPayload{
+			ActionLabel:   "确认创建任务",
+			CanCreate:     true,
+			Instruction:   "请修订第二章",
+			ResourceID:    &resourceID,
+			ResourceLabel: "学生手册 · upload",
+			StatusMessage: "资源已明确，可以创建任务。",
+			Title:         "建议创建任务",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{
+		result: &postgres.Task{
+			ID:          "task-1",
+			ResourceID:  resourceID,
+			Instruction: "请修订第二章",
+			Status:      "pending",
+		},
+	}, &fakeChatResponder{}, fakeResourceSearcher{})
+
+	result, err := service.ConfirmTaskSuggestion(context.Background(), suggestionMessage.ID)
+	if err != nil {
+		t.Fatalf("confirm task suggestion: %v", err)
+	}
+
+	if result.Task == nil || result.Task.ID != "task-1" {
+		t.Fatalf("expected created task to be returned, got %#v", result.Task)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 appended message, got %d", len(result.Messages))
+	}
+
+	if result.Messages[0].Kind != KindTaskCreated {
+		t.Fatalf("expected task_created message, got %q", result.Messages[0].Kind)
+	}
+
+	createdPayload := decodeTaskCreatedPayload(t, result.Messages[0].Payload)
+	if createdPayload.TaskID != "task-1" {
+		t.Fatalf("expected task id %q, got %q", "task-1", createdPayload.TaskID)
+	}
+}
+
+func TestConfirmTaskSuggestionAppendsFailureSystemMessageWhenTaskCreationFails(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	resourceID := "resource-1"
+
+	suggestionMessage := repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-suggestion",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindTaskSuggestion,
+		SequenceNo: 1,
+		Payload: mustJSON(t, TaskSuggestionPayload{
+			ActionLabel:   "确认创建任务",
+			CanCreate:     true,
+			Instruction:   "请修订第二章",
+			ResourceID:    &resourceID,
+			ResourceLabel: "学生手册 · upload",
+			StatusMessage: "资源已明确，可以创建任务。",
+			Title:         "建议创建任务",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{
+		err: errors.New("task create failed"),
+	}, &fakeChatResponder{}, fakeResourceSearcher{})
+
+	result, err := service.ConfirmTaskSuggestion(context.Background(), suggestionMessage.ID)
+	if err != nil {
+		t.Fatalf("confirm task suggestion: %v", err)
+	}
+
+	if result.Task != nil {
+		t.Fatalf("expected no task to be created, got %#v", result.Task)
+	}
+
+	if result.ErrorMessage == nil {
+		t.Fatal("expected task creation error message")
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 appended system message, got %d", len(result.Messages))
+	}
+
+	if result.Messages[0].Kind != KindSystem {
+		t.Fatalf("expected system message, got %q", result.Messages[0].Kind)
+	}
+}
+
+type fakeSessionRepo struct {
+	sessions map[string]postgres.AssistantSession
+	messages map[string][]postgres.AssistantMessage
+}
+
+func newFakeSessionRepo() *fakeSessionRepo {
+	return &fakeSessionRepo{
+		sessions: make(map[string]postgres.AssistantSession),
+		messages: make(map[string][]postgres.AssistantMessage),
+	}
+}
+
+func (r *fakeSessionRepo) ListSessions(context.Context) ([]postgres.AssistantSession, error) {
+	items := make([]postgres.AssistantSession, 0, len(r.sessions))
+	for _, session := range r.sessions {
+		items = append(items, session)
+	}
+
+	return items, nil
+}
+
+func (r *fakeSessionRepo) GetSessionByID(_ context.Context, id string) (*postgres.AssistantSession, error) {
+	session, ok := r.sessions[id]
+	if !ok {
+		return nil, nil
+	}
+
+	return &session, nil
+}
+
+func (r *fakeSessionRepo) ListMessages(_ context.Context, sessionID string) ([]postgres.AssistantMessage, error) {
+	items := r.messages[sessionID]
+	cloned := make([]postgres.AssistantMessage, len(items))
+	copy(cloned, items)
+	return cloned, nil
+}
+
+func (r *fakeSessionRepo) GetMessageByID(_ context.Context, id string) (*postgres.AssistantMessage, error) {
+	for _, items := range r.messages {
+		for _, message := range items {
+			if message.ID == id {
+				cloned := message
+				return &cloned, nil
+			}
+		}
+	}
+
+	return nil, nil
+}
+
+func (r *fakeSessionRepo) CreateSessionWithMessages(_ context.Context, title string, inputs []postgres.AssistantMessageInput) (*postgres.AssistantSession, []postgres.AssistantMessage, error) {
+	sessionID := "session-created"
+	now := time.Now()
+	session := postgres.AssistantSession{
+		ID:            sessionID,
+		Title:         title,
+		LastMessageAt: now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	r.sessions[sessionID] = session
+
+	messages := make([]postgres.AssistantMessage, 0, len(inputs))
+	for index, input := range inputs {
+		message := postgres.AssistantMessage{
+			ID:         "message-created-" + string(rune('a'+index)),
+			SessionID:  sessionID,
+			Role:       input.Role,
+			Kind:       input.Kind,
+			SequenceNo: index + 1,
+			Payload:    input.Payload,
+			CreatedAt:  now,
+		}
+		messages = append(messages, message)
+	}
+
+	r.messages[sessionID] = append(r.messages[sessionID], messages...)
+	return &session, messages, nil
+}
+
+func (r *fakeSessionRepo) AppendMessages(_ context.Context, sessionID string, inputs []postgres.AssistantMessageInput) ([]postgres.AssistantMessage, error) {
+	base := len(r.messages[sessionID])
+	now := time.Now()
+	messages := make([]postgres.AssistantMessage, 0, len(inputs))
+	for index, input := range inputs {
+		message := postgres.AssistantMessage{
+			ID:         "message-appended-" + string(rune('a'+base+index)),
+			SessionID:  sessionID,
+			Role:       input.Role,
+			Kind:       input.Kind,
+			SequenceNo: base + index + 1,
+			Payload:    input.Payload,
+			CreatedAt:  now,
+		}
+		messages = append(messages, message)
+	}
+
+	r.messages[sessionID] = append(r.messages[sessionID], messages...)
+
+	session := r.sessions[sessionID]
+	session.LastMessageAt = now
+	session.UpdatedAt = now
+	r.sessions[sessionID] = session
+
+	return messages, nil
+}
+
+func (r *fakeSessionRepo) DeleteSession(_ context.Context, id string) (bool, error) {
+	if _, ok := r.sessions[id]; !ok {
+		return false, nil
+	}
+
+	delete(r.sessions, id)
+	delete(r.messages, id)
+	return true, nil
+}
+
+func (r *fakeSessionRepo) seedSession(title string) postgres.AssistantSession {
+	now := time.Now()
+	session := postgres.AssistantSession{
+		ID:            "session-seeded-" + title,
+		Title:         title,
+		LastMessageAt: now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	r.sessions[session.ID] = session
+	return session
+}
+
+func (r *fakeSessionRepo) seedMessage(sessionID string, message postgres.AssistantMessage) postgres.AssistantMessage {
+	r.messages[sessionID] = append(r.messages[sessionID], message)
+	return message
+}
+
+type fakeDocumentImporter struct {
+	result *ImportDocumentResult
+	err    error
+}
+
+func (i fakeDocumentImporter) ImportDocument(context.Context, ImportDocumentInput) (*ImportDocumentResult, error) {
+	if i.err != nil {
+		return nil, i.err
+	}
+
+	return i.result, nil
+}
+
+type fakeTaskCreator struct {
+	result *postgres.Task
+	err    error
+}
+
+func (c fakeTaskCreator) CreateTask(context.Context, string, string) (*postgres.Task, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+
+	return c.result, nil
+}
+
+type fakeChatResponder struct {
+	lastInput *ChatCompletionInput
+	result    *ChatCompletionResult
+	err       error
+}
+
+func (r *fakeChatResponder) Reply(_ context.Context, input ChatCompletionInput) (*ChatCompletionResult, error) {
+	copied := input
+	copied.History = append([]postgres.AssistantMessage(nil), input.History...)
+	copied.Citations = append([]citation.Citation(nil), input.Citations...)
+	r.lastInput = &copied
+
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.result == nil {
+		return &ChatCompletionResult{
+			Reply: "默认测试回复",
+		}, nil
+	}
+
+	return r.result, nil
+}
+
+type fakeResourceSearcher struct {
+	result []postgres.ResourceChunk
+	err    error
+}
+
+func (s fakeResourceSearcher) SearchChunksLexicalByResource(context.Context, string, int, string) ([]postgres.ResourceChunk, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+
+	return s.result, nil
+}
+
+func decodeTaskSuggestionPayload(t *testing.T, payload []byte) TaskSuggestionPayload {
+	t.Helper()
+
+	var value TaskSuggestionPayload
+	if err := json.Unmarshal(payload, &value); err != nil {
+		t.Fatalf("unmarshal task suggestion payload: %v", err)
+	}
+
+	return value
+}
+
+func decodeSessionFilePayload(t *testing.T, payload []byte) SessionFilePayload {
+	t.Helper()
+
+	var value SessionFilePayload
+	if err := json.Unmarshal(payload, &value); err != nil {
+		t.Fatalf("unmarshal session file payload: %v", err)
+	}
+
+	return value
+}
+
+func decodeTaskCreatedPayload(t *testing.T, payload []byte) TaskCreatedPayload {
+	t.Helper()
+
+	var value TaskCreatedPayload
+	if err := json.Unmarshal(payload, &value); err != nil {
+		t.Fatalf("unmarshal task created payload: %v", err)
+	}
+
+	return value
+}
+
+func decodeTextPayload(t *testing.T, payload []byte) TextPayload {
+	t.Helper()
+
+	var value TextPayload
+	if err := json.Unmarshal(payload, &value); err != nil {
+		t.Fatalf("unmarshal text payload: %v", err)
+	}
+
+	return value
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+
+	payload, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	return payload
+}

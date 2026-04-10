@@ -13,7 +13,6 @@ export function CitationList({ citations }: CitationListProps) {
     <TerminalFrame
       label="引用"
       title="检索证据"
-      description="引用结果直接映射后端 citations artifact，便于和 diff_preview 做交叉校验。"
     >
       {citations.length === 0 ? (
         <p className={styles.empty}>当前没有检索到引用证据</p>

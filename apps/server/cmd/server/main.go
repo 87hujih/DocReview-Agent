@@ -11,6 +11,7 @@ import (
 	"agent_project/apps/server/internal/agent/planner"
 	"agent_project/apps/server/internal/agent/reviewer"
 	"agent_project/apps/server/internal/approval"
+	"agent_project/apps/server/internal/assistant"
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/job"
 	"agent_project/apps/server/internal/knowledge/embedder"
@@ -51,6 +52,7 @@ func main() {
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
 	eventRepo := postgres.NewTaskEventRepo(pool)
+	assistantRepo := postgres.NewAssistantRepo(pool)
 	eventService := taskevents.New(eventRepo)
 
 	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
@@ -92,10 +94,24 @@ func main() {
 	taskHandler := handlers.NewTaskHandler(taskService, taskRepo)
 	approvalService := approval.NewService(approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
+	assistantResponder, err := assistant.NewChatResponder(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
+	if err != nil {
+		log.Fatalf("助手对话模型初始化失败：%v", err)
+	}
+
+	assistantService := assistant.NewService(
+		assistantRepo,
+		assistant.NewIngestDocumentImporter(ingestService),
+		taskService,
+		assistantResponder,
+		resourceRepo,
+	)
+	assistantHandler := handlers.NewAssistantHandler(assistantService)
 	h := router.New(cfg, logger, router.Deps{
-		ResourceHandler: resourceHandler,
-		TaskHandler:     taskHandler,
-		ApprovalHandler: approvalHandler,
+		ResourceHandler:  resourceHandler,
+		TaskHandler:      taskHandler,
+		ApprovalHandler:  approvalHandler,
+		AssistantHandler: assistantHandler,
 	})
 
 	if err := h.Run(); err != nil {

@@ -3,10 +3,10 @@
   justify-content: space-between;
   gap: var(--terminal-space-4);
   align-items: center;
-  width: min(1100px, calc(100% - 32px));
+  width: min(1400px, calc(100% - 28px));
   margin: 0 auto;
-  padding: var(--terminal-space-4) 0;
-  border-bottom: var(--terminal-border-width) solid var(--terminal-border);
+  padding: var(--terminal-space-3) 0;
+  border-bottom: var(--terminal-border-width) solid rgba(92, 113, 125, 0.24);
 }
 
 .identity {

@@ -9,6 +9,15 @@ services:
     environment:
       PORT: "8080"
       DATABASE_URL: "${DATABASE_URL}"
+      SILICONFLOW_API_KEY: "${SILICONFLOW_API_KEY}"
+      SILICONFLOW_BASE_URL: "${SILICONFLOW_BASE_URL}"
+      LLM_MODEL: "${LLM_MODEL}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL}"
+      EMBEDDING_DIM: "${EMBEDDING_DIM}"
+      RERANKER_MODEL: "${RERANKER_MODEL}"
+      LOG_LEVEL: "${LOG_LEVEL}"
+      LOG_FORMAT: "${LOG_FORMAT}"
+      LOG_ADD_SOURCE: "${LOG_ADD_SOURCE}"
 
   web:
     image: ghcr.io/${GHCR_OWNER}/docreview-agent-web:${IMAGE_TAG}

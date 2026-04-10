@@ -45,7 +45,6 @@ export function ResourceSearch({ resourceId }: ResourceSearchProps) {
     <TerminalFrame
       label="资源检索"
       title="引用查找"
-      description="用真实检索接口预览当前文档里的证据片段。"
     >
       <form className={styles.form} onSubmit={handleSubmit}>
         <label className={styles.field} htmlFor="resource-search-query">

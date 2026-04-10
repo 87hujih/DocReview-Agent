@@ -15,7 +15,6 @@ export function TaskTimeline({ steps }: TaskTimelineProps) {
     <TerminalFrame
       label="执行流"
       title="任务时间线"
-      description="真实步骤流按创建顺序输出，状态与时间信息全部以终端日志格式展示。"
     >
       {steps.length === 0 ? (
         <LogLine prefix="输出 >" tone="warning">

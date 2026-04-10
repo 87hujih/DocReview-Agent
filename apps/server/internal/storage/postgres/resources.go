@@ -98,11 +98,16 @@ func (r *ResourceRepo) GetByID(ctx context.Context, id string) (*Resource, error
 
 // Create 新增一条顶层资源记录。
 func (r *ResourceRepo) Create(ctx context.Context, title string, sourceType string) (*Resource, error) {
+	return r.CreateWithSourceRef(ctx, title, sourceType, nil)
+}
+
+// CreateWithSourceRef 新增一条带 source_ref 的顶层资源记录。
+func (r *ResourceRepo) CreateWithSourceRef(ctx context.Context, title string, sourceType string, sourceRef *string) (*Resource, error) {
 	resource, err := scanResource(r.pool.QueryRow(ctx, `
-		INSERT INTO resources (title, source_type)
-		VALUES ($1, $2)
+		INSERT INTO resources (title, source_type, source_ref)
+		VALUES ($1, $2, $3)
 		RETURNING id, title, source_type, source_ref, created_at, updated_at
-	`, title, sourceType))
+	`, title, sourceType, sourceRef))
 	if err != nil {
 		return nil, err
 	}

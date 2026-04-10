@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { MetaRow } from "../../components/ui/meta-row";
 import { StatusChip } from "../../components/ui/status-chip";
@@ -20,22 +20,38 @@ export default function ApprovalsPage() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const rejectInputRef = useRef<HTMLInputElement>(null);
+  const mountedRef = useRef(true);
 
   async function loadApprovals() {
     try {
       const items = await getApprovals("pending");
+      if (!mountedRef.current) return;
       setApprovals(items);
       setErrorMessage(null);
     } catch (error) {
+      if (!mountedRef.current) return;
       setErrorMessage(getErrorMessage(error));
     } finally {
-      setIsLoading(false);
+      if (mountedRef.current) setIsLoading(false);
     }
   }
 
   useEffect(() => {
     void loadApprovals();
+
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
+
+  useEffect(() => {
+    if (rejectingId) {
+      rejectInputRef.current?.focus();
+    }
+  }, [rejectingId]);
 
   async function handleApprove(id: string) {
     setActiveApprovalId(id);
@@ -50,22 +66,29 @@ export default function ApprovalsPage() {
     }
   }
 
-  async function handleReject(id: string) {
-    const reason = window.prompt("请输入拒绝原因：");
-    if (reason === null) {
-      return;
-    }
+  function handleRejectClick(id: string) {
+    setRejectingId(id);
+    setRejectReason("");
+  }
 
-    const trimmedReason = reason.trim();
-    if (!trimmedReason) {
+  function handleRejectCancel() {
+    setRejectingId(null);
+    setRejectReason("");
+  }
+
+  async function handleRejectConfirm(id: string) {
+    const trimmed = rejectReason.trim();
+    if (!trimmed) {
       setErrorMessage("拒绝原因不能为空");
       return;
     }
 
+    setRejectingId(null);
+    setRejectReason("");
     setActiveApprovalId(id);
 
     try {
-      await rejectApproval(id, trimmedReason);
+      await rejectApproval(id, trimmed);
       await loadApprovals();
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
@@ -76,19 +99,11 @@ export default function ApprovalsPage() {
 
   return (
     <div className={styles.page}>
-      <TerminalFrame
-        label="审批队列"
-        title="审批中心"
-        description="待审批任务按队列列出，可直接查看详情或执行批准、拒绝操作。"
-      >
+      <TerminalFrame label="审批队列" title="审批中心">
         <p className={styles.banner}>输出 &gt; 正在调用 /api/approvals?status=pending</p>
       </TerminalFrame>
 
-      <TerminalFrame
-        label="待处理项"
-        title={`队列深度 ${approvals.length}`}
-        description="审批状态保持终端高对比风格，避免企业后台式柔和 badge。"
-      >
+      <TerminalFrame label="待处理项" title={`队列深度 ${approvals.length}`}>
         {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
 
         {isLoading ? (
@@ -99,6 +114,7 @@ export default function ApprovalsPage() {
           <ul className={styles.list}>
             {approvals.map((approval) => {
               const isBusy = activeApprovalId === approval.id;
+              const isRejecting = rejectingId === approval.id;
 
               return (
                 <li key={approval.id} className={styles.item}>
@@ -112,17 +128,64 @@ export default function ApprovalsPage() {
                     <MetaRow label="created_at" value={toIsoSeconds(approval.created_at)} />
                   </div>
 
-                  <div className={styles.actions}>
-                    <Link className={styles.actionButton} href={`/tasks/${approval.task_id}`}>
-                      查看任务
-                    </Link>
-                    <button className={styles.actionButton} disabled={isBusy} onClick={() => void handleApprove(approval.id)} type="button">
-                      {isBusy ? "处理中" : "批准"}
-                    </button>
-                    <button className={styles.actionButton} disabled={isBusy} onClick={() => void handleReject(approval.id)} type="button">
-                      {isBusy ? "处理中" : "拒绝"}
-                    </button>
-                  </div>
+                  {isRejecting ? (
+                    <div className={styles.rejectForm}>
+                      <input
+                        ref={rejectInputRef}
+                        className={styles.rejectInput}
+                        disabled={isBusy}
+                        onChange={(e) => setRejectReason(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") handleRejectCancel();
+                          if (e.key === "Enter" && rejectReason.trim()) {
+                            void handleRejectConfirm(approval.id);
+                          }
+                        }}
+                        placeholder="输入拒绝原因（Enter 确认，Esc 取消）"
+                        type="text"
+                        value={rejectReason}
+                      />
+                      <div className={styles.rejectActions}>
+                        <button
+                          className={styles.confirmRejectButton}
+                          disabled={isBusy || !rejectReason.trim()}
+                          onClick={() => void handleRejectConfirm(approval.id)}
+                          type="button"
+                        >
+                          确认拒绝
+                        </button>
+                        <button
+                          className={styles.cancelButton}
+                          onClick={handleRejectCancel}
+                          type="button"
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className={styles.actions}>
+                      <Link className={styles.viewButton} href={`/tasks/${approval.task_id}`}>
+                        查看任务
+                      </Link>
+                      <button
+                        className={styles.approveButton}
+                        disabled={isBusy}
+                        onClick={() => void handleApprove(approval.id)}
+                        type="button"
+                      >
+                        {isBusy ? "处理中" : "批准"}
+                      </button>
+                      <button
+                        className={styles.rejectButton}
+                        disabled={isBusy}
+                        onClick={() => handleRejectClick(approval.id)}
+                        type="button"
+                      >
+                        拒绝
+                      </button>
+                    </div>
+                  )}
                 </li>
               );
             })}

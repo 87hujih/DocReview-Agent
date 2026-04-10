@@ -44,6 +44,8 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 		"resources",
 		"resource_versions",
 		"resource_chunks",
+		"assistant_sessions",
+		"assistant_messages",
 		"tasks",
 		"task_steps",
 		"task_artifacts",
