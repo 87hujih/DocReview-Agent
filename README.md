@@ -99,9 +99,8 @@ MVP 最终应至少包含以下页面：
 
 ## 相关文档
 
-- [简历版 MVP 实施计划](/G:/gofile/Agent_Project/docs/superpowers/plans/2026-04-01-resume-ready-enterprise-document-ai-mvp.md)
-- [CI/CD 部署文档](/G:/gofile/Agent_Project/docs/deployment.md)
-- [根目录 README](/G:/gofile/Agent_Project/README.md)
+- CI/CD 部署配置详见 `deploy/` 目录和 `.github/workflows/`
+- Docker Compose 配置详见 `docker-compose.yml`
 
 ## 当前说明
 
