@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -21,6 +22,7 @@ import {
   type TaskEvent,
   type TaskStep
 } from "../../../lib/api/tasks";
+import { getResourceExportURL } from "../../../lib/api/resources";
 import { getErrorMessage, isTerminalStatus, toIsoSeconds, truncateId } from "../../../lib/terminal";
 import styles from "./page.module.css";
 
@@ -109,6 +111,7 @@ export default function TaskDetailPage() {
   const citations = getCitationsArtifact(artifacts);
   const reviewSummary = getReviewSummaryArtifact(artifacts);
   const diffPreview = getDiffPreviewArtifact(artifacts);
+  const hasCompletedResult = task?.status === "completed" && task.resource_id.trim() !== "";
 
   return (
     <div className={styles.page}>
@@ -132,6 +135,23 @@ export default function TaskDetailPage() {
           </div>
         )}
       </TerminalFrame>
+
+      {hasCompletedResult ? (
+        <TerminalFrame
+          label="修订结果"
+          title="结果出口"
+        >
+          <p className={styles.resultText}>任务已完成，最终修订版本已写入资源库。</p>
+          <div className={styles.resultActions}>
+            <Link className={styles.resultLink} href={`/resources/${task.resource_id}`}>
+              查看修订结果
+            </Link>
+            <Link className={styles.resultLink} href={getResourceExportURL(task.resource_id)}>
+              下载修订结果
+            </Link>
+          </div>
+        </TerminalFrame>
+      ) : null}
 
       <TaskTimeline events={events} steps={steps} />
 

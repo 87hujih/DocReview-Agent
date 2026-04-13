@@ -69,6 +69,17 @@ func TestNewRegistersFileRoutesWhenHandlerProvided(t *testing.T) {
 	}
 }
 
+func TestNewRegistersResourceExportRouteWhenHandlerProvided(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
+		ResourceHandler: handlers.NewResourceHandler(nil, nil),
+	})
+
+	response := ut.PerformRequest(h.Engine, "GET", "/api/resources/resource-1/export", nil).Result()
+	if response.StatusCode() != consts.StatusInternalServerError {
+		t.Fatalf("expected status %d when resource export route is registered without repo, got %d", consts.StatusInternalServerError, response.StatusCode())
+	}
+}
+
 func TestNewAddsCORSHeadersToAPIResponses(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		ApprovalHandler: handlers.NewApprovalHandler(nil),

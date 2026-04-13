@@ -35,6 +35,31 @@
   white-space: pre-wrap;
 }
 
+.resultText {
+  margin: 0 0 var(--terminal-space-4);
+  color: var(--terminal-text);
+}
+
+.resultActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--terminal-space-3);
+}
+
+.resultLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(0, 200, 165, 0.28);
+  border-radius: 999px;
+  padding: 0.62rem 0.9rem;
+  background: rgba(0, 200, 165, 0.08);
+  color: #00E5CC;
+  font-family: var(--terminal-font-mono);
+  font-size: 0.78rem;
+  text-decoration: none;
+}
+
 .error {
   margin: 0;
   color: var(--terminal-warning);

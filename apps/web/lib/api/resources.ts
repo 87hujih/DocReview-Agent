@@ -35,6 +35,10 @@ export function getResource(id: string): Promise<ResourceDetailsResponse> {
   return apiFetch<ResourceDetailsResponse>(`/api/resources/${id}`);
 }
 
+export function getResourceExportURL(id: string): string {
+  return `/api/resources/${encodeURIComponent(id)}/export`;
+}
+
 export function searchResource(id: string, query: string): Promise<Citation[]> {
   return apiFetch<{ citations: Citation[] }>(
     `/api/resources/${id}/search?q=${encodeURIComponent(query)}`

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -125,6 +126,38 @@ func (h *ResourceHandler) GetByID(requestCtx context.Context, ctx *app.RequestCo
 	ctx.JSON(consts.StatusOK, response)
 }
 
+// ExportCurrentVersion 把资源当前版本作为 Markdown 附件返回。
+func (h *ResourceHandler) ExportCurrentVersion(requestCtx context.Context, ctx *app.RequestContext) {
+	if h.resourceRepo == nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "资源存储未配置"})
+		return
+	}
+
+	resourceID := ctx.Param("id")
+	resource, err := h.resourceRepo.GetByID(requestCtx, resourceID)
+	if err != nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询资源失败"})
+		return
+	}
+	if resource == nil {
+		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "资源不存在"})
+		return
+	}
+
+	version, err := h.resourceRepo.GetCurrentVersion(requestCtx, resourceID)
+	if err != nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询资源版本失败"})
+		return
+	}
+	if version == nil {
+		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "资源没有可导出的当前版本"})
+		return
+	}
+
+	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, exportFileName(*resource)))
+	ctx.Data(consts.StatusOK, "text/markdown; charset=utf-8", []byte(version.Content))
+}
+
 // Search 使用已配置的 retriever 返回单个资源下的引用结果。
 func (h *ResourceHandler) Search(requestCtx context.Context, ctx *app.RequestContext) {
 	query := strings.TrimSpace(ctx.Query("q"))
@@ -147,4 +180,30 @@ func (h *ResourceHandler) Search(requestCtx context.Context, ctx *app.RequestCon
 		Query:     query,
 		Citations: citations,
 	})
+}
+
+// exportFileName 为下载响应生成稳定的 Markdown 文件名，避免路径分隔符进入响应头。
+func exportFileName(resource postgres.Resource) string {
+	base := strings.TrimSpace(resource.Title)
+	if base == "" {
+		base = "resource-" + resource.ID
+	}
+
+	replacer := strings.NewReplacer(
+		"\\", "-",
+		"/", "-",
+		":", "-",
+		"*", "-",
+		"?", "-",
+		`"`, "-",
+		"<", "-",
+		">", "-",
+		"|", "-",
+	)
+	base = strings.TrimSpace(replacer.Replace(base))
+	if base == "" {
+		base = "resource-" + resource.ID
+	}
+
+	return base + ".md"
 }

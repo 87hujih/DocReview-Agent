@@ -94,6 +94,71 @@ func TestGetResourceNotFound(t *testing.T) {
 	}
 }
 
+func TestExportCurrentResourceVersionHandler(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, nil)
+	engine := server.New()
+	engine.GET("/api/resources/:id/export", handler.ExportCurrentVersion)
+
+	ctx := testContext(t)
+	resource, err := repo.Create(ctx, "修订结果导出-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	if _, err := repo.CreateVersion(ctx, resource.ID, 1, "旧版本", "original"); err != nil {
+		t.Fatalf("create original version: %v", err)
+	}
+	if _, err := repo.CreateVersion(ctx, resource.ID, 2, "# 修订结果\n最终内容", "task_revision"); err != nil {
+		t.Fatalf("create revised version: %v", err)
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/"+resource.ID+"/export", nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+	if contentType := string(response.Header.Peek("Content-Type")); !strings.Contains(contentType, "text/markdown") {
+		t.Fatalf("expected markdown content type, got %q", contentType)
+	}
+	if disposition := string(response.Header.Peek("Content-Disposition")); !strings.Contains(disposition, "attachment") {
+		t.Fatalf("expected attachment disposition, got %q", disposition)
+	}
+	if body := string(response.Body()); body != "# 修订结果\n最终内容" {
+		t.Fatalf("expected current version body, got %q", body)
+	}
+}
+
+func TestExportCurrentResourceVersionHandlerWithoutCurrentVersion(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, nil)
+	engine := server.New()
+	engine.GET("/api/resources/:id/export", handler.ExportCurrentVersion)
+
+	ctx := testContext(t)
+	resource, err := repo.Create(ctx, "无版本资源-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/"+resource.ID+"/export", nil).Result()
+
+	if response.StatusCode() != consts.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", consts.StatusNotFound, response.StatusCode())
+	}
+	if body := string(response.Body()); !strings.Contains(body, "资源没有可导出的当前版本") {
+		t.Fatalf("expected missing version error, got %q", body)
+	}
+}
+
 func TestSearchResourceMissingQuery(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)

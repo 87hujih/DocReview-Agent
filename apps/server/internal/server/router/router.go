@@ -58,6 +58,7 @@ func registerResourceRoutes(engine *route.Engine, h *handlers.ResourceHandler) {
 	api := engine.Group("/api")
 	api.GET("/resources", h.List)
 	api.GET("/resources/:id", h.GetByID)
+	api.GET("/resources/:id/export", h.ExportCurrentVersion)
 	api.GET("/resources/:id/search", h.Search)
 }
 
