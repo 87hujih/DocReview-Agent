@@ -11,10 +11,8 @@ import (
 	"strings"
 
 	documentparser "agent_project/apps/server/internal/document/parser"
-	"agent_project/apps/server/internal/knowledge/chunker"
+	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/storage/postgres"
-
-	"github.com/pgvector/pgvector-go"
 )
 
 var (
@@ -26,11 +24,17 @@ type resourceRepository interface {
 	List(ctx context.Context) ([]postgres.Resource, error)
 	CreateWithSourceRef(ctx context.Context, title string, sourceType string, sourceRef *string) (*postgres.Resource, error)
 	CreateVersion(ctx context.Context, resourceID string, versionNumber int, content string, source string) (*postgres.ResourceVersion, error)
-	CreateChunk(ctx context.Context, chunk *postgres.ResourceChunk) error
+	GetCurrentVersion(ctx context.Context, resourceID string) (*postgres.ResourceVersion, error)
+	CountChunksByVersion(ctx context.Context, versionID string) (int, error)
+	ReplaceVersionChunks(ctx context.Context, versionID string, resourceID string, chunks []postgres.ResourceChunkInput) error
 }
 
 type embedderClient interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+type versionIndexer interface {
+	ReindexVersion(ctx context.Context, input indexer.Input) error
 }
 
 // ServiceOption 允许按需注入文档解析器等扩展能力。
@@ -41,6 +45,7 @@ type Service struct {
 	resourceRepo resourceRepository
 	embedder     embedderClient
 	parser       documentparser.Parser
+	indexer      versionIndexer
 }
 
 // NewService 把导入流程依赖的存储层和 embedding 能力接起来。
@@ -48,6 +53,7 @@ func NewService(repo resourceRepository, emb embedderClient, options ...ServiceO
 	service := &Service{
 		resourceRepo: repo,
 		embedder:     emb,
+		indexer:      indexer.NewService(repo, emb),
 	}
 
 	for _, option := range options {
@@ -63,6 +69,13 @@ func NewService(repo resourceRepository, emb embedderClient, options ...ServiceO
 func WithParser(parser documentparser.Parser) ServiceOption {
 	return func(service *Service) {
 		service.parser = parser
+	}
+}
+
+// WithIndexer 为导入流程注入可替换的版本索引器，便于测试与自愈。
+func WithIndexer(indexer versionIndexer) ServiceOption {
+	return func(service *Service) {
+		service.indexer = indexer
 	}
 }
 
@@ -154,8 +167,7 @@ func (s *Service) importFile(ctx context.Context, filePath string, fileName stri
 	}
 	for _, resource := range existingResources {
 		if resource.Title == title {
-			log.Printf("跳过已导入文件：%s", title)
-			return nil
+			return s.ensureExistingResourceIndexed(ctx, resource)
 		}
 	}
 
@@ -167,6 +179,31 @@ func (s *Service) importFile(ctx context.Context, filePath string, fileName stri
 
 	_, _, err = s.saveDocument(ctx, title, "upload", nil, content, "original")
 	return err
+}
+
+func (s *Service) ensureExistingResourceIndexed(ctx context.Context, resource postgres.Resource) error {
+	currentVersion, err := s.resourceRepo.GetCurrentVersion(ctx, resource.ID)
+	if err != nil {
+		return err
+	}
+	if currentVersion == nil {
+		return fmt.Errorf("资源 %s 当前版本不存在", resource.Title)
+	}
+
+	chunkCount, err := s.resourceRepo.CountChunksByVersion(ctx, currentVersion.ID)
+	if err != nil {
+		return err
+	}
+	if chunkCount > 0 {
+		log.Printf("跳过已导入文件：%s", resource.Title)
+		return nil
+	}
+
+	log.Printf("检测到资源缺少索引，开始自愈：%s", resource.Title)
+	return s.indexer.ReindexVersion(ctx, indexer.Input{
+		Resource: resource,
+		Version:  *currentVersion,
+	})
 }
 
 func (s *Service) saveDocument(
@@ -187,41 +224,11 @@ func (s *Service) saveDocument(
 		return nil, nil, err
 	}
 
-	chunks := chunker.ChunkMarkdown(content)
-	if len(chunks) == 0 && strings.TrimSpace(content) != "" {
-		chunks = []chunker.Chunk{
-			{
-				ChunkIndex:   0,
-				SectionTitle: title,
-				Content:      strings.TrimSpace(content),
-			},
-		}
-	}
-	texts := make([]string, 0, len(chunks))
-	for _, chunk := range chunks {
-		texts = append(texts, chunk.Content)
-	}
-
-	vectors, err := s.embedder.Embed(ctx, texts)
-	if err != nil {
+	if err := s.indexer.ReindexVersion(ctx, indexer.Input{
+		Resource: *resource,
+		Version:  *version,
+	}); err != nil {
 		return nil, nil, err
-	}
-	if len(vectors) != len(chunks) {
-		return nil, nil, fmt.Errorf("embedding 数量不匹配：得到 %d 个向量，对应 %d 个分块", len(vectors), len(chunks))
-	}
-
-	for index, chunk := range chunks {
-		err := s.resourceRepo.CreateChunk(ctx, &postgres.ResourceChunk{
-			ResourceID:   resource.ID,
-			VersionID:    version.ID,
-			ChunkIndex:   chunk.ChunkIndex,
-			SectionTitle: chunk.SectionTitle,
-			Content:      chunk.Content,
-			Embedding:    pgvector.NewVector(vectors[index]),
-		})
-		if err != nil {
-			return nil, nil, err
-		}
 	}
 
 	return resource, version, nil

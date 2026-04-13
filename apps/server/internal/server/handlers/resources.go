@@ -7,17 +7,21 @@ import (
 	"time"
 
 	"agent_project/apps/server/internal/knowledge/citation"
-	"agent_project/apps/server/internal/knowledge/retriever"
 	"agent_project/apps/server/internal/storage/postgres"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/google/uuid"
 )
+
+type resourceSearchService interface {
+	SearchByResource(ctx context.Context, resourceID string, query string, limit int) ([]citation.Citation, error)
+}
 
 // ResourceHandler 暴露由资源存储和语义检索支撑的 HTTP 接口。
 type ResourceHandler struct {
 	resourceRepo *postgres.ResourceRepo
-	retriever    *retriever.Service
+	retriever    resourceSearchService
 }
 
 // resourceSummary 是资源列表和详情接口共享的精简资源视图。
@@ -55,7 +59,7 @@ type searchResourcesResponse struct {
 }
 
 // NewResourceHandler 把资源相关 HTTP handler 依赖的存储层和检索服务接起来。
-func NewResourceHandler(repo *postgres.ResourceRepo, ret *retriever.Service) *ResourceHandler {
+func NewResourceHandler(repo *postgres.ResourceRepo, ret resourceSearchService) *ResourceHandler {
 	return &ResourceHandler{
 		resourceRepo: repo,
 		retriever:    ret,
@@ -87,7 +91,15 @@ func (h *ResourceHandler) List(requestCtx context.Context, ctx *app.RequestConte
 
 // GetByID 返回资源详情页需要的资源信息和最新版本。
 func (h *ResourceHandler) GetByID(requestCtx context.Context, ctx *app.RequestContext) {
-	resourceID := ctx.Param("id")
+	if h.resourceRepo == nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "资源存储未配置"})
+		return
+	}
+
+	resourceID, ok := parseResourceIDParam(ctx)
+	if !ok {
+		return
+	}
 
 	resource, err := h.resourceRepo.GetByID(requestCtx, resourceID)
 	if err != nil {
@@ -133,7 +145,11 @@ func (h *ResourceHandler) ExportCurrentVersion(requestCtx context.Context, ctx *
 		return
 	}
 
-	resourceID := ctx.Param("id")
+	resourceID, ok := parseResourceIDParam(ctx)
+	if !ok {
+		return
+	}
+
 	resource, err := h.resourceRepo.GetByID(requestCtx, resourceID)
 	if err != nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询资源失败"})
@@ -165,12 +181,41 @@ func (h *ResourceHandler) Search(requestCtx context.Context, ctx *app.RequestCon
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "查询参数 q 不能为空"})
 		return
 	}
+	if h.resourceRepo == nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "资源存储未配置"})
+		return
+	}
+	resourceID, ok := parseResourceIDParam(ctx)
+	if !ok {
+		return
+	}
+
+	resource, err := h.resourceRepo.GetByID(requestCtx, resourceID)
+	if err != nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询资源失败"})
+		return
+	}
+	if resource == nil {
+		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "资源不存在"})
+		return
+	}
+
+	version, err := h.resourceRepo.GetCurrentVersion(requestCtx, resourceID)
+	if err != nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询资源版本失败"})
+		return
+	}
+	if version == nil {
+		ctx.JSON(consts.StatusConflict, map[string]string{"error": "资源当前版本不存在，无法检索"})
+		return
+	}
+
 	if h.retriever == nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "检索服务未配置"})
 		return
 	}
 
-	citations, err := h.retriever.SearchByResource(requestCtx, ctx.Param("id"), query, 5)
+	citations, err := h.retriever.SearchByResource(requestCtx, resourceID, query, 5)
 	if err != nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "检索资源失败"})
 		return
@@ -180,6 +225,16 @@ func (h *ResourceHandler) Search(requestCtx context.Context, ctx *app.RequestCon
 		Query:     query,
 		Citations: citations,
 	})
+}
+
+func parseResourceIDParam(ctx *app.RequestContext) (string, bool) {
+	resourceID := strings.TrimSpace(ctx.Param("id"))
+	if _, err := uuid.Parse(resourceID); err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "资源 ID 非法"})
+		return "", false
+	}
+
+	return resourceID, true
 }
 
 // exportFileName 为下载响应生成稳定的 Markdown 文件名，避免路径分隔符进入响应头。

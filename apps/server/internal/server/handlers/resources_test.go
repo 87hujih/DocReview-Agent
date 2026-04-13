@@ -9,6 +9,7 @@ import (
 	"time"
 
 	appconfig "agent_project/apps/server/internal/config"
+	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/postgres"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -162,7 +163,7 @@ func TestExportCurrentResourceVersionHandlerWithoutCurrentVersion(t *testing.T) 
 func TestSearchResourceMissingQuery(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
-	handler := NewResourceHandler(repo, nil)
+	handler := NewResourceHandler(repo, fakeResourceSearchService{})
 	engine := server.New()
 	engine.GET("/api/resources/:id/search", handler.Search)
 
@@ -175,6 +176,130 @@ func TestSearchResourceMissingQuery(t *testing.T) {
 	body := string(response.Body())
 	if !strings.Contains(body, "查询参数 q 不能为空") {
 		t.Fatalf("expected missing query error, got %q", body)
+	}
+}
+
+func TestSearchResourceInvalidID(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, fakeResourceSearchService{})
+	engine := server.New()
+	engine.GET("/api/resources/:id/search", handler.Search)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/not-a-uuid/search?q=考勤", nil).Result()
+
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+	if body := string(response.Body()); !strings.Contains(body, "资源 ID 非法") {
+		t.Fatalf("expected invalid id error, got %q", body)
+	}
+}
+
+func TestSearchResourceNotFound(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, fakeResourceSearchService{})
+	engine := server.New()
+	engine.GET("/api/resources/:id/search", handler.Search)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/00000000-0000-0000-0000-000000000000/search?q=考勤", nil).Result()
+
+	if response.StatusCode() != consts.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", consts.StatusNotFound, response.StatusCode())
+	}
+}
+
+func TestSearchResourceMissingCurrentVersion(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, fakeResourceSearchService{})
+	engine := server.New()
+	engine.GET("/api/resources/:id/search", handler.Search)
+
+	ctx := testContext(t)
+	resource, err := repo.Create(ctx, "缺少当前版本搜索测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/"+resource.ID+"/search?q=考勤", nil).Result()
+
+	if response.StatusCode() != consts.StatusConflict {
+		t.Fatalf("expected status %d, got %d", consts.StatusConflict, response.StatusCode())
+	}
+	if body := string(response.Body()); !strings.Contains(body, "资源当前版本不存在，无法检索") {
+		t.Fatalf("expected missing current version error, got %q", body)
+	}
+}
+
+func TestSearchResourceSuccess(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, fakeResourceSearchService{
+		citations: []citation.Citation{
+			{
+				CitationID:   "cite_1",
+				SectionTitle: "考勤管理",
+				Snippet:      "新版本考勤条款",
+			},
+		},
+	})
+	engine := server.New()
+	engine.GET("/api/resources/:id/search", handler.Search)
+
+	ctx := testContext(t)
+	resource, err := repo.Create(ctx, "资源搜索成功测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+	if _, err := repo.CreateVersion(ctx, resource.ID, 1, "## 考勤管理\n新版本考勤条款", "original"); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/"+resource.ID+"/search?q=考勤", nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+	body := string(response.Body())
+	if !strings.Contains(body, "\"citations\"") || !strings.Contains(body, "新版本考勤条款") {
+		t.Fatalf("expected citations in response, got %q", body)
+	}
+}
+
+func TestSearchResourceNoHits(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, fakeResourceSearchService{})
+	engine := server.New()
+	engine.GET("/api/resources/:id/search", handler.Search)
+
+	ctx := testContext(t)
+	resource, err := repo.Create(ctx, "资源搜索空结果测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+	if _, err := repo.CreateVersion(ctx, resource.ID, 1, "## 考勤管理\n当前版本没有命中内容", "original"); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/"+resource.ID+"/search?q=考勤", nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+	if body := string(response.Body()); !strings.Contains(body, "\"citations\":[]") {
+		t.Fatalf("expected empty citations, got %q", body)
 	}
 }
 
@@ -223,4 +348,13 @@ func testContext(t *testing.T) context.Context {
 // uniqueSuffix 生成测试数据使用的唯一后缀。
 func uniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+type fakeResourceSearchService struct {
+	citations []citation.Citation
+	err       error
+}
+
+func (f fakeResourceSearchService) SearchByResource(context.Context, string, string, int) ([]citation.Citation, error) {
+	return f.citations, f.err
 }

@@ -17,6 +17,7 @@ import (
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/job"
 	"agent_project/apps/server/internal/knowledge/embedder"
+	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/knowledge/ingest"
 	"agent_project/apps/server/internal/knowledge/reranker"
 	"agent_project/apps/server/internal/knowledge/retriever"
@@ -66,6 +67,7 @@ func main() {
 
 	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
 	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient)
+	versionIndexer := indexer.NewService(resourceRepo, emb)
 	docParser, err := documentparser.New(documentparser.Options{
 		Mode:        cfg.DocumentParser,
 		TikaURL:     cfg.TikaURL,
@@ -75,7 +77,7 @@ func main() {
 		log.Fatalf("文档解析器初始化失败：%v", err)
 	}
 
-	ingestService := ingest.NewService(resourceRepo, emb, ingest.WithParser(docParser))
+	ingestService := ingest.NewService(resourceRepo, emb, ingest.WithParser(docParser), ingest.WithIndexer(versionIndexer))
 
 	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
 	if err != nil {
@@ -102,7 +104,7 @@ func main() {
 		log.Fatalf("原文件存储初始化失败：%v", err)
 	}
 
-	exec := executor.New(taskRepo, resourceRepo)
+	exec := executor.New(taskRepo, resourceRepo, versionIndexer)
 	worker := job.New(jobRepo, exec, taskRepo, 100, eventService)
 	worker.Start(ctx, 3)
 

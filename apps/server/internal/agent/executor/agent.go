@@ -7,20 +7,38 @@ import (
 	"strings"
 
 	"agent_project/apps/server/internal/agent/editor"
+	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+type taskReader interface {
+	GetArtifacts(ctx context.Context, taskID string) ([]postgres.TaskArtifact, error)
+	GetByID(ctx context.Context, id string) (*postgres.Task, error)
+}
+
+type resourceVersionStore interface {
+	GetByID(ctx context.Context, id string) (*postgres.Resource, error)
+	GetCurrentVersion(ctx context.Context, resourceID string) (*postgres.ResourceVersion, error)
+	CreateVersion(ctx context.Context, resourceID string, versionNumber int, content string, source string) (*postgres.ResourceVersion, error)
+}
+
+type versionIndexer interface {
+	ReindexVersion(ctx context.Context, input indexer.Input) error
+}
+
 // Executor 负责把 diff_preview 应用到当前文档版本并创建新版本。
 type Executor struct {
-	taskRepo     *postgres.TaskRepo
-	resourceRepo *postgres.ResourceRepo
+	taskRepo     taskReader
+	resourceRepo resourceVersionStore
+	indexer      versionIndexer
 }
 
 // New 构造执行代理。
-func New(taskRepo *postgres.TaskRepo, resourceRepo *postgres.ResourceRepo) *Executor {
+func New(taskRepo taskReader, resourceRepo resourceVersionStore, indexer versionIndexer) *Executor {
 	return &Executor{
 		taskRepo:     taskRepo,
 		resourceRepo: resourceRepo,
+		indexer:      indexer,
 	}
 }
 
@@ -46,6 +64,14 @@ func (e *Executor) Execute(ctx context.Context, job *postgres.ExecutionJob) (str
 	}
 	if task == nil {
 		return "", fmt.Errorf("任务不存在")
+	}
+
+	resource, err := e.resourceRepo.GetByID(ctx, task.ResourceID)
+	if err != nil {
+		return "", err
+	}
+	if resource == nil {
+		return "", fmt.Errorf("资源不存在")
 	}
 
 	currentVersion, err := e.resourceRepo.GetCurrentVersion(ctx, task.ResourceID)
@@ -78,6 +104,13 @@ func (e *Executor) Execute(ctx context.Context, job *postgres.ExecutionJob) (str
 		"agent_edit",
 	)
 	if err != nil {
+		return "", err
+	}
+
+	if err := e.indexer.ReindexVersion(ctx, indexer.Input{
+		Resource: *resource,
+		Version:  *newVersion,
+	}); err != nil {
 		return "", err
 	}
 

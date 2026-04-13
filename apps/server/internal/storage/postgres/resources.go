@@ -48,6 +48,14 @@ type ResourceChunk struct {
 	CreatedAt    time.Time
 }
 
+// ResourceChunkInput 描述重建版本索引时待写入的分块内容。
+type ResourceChunkInput struct {
+	ChunkIndex   int
+	SectionTitle string
+	Content      string
+	Embedding    pgvector.Vector
+}
+
 // NewResourceRepo 使用给定连接池创建仓储实例。
 func NewResourceRepo(pool *pgxpool.Pool) *ResourceRepo {
 	return &ResourceRepo{pool: pool}
@@ -158,6 +166,49 @@ func (r *ResourceRepo) CreateChunk(ctx context.Context, chunk *ResourceChunk) er
 	`, chunk.ResourceID, chunk.VersionID, chunk.ChunkIndex, chunk.SectionTitle, chunk.Content, chunk.Embedding).Scan(&chunk.ID, &chunk.CreatedAt)
 }
 
+// CountChunksByVersion 返回某个资源版本当前已有的分块数量。
+func (r *ResourceRepo) CountChunksByVersion(ctx context.Context, versionID string) (int, error) {
+	var count int
+	if err := r.pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM resource_chunks
+		WHERE version_id = $1
+	`, versionID).Scan(&count); err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
+// ReplaceVersionChunks 以“先删后建”的方式重建一个版本的全部分块。
+func (r *ResourceRepo) ReplaceVersionChunks(ctx context.Context, versionID string, resourceID string, chunks []ResourceChunkInput) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM resource_chunks
+		WHERE version_id = $1
+	`, versionID); err != nil {
+		return err
+	}
+
+	for _, chunk := range chunks {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO resource_chunks (resource_id, version_id, chunk_index, section_title, content, embedding)
+			VALUES ($1, $2, $3, $4, $5, $6)
+		`, resourceID, versionID, chunk.ChunkIndex, chunk.SectionTitle, chunk.Content, chunk.Embedding); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 // SearchChunks 使用 pgvector 距离排序，在全部资源范围内执行语义检索。
 func (r *ResourceRepo) SearchChunks(ctx context.Context, embedding pgvector.Vector, limit int) ([]ResourceChunk, error) {
 	rows, err := r.pool.Query(ctx, `
@@ -183,6 +234,23 @@ func (r *ResourceRepo) SearchChunksByResource(ctx context.Context, embedding pgv
 		ORDER BY embedding <=> $1
 		LIMIT $3
 	`, embedding, resourceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectResourceChunks(rows)
+}
+
+// SearchChunksByVersion 把语义检索范围收敛到单个资源版本。
+func (r *ResourceRepo) SearchChunksByVersion(ctx context.Context, embedding pgvector.Vector, limit int, versionID string) ([]ResourceChunk, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		FROM resource_chunks
+		WHERE version_id = $2
+		ORDER BY embedding <=> $1
+		LIMIT $3
+	`, embedding, versionID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -244,6 +312,38 @@ func (r *ResourceRepo) SearchChunksLexicalByResource(ctx context.Context, query 
 			chunk_index ASC
 		LIMIT $3
 	`, normalizedQuery, resourceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectResourceChunks(rows)
+}
+
+// SearchChunksLexicalByVersion 把词法候选召回范围限制在单个资源版本内。
+func (r *ResourceRepo) SearchChunksLexicalByVersion(ctx context.Context, query string, limit int, versionID string) ([]ResourceChunk, error) {
+	normalizedQuery := normalizeLexicalQuery(query)
+	if normalizedQuery == "" || limit <= 0 {
+		return []ResourceChunk{}, nil
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		FROM resource_chunks
+		WHERE version_id = $2
+		  AND (
+			lower(coalesce(section_title, '') || ' ' || content) LIKE '%' || $1 || '%'
+			OR lower(coalesce(section_title, '') || ' ' || content) % $1
+		  )
+		ORDER BY
+			CASE
+				WHEN lower(coalesce(section_title, '') || ' ' || content) LIKE '%' || $1 || '%' THEN 1
+				ELSE 0
+			END DESC,
+			similarity(lower(coalesce(section_title, '') || ' ' || content), $1) DESC,
+			chunk_index ASC
+		LIMIT $3
+	`, normalizedQuery, versionID, limit)
 	if err != nil {
 		return nil, err
 	}

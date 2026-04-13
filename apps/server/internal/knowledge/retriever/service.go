@@ -6,12 +6,29 @@ import (
 	"strings"
 
 	"agent_project/apps/server/internal/knowledge/citation"
-	"agent_project/apps/server/internal/knowledge/embedder"
 	"agent_project/apps/server/internal/knowledge/reranker"
 	"agent_project/apps/server/internal/storage/postgres"
 
 	"github.com/pgvector/pgvector-go"
 )
+
+type resourceRepository interface {
+	GetCurrentVersion(ctx context.Context, resourceID string) (*postgres.ResourceVersion, error)
+	SearchChunks(ctx context.Context, embedding pgvector.Vector, limit int) ([]postgres.ResourceChunk, error)
+	SearchChunksLexical(ctx context.Context, query string, limit int) ([]postgres.ResourceChunk, error)
+	SearchChunksByResource(ctx context.Context, embedding pgvector.Vector, limit int, resourceID string) ([]postgres.ResourceChunk, error)
+	SearchChunksLexicalByResource(ctx context.Context, query string, limit int, resourceID string) ([]postgres.ResourceChunk, error)
+	SearchChunksByVersion(ctx context.Context, embedding pgvector.Vector, limit int, versionID string) ([]postgres.ResourceChunk, error)
+	SearchChunksLexicalByVersion(ctx context.Context, query string, limit int, versionID string) ([]postgres.ResourceChunk, error)
+}
+
+type embedderClient interface {
+	Embed(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+type rerankerClient interface {
+	Rerank(ctx context.Context, query string, documents []string, topN int) ([]reranker.Result, error)
+}
 
 const (
 	semanticCandidateLimit = 8
@@ -20,13 +37,13 @@ const (
 
 // Service 协调 query 向量化、双路候选召回和 reranker 重排序，完成混合检索。
 type Service struct {
-	resourceRepo *postgres.ResourceRepo
-	embedder     *embedder.Embedder
-	reranker     *reranker.Client
+	resourceRepo resourceRepository
+	embedder     embedderClient
+	reranker     rerankerClient
 }
 
 // NewService 把检索服务依赖的存储层、embedding 和 reranker 能力接起来。
-func NewService(repo *postgres.ResourceRepo, emb *embedder.Embedder, rerankerClient *reranker.Client) *Service {
+func NewService(repo resourceRepository, emb embedderClient, rerankerClient rerankerClient) *Service {
 	return &Service{
 		resourceRepo: repo,
 		embedder:     emb,
@@ -45,10 +62,18 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]citati
 
 // SearchByResource 把混合检索范围限制到单个资源。
 func (s *Service) SearchByResource(ctx context.Context, resourceID string, query string, limit int) ([]citation.Citation, error) {
+	currentVersion, err := s.resourceRepo.GetCurrentVersion(ctx, resourceID)
+	if err != nil {
+		return nil, err
+	}
+	if currentVersion == nil {
+		return []citation.Citation{}, nil
+	}
+
 	return s.search(ctx, query, limit, func(vector pgvector.Vector) ([]postgres.ResourceChunk, error) {
-		return s.resourceRepo.SearchChunksByResource(ctx, vector, semanticCandidateLimit, resourceID)
+		return s.resourceRepo.SearchChunksByVersion(ctx, vector, semanticCandidateLimit, currentVersion.ID)
 	}, func(normalizedQuery string) ([]postgres.ResourceChunk, error) {
-		return s.resourceRepo.SearchChunksLexicalByResource(ctx, normalizedQuery, lexicalCandidateLimit, resourceID)
+		return s.resourceRepo.SearchChunksLexicalByVersion(ctx, normalizedQuery, lexicalCandidateLimit, currentVersion.ID)
 	})
 }
 

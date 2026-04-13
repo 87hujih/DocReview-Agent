@@ -69,6 +69,20 @@ TIKA_TIMEOUT_MS=30000
 
 原始上传文件会保存在 `UPLOAD_STORAGE_DIR`（默认 `data/uploads`），单文件上限由 `UPLOAD_MAX_BYTES` 控制（默认 20MB）。助手消息中的文件卡片会提供“下载原文件”入口；任务审批执行完成后，任务详情页会提供“查看修订结果”和“下载修订结果”，资源详情页默认以 Markdown / 纯文本展示并导出当前版本。
 
+### 资源索引修复
+
+如果资源详情可以打开，但 `/api/resources/:id/search?q=...` 长期返回空引用，通常表示该资源当前版本缺少 `resource_chunks` 索引。可以使用后端 CLI 重建当前版本索引：
+
+```bash
+# 修复单个资源当前版本
+go run ./apps/server/cmd/resource-reindex --resource-id <resource_uuid>
+
+# 扫描并修复所有“当前版本 chunk 数为 0”的资源
+go run ./apps/server/cmd/resource-reindex --missing-current
+```
+
+该命令复用 `.env` / 环境变量中的 `DATABASE_URL`、`SILICONFLOW_API_KEY`、`EMBEDDING_MODEL` 和 `EMBEDDING_DIM`。命令只重建资源的**当前版本**索引，不回填历史版本，也不会修改资源正文。运行后可用资源搜索接口验证 citation 是否恢复。
+
 ## 演示走查
 
 1. 打开首页「助手」页面（`/`），先用自然语言描述需求，例如“帮我检查员工手册里考勤相关条款有没有歧义”

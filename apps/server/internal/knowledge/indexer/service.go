@@ -1,0 +1,84 @@
+package indexer
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"agent_project/apps/server/internal/knowledge/chunker"
+	"agent_project/apps/server/internal/storage/postgres"
+
+	"github.com/pgvector/pgvector-go"
+)
+
+type resourceChunkReplacer interface {
+	ReplaceVersionChunks(ctx context.Context, versionID string, resourceID string, chunks []postgres.ResourceChunkInput) error
+}
+
+type embedderClient interface {
+	Embed(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+// Input 描述一次重建版本索引所需的资源与版本上下文。
+type Input struct {
+	Resource postgres.Resource
+	Version  postgres.ResourceVersion
+}
+
+// Service 负责把某个资源版本重建为一组可检索分块。
+type Service struct {
+	repo     resourceChunkReplacer
+	embedder embedderClient
+}
+
+// NewService 创建版本索引器。
+func NewService(repo resourceChunkReplacer, embedder embedderClient) *Service {
+	return &Service{
+		repo:     repo,
+		embedder: embedder,
+	}
+}
+
+// ReindexVersion 根据当前版本正文重新构建该版本的全部分块。
+func (s *Service) ReindexVersion(ctx context.Context, input Input) error {
+	content := strings.TrimSpace(input.Version.Content)
+	if content == "" {
+		return s.repo.ReplaceVersionChunks(ctx, input.Version.ID, input.Resource.ID, nil)
+	}
+
+	chunks := chunker.ChunkMarkdown(content)
+	if len(chunks) == 0 {
+		chunks = []chunker.Chunk{
+			{
+				ChunkIndex:   0,
+				SectionTitle: strings.TrimSpace(input.Resource.Title),
+				Content:      content,
+			},
+		}
+	}
+
+	texts := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		texts = append(texts, chunk.Content)
+	}
+
+	vectors, err := s.embedder.Embed(ctx, texts)
+	if err != nil {
+		return err
+	}
+	if len(vectors) != len(chunks) {
+		return fmt.Errorf("embedding 数量不匹配：得到 %d 个向量，对应 %d 个分块", len(vectors), len(chunks))
+	}
+
+	inputChunks := make([]postgres.ResourceChunkInput, 0, len(chunks))
+	for index, chunk := range chunks {
+		inputChunks = append(inputChunks, postgres.ResourceChunkInput{
+			ChunkIndex:   chunk.ChunkIndex,
+			SectionTitle: chunk.SectionTitle,
+			Content:      chunk.Content,
+			Embedding:    pgvector.NewVector(vectors[index]),
+		})
+	}
+
+	return s.repo.ReplaceVersionChunks(ctx, input.Version.ID, input.Resource.ID, inputChunks)
+}

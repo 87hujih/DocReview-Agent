@@ -23,10 +23,8 @@ type Deps struct {
 // New 构建 Hertz 服务，并只注册当前依赖已经就绪的路由。
 func New(cfg appconfig.Config, logger *slog.Logger, deps Deps) *server.Hertz {
 	h := server.Default(server.WithHostPorts(":" + cfg.ServerPort))
+	h.Use(servermiddleware.RequestContext("server", logger))
 	h.Use(servermiddleware.CORS())
-	if logger != nil {
-		h.Use(servermiddleware.RequestContext("server", logger))
-	}
 	Register(h.Engine)
 	if deps.ResourceHandler != nil {
 		registerResourceRoutes(h.Engine, deps.ResourceHandler)

@@ -3,10 +3,13 @@ package ingest
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	documentparser "agent_project/apps/server/internal/document/parser"
+	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
@@ -119,16 +122,90 @@ func TestImportDocumentReturnsParserErrorBeforeWritingResource(t *testing.T) {
 	}
 }
 
+func TestImportDirectoryReindexesExistingResourceWithoutChunks(t *testing.T) {
+	tempDir := t.TempDir()
+	content := "# 考勤制度\n\n## 考勤管理\n员工必须在九点前签到。"
+	filePath := filepath.Join(tempDir, "attendance-policy.md")
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	repo := &fakeResourceRepo{
+		existingResources: []postgres.Resource{
+			{ID: "resource-existing", Title: "考勤制度", SourceType: "upload"},
+		},
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-existing",
+			ResourceID: "resource-existing",
+			Content:    content,
+		},
+		chunkCount: 0,
+	}
+	versionIndexer := &fakeVersionIndexer{}
+	service := NewService(repo, fakeEmbedder{}, WithIndexer(versionIndexer))
+
+	if err := service.ImportDirectory(context.Background(), tempDir); err != nil {
+		t.Fatalf("import directory: %v", err)
+	}
+
+	if versionIndexer.calls != 1 {
+		t.Fatalf("expected exactly 1 reindex call, got %d", versionIndexer.calls)
+	}
+	if versionIndexer.lastInput.Version.ID != "version-existing" {
+		t.Fatalf("expected reindexed version %q, got %q", "version-existing", versionIndexer.lastInput.Version.ID)
+	}
+	if repo.createCalls != 0 {
+		t.Fatalf("expected no new resource create, got %d", repo.createCalls)
+	}
+}
+
+func TestImportDirectorySkipsIndexedResource(t *testing.T) {
+	tempDir := t.TempDir()
+	content := "# 考勤制度\n\n## 考勤管理\n员工必须在九点前签到。"
+	filePath := filepath.Join(tempDir, "attendance-policy.md")
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	repo := &fakeResourceRepo{
+		existingResources: []postgres.Resource{
+			{ID: "resource-existing", Title: "考勤制度", SourceType: "upload"},
+		},
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-existing",
+			ResourceID: "resource-existing",
+			Content:    content,
+		},
+		chunkCount: 2,
+	}
+	versionIndexer := &fakeVersionIndexer{}
+	service := NewService(repo, fakeEmbedder{}, WithIndexer(versionIndexer))
+
+	if err := service.ImportDirectory(context.Background(), tempDir); err != nil {
+		t.Fatalf("import directory: %v", err)
+	}
+
+	if versionIndexer.calls != 0 {
+		t.Fatalf("expected indexed resource to skip reindex, got %d calls", versionIndexer.calls)
+	}
+	if repo.createCalls != 0 {
+		t.Fatalf("expected no new resource create, got %d", repo.createCalls)
+	}
+}
+
 type fakeResourceRepo struct {
-	createSourceRef *string
-	createdChunks   []*postgres.ResourceChunk
-	resource        *postgres.Resource
-	version         *postgres.ResourceVersion
-	createCalls     int
+	existingResources []postgres.Resource
+	currentVersion    *postgres.ResourceVersion
+	chunkCount        int
+	createSourceRef   *string
+	createdChunks     []*postgres.ResourceChunk
+	resource          *postgres.Resource
+	version           *postgres.ResourceVersion
+	createCalls       int
 }
 
 func (r *fakeResourceRepo) List(context.Context) ([]postgres.Resource, error) {
-	return nil, nil
+	return r.existingResources, nil
 }
 
 func (r *fakeResourceRepo) CreateWithSourceRef(_ context.Context, title string, sourceType string, sourceRef *string) (*postgres.Resource, error) {
@@ -164,6 +241,30 @@ func (r *fakeResourceRepo) CreateChunk(_ context.Context, chunk *postgres.Resour
 	return nil
 }
 
+func (r *fakeResourceRepo) GetCurrentVersion(context.Context, string) (*postgres.ResourceVersion, error) {
+	return r.currentVersion, nil
+}
+
+func (r *fakeResourceRepo) CountChunksByVersion(context.Context, string) (int, error) {
+	return r.chunkCount, nil
+}
+
+func (r *fakeResourceRepo) ReplaceVersionChunks(_ context.Context, versionID string, resourceID string, chunks []postgres.ResourceChunkInput) error {
+	r.createdChunks = r.createdChunks[:0]
+	for _, chunk := range chunks {
+		r.createdChunks = append(r.createdChunks, &postgres.ResourceChunk{
+			ResourceID:   resourceID,
+			VersionID:    versionID,
+			ChunkIndex:   chunk.ChunkIndex,
+			SectionTitle: chunk.SectionTitle,
+			Content:      chunk.Content,
+			Embedding:    chunk.Embedding,
+		})
+	}
+
+	return nil
+}
+
 type fakeEmbedder struct{}
 
 func (fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -195,4 +296,15 @@ func (p fakeDocumentParser) Parse(context.Context, documentparser.Input) (*docum
 	}
 
 	return p.result, nil
+}
+
+type fakeVersionIndexer struct {
+	calls     int
+	lastInput indexer.Input
+}
+
+func (f *fakeVersionIndexer) ReindexVersion(_ context.Context, input indexer.Input) error {
+	f.calls++
+	f.lastInput = input
+	return nil
 }
