@@ -48,6 +48,26 @@ type ResourceChunk struct {
 	CreatedAt    time.Time
 }
 
+// ResourceChunkInput 表示写入资源图时预先算好的单个 chunk。
+type ResourceChunkInput struct {
+	ChunkIndex   int
+	SectionTitle string
+	Content      string
+	Embedding    pgvector.Vector
+}
+
+// CreateDocumentGraphParams 描述一次原子写入资源、版本和 chunks 所需的数据。
+type CreateDocumentGraphParams struct {
+	ResourceID     string
+	Title         string
+	SourceType    string
+	SourceRef     *string
+	VersionNumber int
+	VersionSource string
+	Content       string
+	Chunks        []ResourceChunkInput
+}
+
 // NewResourceRepo 使用给定连接池创建仓储实例。
 func NewResourceRepo(pool *pgxpool.Pool) *ResourceRepo {
 	return &ResourceRepo{pool: pool}
@@ -149,6 +169,31 @@ func (r *ResourceRepo) GetCurrentVersion(ctx context.Context, resourceID string)
 	return &version, nil
 }
 
+// CountChunksByVersion 返回指定版本当前已有的 chunk 数。
+func (r *ResourceRepo) CountChunksByVersion(ctx context.Context, versionID string) (int, error) {
+	var count int
+	if err := r.pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM resource_chunks
+		WHERE version_id = $1
+	`, versionID).Scan(&count); err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
+// UpdateSourceRef 为资源回填或更新来源引用。
+func (r *ResourceRepo) UpdateSourceRef(ctx context.Context, resourceID string, sourceRef *string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE resources
+		SET source_ref = $2,
+		    updated_at = now()
+		WHERE id = $1
+	`, resourceID, sourceRef)
+	return err
+}
+
 // CreateChunk 持久化一个可检索分块，并把生成出的 ID 和时间戳回填到入参结构体。
 func (r *ResourceRepo) CreateChunk(ctx context.Context, chunk *ResourceChunk) error {
 	return r.pool.QueryRow(ctx, `
@@ -156,6 +201,81 @@ func (r *ResourceRepo) CreateChunk(ctx context.Context, chunk *ResourceChunk) er
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, created_at
 	`, chunk.ResourceID, chunk.VersionID, chunk.ChunkIndex, chunk.SectionTitle, chunk.Content, chunk.Embedding).Scan(&chunk.ID, &chunk.CreatedAt)
+}
+
+// CreateDocumentGraph 在单事务里写入资源、版本和全部 chunks，避免残留半成品资源。
+func (r *ResourceRepo) CreateDocumentGraph(ctx context.Context, params CreateDocumentGraphParams) (*Resource, *ResourceVersion, error) {
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer conn.Release()
+
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	var (
+		resource      Resource
+		version       ResourceVersion
+		versionNumber = params.VersionNumber
+	)
+	if versionNumber <= 0 {
+		versionNumber = 1
+	}
+
+	if strings.TrimSpace(params.ResourceID) == "" {
+		resource, err = scanResource(tx.QueryRow(ctx, `
+			INSERT INTO resources (title, source_type, source_ref)
+			VALUES ($1, $2, $3)
+			RETURNING id, title, source_type, source_ref, created_at, updated_at
+		`, params.Title, params.SourceType, params.SourceRef))
+		if err != nil {
+			return nil, nil, err
+		}
+	} else {
+		resource, err = scanResource(tx.QueryRow(ctx, `
+			SELECT id, title, source_type, source_ref, created_at, updated_at
+			FROM resources
+			WHERE id = $1
+			FOR UPDATE
+		`, params.ResourceID))
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	version, err = scanResourceVersion(tx.QueryRow(ctx, `
+		INSERT INTO resource_versions (resource_id, version_number, content, source)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, resource_id, version_number, content, source, created_at
+	`, resource.ID, versionNumber, params.Content, params.VersionSource))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for _, chunk := range params.Chunks {
+		if err := createChunkTx(ctx, tx, &ResourceChunk{
+			ResourceID:   resource.ID,
+			VersionID:    version.ID,
+			ChunkIndex:   chunk.ChunkIndex,
+			SectionTitle: chunk.SectionTitle,
+			Content:      chunk.Content,
+			Embedding:    chunk.Embedding,
+		}); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	return &resource, &version, nil
 }
 
 // SearchChunks 使用 pgvector 距离排序，在全部资源范围内执行语义检索。
@@ -265,6 +385,14 @@ func collectResourceChunks(rows pgx.Rows) ([]ResourceChunk, error) {
 	}
 
 	return chunks, rows.Err()
+}
+
+func createChunkTx(ctx context.Context, tx pgx.Tx, chunk *ResourceChunk) error {
+	return tx.QueryRow(ctx, `
+		INSERT INTO resource_chunks (resource_id, version_id, chunk_index, section_title, content, embedding)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, created_at
+	`, chunk.ResourceID, chunk.VersionID, chunk.ChunkIndex, chunk.SectionTitle, chunk.Content, chunk.Embedding).Scan(&chunk.ID, &chunk.CreatedAt)
 }
 
 // scanResource 从单行结果中解析 Resource。

@@ -24,9 +24,10 @@ var (
 
 type resourceRepository interface {
 	List(ctx context.Context) ([]postgres.Resource, error)
-	CreateWithSourceRef(ctx context.Context, title string, sourceType string, sourceRef *string) (*postgres.Resource, error)
-	CreateVersion(ctx context.Context, resourceID string, versionNumber int, content string, source string) (*postgres.ResourceVersion, error)
-	CreateChunk(ctx context.Context, chunk *postgres.ResourceChunk) error
+	GetCurrentVersion(ctx context.Context, resourceID string) (*postgres.ResourceVersion, error)
+	CountChunksByVersion(ctx context.Context, versionID string) (int, error)
+	UpdateSourceRef(ctx context.Context, resourceID string, sourceRef *string) error
+	CreateDocumentGraph(ctx context.Context, params postgres.CreateDocumentGraphParams) (*postgres.Resource, *postgres.ResourceVersion, error)
 }
 
 type embedderClient interface {
@@ -148,15 +149,11 @@ func (s *Service) importFile(ctx context.Context, filePath string, fileName stri
 		return err
 	}
 
+	sourceRef := strings.TrimSpace(fileName)
+
 	existingResources, err := s.resourceRepo.List(ctx)
 	if err != nil {
 		return err
-	}
-	for _, resource := range existingResources {
-		if resource.Title == title {
-			log.Printf("跳过已导入文件：%s", title)
-			return nil
-		}
 	}
 
 	contentBytes, err := os.ReadFile(filePath)
@@ -165,7 +162,20 @@ func (s *Service) importFile(ctx context.Context, filePath string, fileName stri
 	}
 	content := string(contentBytes)
 
-	_, _, err = s.saveDocument(ctx, title, "upload", nil, content, "original")
+	matchedResource, backfillSourceRef := findImportTarget(existingResources, title, sourceRef)
+	if matchedResource != nil {
+		if backfillSourceRef {
+			ref := stringPointer(sourceRef)
+			if err := s.resourceRepo.UpdateSourceRef(ctx, matchedResource.ID, ref); err != nil {
+				return err
+			}
+			matchedResource.SourceRef = ref
+		}
+
+		return s.ensureResourceIndexed(ctx, *matchedResource, content)
+	}
+
+	_, _, err = s.saveDocument(ctx, title, "upload", stringPointer(sourceRef), content, "original")
 	return err
 }
 
@@ -177,16 +187,64 @@ func (s *Service) saveDocument(
 	content string,
 	versionSource string,
 ) (*postgres.Resource, *postgres.ResourceVersion, error) {
-	resource, err := s.resourceRepo.CreateWithSourceRef(ctx, title, sourceType, sourceRef)
+	chunkInputs, err := s.buildChunkInputs(ctx, title, content)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	version, err := s.resourceRepo.CreateVersion(ctx, resource.ID, 1, content, versionSource)
+	return s.resourceRepo.CreateDocumentGraph(ctx, postgres.CreateDocumentGraphParams{
+		Title:         title,
+		SourceType:    sourceType,
+		SourceRef:     sourceRef,
+		VersionSource: versionSource,
+		Content:       content,
+		Chunks:        chunkInputs,
+	})
+}
+
+func (s *Service) ensureResourceIndexed(ctx context.Context, resource postgres.Resource, content string) error {
+	currentVersion, err := s.resourceRepo.GetCurrentVersion(ctx, resource.ID)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 
+	if currentVersion != nil {
+		chunkCount, err := s.resourceRepo.CountChunksByVersion(ctx, currentVersion.ID)
+		if err != nil {
+			return err
+		}
+		if chunkCount > 0 {
+			log.Printf("跳过已导入文件：%s", resource.Title)
+			return nil
+		}
+	}
+
+	chunkInputs, err := s.buildChunkInputs(ctx, resource.Title, content)
+	if err != nil {
+		return err
+	}
+
+	versionNumber := 1
+	versionSource := "original"
+	if currentVersion != nil {
+		versionNumber = currentVersion.VersionNumber + 1
+		versionSource = "repair_reindex"
+	}
+
+	_, _, err = s.resourceRepo.CreateDocumentGraph(ctx, postgres.CreateDocumentGraphParams{
+		ResourceID:     resource.ID,
+		Title:          resource.Title,
+		SourceType:     resource.SourceType,
+		SourceRef:      resource.SourceRef,
+		VersionNumber:  versionNumber,
+		VersionSource:  versionSource,
+		Content:        content,
+		Chunks:         chunkInputs,
+	})
+	return err
+}
+
+func (s *Service) buildChunkInputs(ctx context.Context, title string, content string) ([]postgres.ResourceChunkInput, error) {
 	chunks := chunker.ChunkMarkdown(content)
 	if len(chunks) == 0 && strings.TrimSpace(content) != "" {
 		chunks = []chunker.Chunk{
@@ -204,27 +262,51 @@ func (s *Service) saveDocument(
 
 	vectors, err := s.embedder.Embed(ctx, texts)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if len(vectors) != len(chunks) {
-		return nil, nil, fmt.Errorf("embedding 数量不匹配：得到 %d 个向量，对应 %d 个分块", len(vectors), len(chunks))
+		return nil, fmt.Errorf("embedding 数量不匹配：得到 %d 个向量，对应 %d 个分块", len(vectors), len(chunks))
 	}
 
+	chunkInputs := make([]postgres.ResourceChunkInput, 0, len(chunks))
 	for index, chunk := range chunks {
-		err := s.resourceRepo.CreateChunk(ctx, &postgres.ResourceChunk{
-			ResourceID:   resource.ID,
-			VersionID:    version.ID,
+		chunkInputs = append(chunkInputs, postgres.ResourceChunkInput{
 			ChunkIndex:   chunk.ChunkIndex,
 			SectionTitle: chunk.SectionTitle,
 			Content:      chunk.Content,
 			Embedding:    pgvector.NewVector(vectors[index]),
 		})
-		if err != nil {
-			return nil, nil, err
+	}
+
+	return chunkInputs, nil
+}
+
+func findImportTarget(resources []postgres.Resource, title string, sourceRef string) (*postgres.Resource, bool) {
+	var legacyMatch *postgres.Resource
+	for index := range resources {
+		resource := &resources[index]
+		if normalizeSourceRef(resource.SourceRef) == sourceRef && sourceRef != "" {
+			return resource, false
+		}
+
+		if legacyMatch == nil && resource.Title == title && normalizeSourceRef(resource.SourceRef) == "" {
+			legacyMatch = resource
 		}
 	}
 
-	return resource, version, nil
+	if legacyMatch != nil {
+		return legacyMatch, true
+	}
+
+	return nil, false
+}
+
+func normalizeSourceRef(sourceRef *string) string {
+	if sourceRef == nil {
+		return ""
+	}
+
+	return strings.TrimSpace(*sourceRef)
 }
 
 // extractTitle 优先读取文件顶部附近的 H1 标题，读不到时再退回到基于文件名生成标题。

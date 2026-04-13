@@ -3,6 +3,8 @@ package ingest
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -119,16 +121,187 @@ func TestImportDocumentReturnsParserErrorBeforeWritingResource(t *testing.T) {
 	}
 }
 
+func TestImportDocumentReturnsEmbedderErrorBeforeWritingResource(t *testing.T) {
+	repo := &fakeResourceRepo{}
+	embedErr := errors.New("embedding failed")
+	service := NewService(repo, fakeEmbedderWithError{err: embedErr})
+
+	_, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName: "学生守则.md",
+		Content:  []byte("# 学生守则\n这里是正文"),
+	})
+	if !errors.Is(err, embedErr) {
+		t.Fatalf("expected embedder error %v, got %v", embedErr, err)
+	}
+
+	if repo.createCalls != 0 {
+		t.Fatalf("expected embedder failure to stop before creating resources, got %d create calls", repo.createCalls)
+	}
+
+	if len(repo.createdChunks) != 0 {
+		t.Fatalf("expected no chunks when embedder fails, got %d", len(repo.createdChunks))
+	}
+}
+
+func TestImportDocumentUsesAtomicGraphWriteForPersistence(t *testing.T) {
+	repo := &fakeResourceRepo{
+		resource: &postgres.Resource{
+			ID:         "resource-graph",
+			Title:      "学生守则",
+			SourceType: "upload",
+		},
+		version: &postgres.ResourceVersion{
+			ID:            "version-graph",
+			ResourceID:    "resource-graph",
+			VersionNumber: 1,
+			Content:       "# 学生守则\n正文",
+			Source:        "assistant_upload",
+		},
+	}
+	service := NewService(repo, fakeEmbedder{})
+
+	result, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName: "学生守则.md",
+		Content:  []byte("# 学生守则\n正文"),
+	})
+	if err != nil {
+		t.Fatalf("import document: %v", err)
+	}
+
+	if result.Resource == nil || result.Resource.ID != "resource-graph" {
+		t.Fatalf("expected graph write resource, got %#v", result.Resource)
+	}
+
+	if repo.graphCalls != 1 {
+		t.Fatalf("expected atomic graph write to be called once, got %d", repo.graphCalls)
+	}
+
+	if repo.createCalls != 0 {
+		t.Fatalf("expected old step-by-step create path to stay unused, got %d create calls", repo.createCalls)
+	}
+
+	if len(repo.graphChunks) == 0 {
+		t.Fatal("expected graph write to receive chunks")
+	}
+}
+
+func TestImportDirectoryBackfillsSourceRefForLegacyTitleMatch(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "student-handbook.md")
+	if err := os.WriteFile(filePath, []byte("# 学生守则\n正文"), 0o600); err != nil {
+		t.Fatalf("write markdown file: %v", err)
+	}
+
+	repo := &fakeResourceRepo{
+		listResult: []postgres.Resource{
+			{
+				ID:         "resource-legacy",
+				Title:      "学生守则",
+				SourceType: "upload",
+			},
+		},
+		currentVersions: map[string]*postgres.ResourceVersion{
+			"resource-legacy": {
+				ID:            "version-legacy",
+				ResourceID:    "resource-legacy",
+				VersionNumber: 1,
+				Content:       "# 学生守则\n正文",
+				Source:        "original",
+			},
+		},
+		chunkCountByVersion: map[string]int{
+			"version-legacy": 1,
+		},
+	}
+	service := NewService(repo, fakeEmbedder{})
+
+	if err := service.ImportDirectory(context.Background(), dir); err != nil {
+		t.Fatalf("import directory: %v", err)
+	}
+
+	if len(repo.updateSourceRefCalls) != 1 {
+		t.Fatalf("expected legacy title match to backfill source_ref once, got %d", len(repo.updateSourceRefCalls))
+	}
+
+	if repo.updateSourceRefCalls[0].resourceID != "resource-legacy" {
+		t.Fatalf("expected source_ref update for %q, got %q", "resource-legacy", repo.updateSourceRefCalls[0].resourceID)
+	}
+
+	if repo.updateSourceRefCalls[0].sourceRef == nil || *repo.updateSourceRefCalls[0].sourceRef != "student-handbook.md" {
+		t.Fatalf("expected source_ref %q, got %#v", "student-handbook.md", repo.updateSourceRefCalls[0].sourceRef)
+	}
+
+	if repo.graphCalls != 0 {
+		t.Fatalf("expected healthy legacy resource to skip reindex, got %d graph writes", repo.graphCalls)
+	}
+}
+
+func TestImportDirectoryRepairsResourceWhenCurrentVersionHasNoChunks(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "student-handbook.md")
+	if err := os.WriteFile(filePath, []byte("# 学生守则\n正文"), 0o600); err != nil {
+		t.Fatalf("write markdown file: %v", err)
+	}
+
+	sourceRef := "student-handbook.md"
+	repo := &fakeResourceRepo{
+		listResult: []postgres.Resource{
+			{
+				ID:         "resource-1",
+				Title:      "学生守则",
+				SourceType: "upload",
+				SourceRef:  &sourceRef,
+			},
+		},
+		currentVersions: map[string]*postgres.ResourceVersion{
+			"resource-1": {
+				ID:            "version-1",
+				ResourceID:    "resource-1",
+				VersionNumber: 1,
+				Content:       "# 学生守则\n旧正文",
+				Source:        "original",
+			},
+		},
+		chunkCountByVersion: map[string]int{
+			"version-1": 0,
+		},
+	}
+	service := NewService(repo, fakeEmbedder{})
+
+	if err := service.ImportDirectory(context.Background(), dir); err != nil {
+		t.Fatalf("import directory: %v", err)
+	}
+
+	if repo.graphCalls != 1 {
+		t.Fatalf("expected missing chunks to trigger one repair write, got %d", repo.graphCalls)
+	}
+
+	if repo.lastGraphParams.ResourceID != "resource-1" {
+		t.Fatalf("expected repair to target existing resource %q, got %q", "resource-1", repo.lastGraphParams.ResourceID)
+	}
+
+	if repo.lastGraphParams.VersionNumber != 2 {
+		t.Fatalf("expected repair to append version 2, got %d", repo.lastGraphParams.VersionNumber)
+	}
+}
+
 type fakeResourceRepo struct {
 	createSourceRef *string
 	createdChunks   []*postgres.ResourceChunk
+	graphChunks     []postgres.ResourceChunkInput
 	resource        *postgres.Resource
 	version         *postgres.ResourceVersion
 	createCalls     int
+	graphCalls      int
+	listResult      []postgres.Resource
+	currentVersions map[string]*postgres.ResourceVersion
+	chunkCountByVersion map[string]int
+	updateSourceRefCalls []sourceRefUpdateCall
+	lastGraphParams postgres.CreateDocumentGraphParams
 }
 
 func (r *fakeResourceRepo) List(context.Context) ([]postgres.Resource, error) {
-	return nil, nil
+	return append([]postgres.Resource(nil), r.listResult...), nil
 }
 
 func (r *fakeResourceRepo) CreateWithSourceRef(_ context.Context, title string, sourceType string, sourceRef *string) (*postgres.Resource, error) {
@@ -164,6 +337,61 @@ func (r *fakeResourceRepo) CreateChunk(_ context.Context, chunk *postgres.Resour
 	return nil
 }
 
+func (r *fakeResourceRepo) CreateDocumentGraph(_ context.Context, params postgres.CreateDocumentGraphParams) (*postgres.Resource, *postgres.ResourceVersion, error) {
+	r.graphCalls++
+	r.createSourceRef = params.SourceRef
+	r.graphChunks = append([]postgres.ResourceChunkInput(nil), params.Chunks...)
+	r.lastGraphParams = params
+	r.createdChunks = make([]*postgres.ResourceChunk, 0, len(params.Chunks))
+	for _, chunk := range params.Chunks {
+		r.createdChunks = append(r.createdChunks, &postgres.ResourceChunk{
+			ChunkIndex:   chunk.ChunkIndex,
+			SectionTitle: chunk.SectionTitle,
+			Content:      chunk.Content,
+			Embedding:    chunk.Embedding,
+		})
+	}
+	if r.resource != nil && r.version != nil {
+		return r.resource, r.version, nil
+	}
+
+	return &postgres.Resource{
+			ID:         "resource-graph-default",
+			Title:      params.Title,
+			SourceType: params.SourceType,
+		}, &postgres.ResourceVersion{
+			ID:            "version-graph-default",
+			ResourceID:    "resource-graph-default",
+			VersionNumber: 1,
+			Content:       params.Content,
+			Source:        params.VersionSource,
+		}, nil
+}
+
+func (r *fakeResourceRepo) GetCurrentVersion(_ context.Context, resourceID string) (*postgres.ResourceVersion, error) {
+	if r.currentVersions == nil {
+		return nil, nil
+	}
+
+	return r.currentVersions[resourceID], nil
+}
+
+func (r *fakeResourceRepo) CountChunksByVersion(_ context.Context, versionID string) (int, error) {
+	if r.chunkCountByVersion == nil {
+		return 0, nil
+	}
+
+	return r.chunkCountByVersion[versionID], nil
+}
+
+func (r *fakeResourceRepo) UpdateSourceRef(_ context.Context, resourceID string, sourceRef *string) error {
+	r.updateSourceRefCalls = append(r.updateSourceRefCalls, sourceRefUpdateCall{
+		resourceID: resourceID,
+		sourceRef:  sourceRef,
+	})
+	return nil
+}
+
 type fakeEmbedder struct{}
 
 func (fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -173,6 +401,14 @@ func (fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error
 	}
 
 	return vectors, nil
+}
+
+type fakeEmbedderWithError struct {
+	err error
+}
+
+func (fake fakeEmbedderWithError) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, fake.err
 }
 
 func testVector(seed float32) []float32 {
@@ -195,4 +431,9 @@ func (p fakeDocumentParser) Parse(context.Context, documentparser.Input) (*docum
 	}
 
 	return p.result, nil
+}
+
+type sourceRefUpdateCall struct {
+	resourceID string
+	sourceRef  *string
 }

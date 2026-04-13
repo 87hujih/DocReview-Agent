@@ -133,14 +133,7 @@ func (r *ChatResponder) Stream(ctx context.Context, input ChatCompletionInput) (
 
 func buildChatMessages(input ChatCompletionInput) []*schema.Message {
 	messages := []*schema.Message{
-		{Role: schema.System, Content: assistantSystemPrompt},
-	}
-
-	if runtimeContext := buildRuntimeContext(input); runtimeContext != "" {
-		messages = append(messages, &schema.Message{
-			Role:    schema.System,
-			Content: runtimeContext,
-		})
+		{Role: schema.System, Content: buildSystemPrompt(input)},
 	}
 
 	messages = append(messages, buildHistoryMessages(input.History)...)
@@ -150,6 +143,15 @@ func buildChatMessages(input ChatCompletionInput) []*schema.Message {
 	})
 
 	return messages
+}
+
+func buildSystemPrompt(input ChatCompletionInput) string {
+	parts := []string{assistantSystemPrompt}
+	if runtimeContext := buildRuntimeContext(input); runtimeContext != "" {
+		parts = append(parts, runtimeContext)
+	}
+
+	return strings.Join(parts, "\n\n")
 }
 
 func buildRuntimeContext(input ChatCompletionInput) string {

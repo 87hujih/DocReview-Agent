@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -265,6 +266,84 @@ func TestResourceCRUD(t *testing.T) {
 
 	if !containsResource(resources, resource.ID) {
 		t.Fatalf("expected resources list to contain %q", resource.ID)
+	}
+}
+
+func TestCreateDocumentGraphRollsBackOnChunkFailure(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	method := reflect.ValueOf(repo).MethodByName("CreateDocumentGraph")
+	if !method.IsValid() {
+		t.Fatal("expected resource repo to expose CreateDocumentGraph")
+	}
+
+	paramsType := method.Type().In(1)
+	paramsValue := reflect.New(paramsType).Elem()
+	title := "事务回滚测试-" + uniqueSuffix()
+
+	paramsValue.FieldByName("Title").SetString(title)
+	paramsValue.FieldByName("SourceType").SetString("upload")
+	paramsValue.FieldByName("VersionSource").SetString("assistant_upload")
+	paramsValue.FieldByName("Content").SetString("# 标题\n正文")
+
+	chunksField := paramsValue.FieldByName("Chunks")
+	chunkType := chunksField.Type().Elem()
+	chunksValue := reflect.MakeSlice(chunksField.Type(), 2, 2)
+
+	firstChunk := reflect.New(chunkType).Elem()
+	firstChunk.FieldByName("ChunkIndex").SetInt(0)
+	firstChunk.FieldByName("SectionTitle").SetString("标题")
+	firstChunk.FieldByName("Content").SetString("第一段")
+	firstChunk.FieldByName("Embedding").Set(reflect.ValueOf(testVector(0.31)))
+	chunksValue.Index(0).Set(firstChunk)
+
+	secondChunk := reflect.New(chunkType).Elem()
+	secondChunk.FieldByName("ChunkIndex").SetInt(1)
+	secondChunk.FieldByName("SectionTitle").SetString("标题")
+	secondChunk.FieldByName("Content").SetString("第二段")
+	secondChunk.FieldByName("Embedding").Set(reflect.ValueOf(pgvector.NewVector([]float32{0.1, 0.2})))
+	chunksValue.Index(1).Set(secondChunk)
+
+	chunksField.Set(chunksValue)
+
+	results := method.Call([]reflect.Value{
+		reflect.ValueOf(ctx),
+		paramsValue,
+	})
+	if len(results) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(results))
+	}
+
+	if results[2].IsNil() {
+		t.Fatal("expected chunk write failure to return error")
+	}
+
+	var resourceCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM resources
+		WHERE title = $1
+	`, title).Scan(&resourceCount); err != nil {
+		t.Fatalf("count resources after rollback: %v", err)
+	}
+
+	if resourceCount != 0 {
+		t.Fatalf("expected rollback to leave 0 resources, got %d", resourceCount)
+	}
+
+	var versionCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM resource_versions
+		WHERE content = $1
+	`, "# 标题\n正文").Scan(&versionCount); err != nil {
+		t.Fatalf("count versions after rollback: %v", err)
+	}
+
+	if versionCount != 0 {
+		t.Fatalf("expected rollback to leave 0 versions, got %d", versionCount)
 	}
 }
 

@@ -50,6 +50,38 @@
 | 文档导入链 | 部分跑通 | Markdown 上传导入可用，但这条链并没有真正支持二进制文档解析 |
 | 助手会话链 | 部分跑通 | 没有资源上下文时可用，一旦会话出现 `session_file`，后续消息补全就会失败 |
 
+## 2026-04-13 修复后更新
+
+基于本文识别出的 blocker，后续已完成一轮修复与回归，当前状态更新如下：
+
+- 助手会话链主路径已恢复：
+  - `chat_responder.go` 不再发送第二条 `system` message，而是把运行时资源上下文并入首条系统提示
+  - `go test ./apps/server/internal/assistant -run TestBuildChatMessages -count=1` 通过
+  - `go test ./apps/server/internal/assistant ./apps/server/internal/server/handlers -count=1` 通过
+  - 真实 smoke 已验证 `CreateConversationStream -> UploadFile -> AppendMessageStream`，返回 `message_started -> message_delta -> message_completed -> task_suggestion -> done`
+
+- parser 边界已落地：
+  - 已新增 `apps/server/internal/document/parser/*`
+  - 已接入 `DOCUMENT_PARSER`、`TIKA_URL`、`TIKA_TIMEOUT_MS`
+  - 默认 `DOCUMENT_PARSER=text` 时只支持 `md/txt`
+  - `go test ./apps/server/internal/document/parser ./apps/server/internal/config ./apps/server/internal/knowledge/ingest -count=1` 通过
+
+- 导入写入一致性已改善：
+  - `ingest.Service` 现在先完成 chunk / embedding 计算，再进入数据库写入
+  - `ResourceRepo.CreateDocumentGraph()` 已把资源、版本和 chunks 收敛到单事务
+  - 定向集成测试 `TestCreateDocumentGraphRollsBackOnChunkFailure` 提权后通过
+
+- 目录导入自愈已补齐第一阶段：
+  - `ImportDirectory()` 不再只按标题跳过
+  - 现在会优先按 `source_ref` 识别资源
+  - 对历史 title 命中的旧资源会回填 `source_ref`
+  - 对“有 version 但无 chunk”的资源会追加 repair version 重建索引
+
+- Tika 真人联调已补齐：
+  - 已用本机 Java 启动 Apache Tika Server 3.3.0 jar
+  - 已在 `DOCUMENT_PARSER=tika` 下完成 `docx` 与 `pdf` 上传、解析入库和资源检索 citation smoke
+  - smoke 产生的临时 `uploaded_files`、`assistant_sessions`、`resources` 记录已清理
+
 ## 已跑通的部分
 
 ### 1. Markdown 文档导入主链路可用
@@ -300,21 +332,21 @@ POST /api/assistant/sessions/:id/messages/stream
 
 当前两条链路里：
 
-- **文档导入链对 Markdown 已跑通**
-- **助手会话链对普通对话已跑通**
-- **但“上传文件后继续基于资源对话”这条主路径没有跑通**
+- **文档导入链对 Markdown 已跑通，parser / 事务写入 / 目录自愈第一阶段已落地**
+- **助手会话链对普通对话和“上传后继续追问”主路径都已跑通**
+- **真实 Tika 服务下的 `docx/pdf` 二进制文档人工 smoke 已补齐**
 
 最核心的 blocker 不是数据库，不是 chunker，也不是 SSE writer，而是：
 
-**上游 SiliconFlow 不接受当前 `chat_responder.go` 组出来的“两条 system message”请求。**
+**上游 SiliconFlow 不接受 `chat_responder.go` 组出来的“两条 system message”请求；这一点已通过“合并到首条 system prompt”修复。**
 
-其次，导入链现在仍然有两个明显技术债：
+其次，导入链原本的两个明显技术债也已进入首轮修复：
 
-1. 没有真正的文档 parser
-2. 没有事务性写入与索引自愈能力
+1. parser 边界已补，二进制解析依赖 Tika runtime
+2. 原子写入与基础索引自愈已补，后续还可继续扩展到内容变化检测
 
 所以如果要继续推进这块，优先级应该是：
 
-1. 先修助手会话链的 system message 组包问题
-2. 再补 parser 边界
-3. 最后补导入链事务和历史数据自愈
+1. 先决定是否引入基于内容 hash 的自动重建
+2. 再处理 assistant 聊天链路是否复用 hybrid retriever
+3. 最后再考虑 OCR、对象存储和导出 docx/pdf 成品等超出当前范围的能力
