@@ -242,6 +242,55 @@ func TestUploadAssistantFileHandler(t *testing.T) {
 	}
 }
 
+func TestUploadAssistantFileHandlerRejectsUnsupportedExtension(t *testing.T) {
+	var uploadCalled bool
+
+	handler := NewAssistantHandler(fakeAssistantService{
+		uploadFileResult: &assistant.UploadFileResult{},
+		uploadFileHook: func(context.Context, string, string, []byte) {
+			uploadCalled = true
+		},
+	})
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/files", handler.UploadFile)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	fileHeader := textproto.MIMEHeader{}
+	fileHeader.Set("Content-Disposition", `form-data; name="file"; filename="资料包.zip"`)
+	fileHeader.Set("Content-Type", "application/zip")
+	part, err := writer.CreatePart(fileHeader)
+	if err != nil {
+		t.Fatalf("create multipart part: %v", err)
+	}
+	if _, err := part.Write([]byte("zip-binary")); err != nil {
+		t.Fatalf("write multipart body: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/session-1/files",
+		&ut.Body{
+			Body: body,
+			Len:  body.Len(),
+		},
+		ut.Header{Key: "Content-Type", Value: writer.FormDataContentType()},
+	).Result()
+
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+
+	if uploadCalled {
+		t.Fatal("expected unsupported file to be rejected before service upload")
+	}
+}
+
 func TestConfirmTaskSuggestionHandlerReturnsHandledFailurePayload(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		confirmTaskResult: &assistant.ConfirmTaskResult{
@@ -320,6 +369,8 @@ type fakeAssistantService struct {
 	uploadFileErr        error
 	confirmTaskErr       error
 	deleteSessionErr     error
+
+	uploadFileHook func(context.Context, string, string, []byte)
 }
 
 func (f fakeAssistantService) ListSessions(context.Context) ([]postgres.AssistantSession, error) {
@@ -339,6 +390,9 @@ func (f fakeAssistantService) AppendMessage(context.Context, string, string) (*a
 }
 
 func (f fakeAssistantService) UploadFile(context.Context, string, string, []byte) (*assistant.UploadFileResult, error) {
+	if f.uploadFileHook != nil {
+		f.uploadFileHook(context.Background(), "", "", nil)
+	}
 	return f.uploadFileResult, f.uploadFileErr
 }
 

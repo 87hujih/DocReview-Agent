@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent_project/apps/server/internal/assistant"
+	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/storage/postgres"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -169,6 +170,10 @@ func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.Reque
 	file, err := ctx.FormFile("file")
 	if err != nil {
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "必须上传文件"})
+		return
+	}
+	if !documentparser.IsSupportedFileName(file.Filename) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "当前仅支持 md、txt、doc、docx、pdf、rtf、odt 文件"})
 		return
 	}
 

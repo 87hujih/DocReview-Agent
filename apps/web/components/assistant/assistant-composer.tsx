@@ -4,6 +4,9 @@ import { FormEvent, type KeyboardEvent, useId, useRef, useState } from "react";
 
 import styles from "./assistant-composer.module.css";
 
+const SUPPORTED_UPLOAD_ACCEPT = ".md,.txt,.doc,.docx,.pdf,.rtf,.odt";
+const SUPPORTED_UPLOAD_HINT = "支持 md、txt、doc、docx、pdf、rtf、odt";
+
 type AssistantComposerProps = {
   canUpload: boolean;
   isBusy?: boolean;
@@ -85,6 +88,7 @@ export function AssistantComposer({
             上传文件
           </label>
           <input
+            accept={SUPPORTED_UPLOAD_ACCEPT}
             className={styles.fileInput}
             disabled={!canUpload || isBusy}
             id={fileInputId}
@@ -101,7 +105,11 @@ export function AssistantComposer({
             type="file"
           />
           <span className={styles.uploadHint}>
-            {canUpload ? selectedFileName || "上传后会自动进入资源库" : "请先发送第一条消息后再上传"}
+            {canUpload
+              ? selectedFileName
+                ? `${selectedFileName} · ${SUPPORTED_UPLOAD_HINT}`
+                : SUPPORTED_UPLOAD_HINT
+              : `请先发送第一条消息后再上传 · ${SUPPORTED_UPLOAD_HINT}`}
           </span>
         </div>
 

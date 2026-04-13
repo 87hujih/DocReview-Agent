@@ -18,6 +18,8 @@ const (
 	defaultEmbeddingModel     = "Qwen/Qwen3-Embedding-8B"
 	defaultEmbeddingDim       = 1024
 	defaultRerankerModel      = "Qwen/Qwen3-Reranker-8B"
+	defaultDocumentParser     = "text"
+	defaultTikaTimeoutMS      = 30000
 	defaultLogLevel           = "info"
 	defaultLogFormat          = "json"
 )
@@ -33,6 +35,9 @@ type Config struct {
 	EmbeddingModel     string
 	EmbeddingDim       int
 	RerankerModel      string
+	DocumentParser     string
+	TikaURL            string
+	TikaTimeoutMS      int
 
 	LogLevel     string
 	LogFormat    string
@@ -41,9 +46,10 @@ type Config struct {
 
 // fileConfig 对应默认 YAML 配置文件的顶层结构。
 type fileConfig struct {
-	Server serverConfig `yaml:"server"`
-	AI     aiConfig     `yaml:"ai"`
-	Log    logConfig    `yaml:"log"`
+	Server   serverConfig   `yaml:"server"`
+	AI       aiConfig       `yaml:"ai"`
+	Document documentConfig `yaml:"document"`
+	Log      logConfig      `yaml:"log"`
 }
 
 // serverConfig 描述服务端口等服务级默认配置。
@@ -58,6 +64,13 @@ type aiConfig struct {
 	EmbeddingModel     string `yaml:"embedding_model"`
 	EmbeddingDim       int    `yaml:"embedding_dim"`
 	RerankerModel      string `yaml:"reranker_model"`
+}
+
+// documentConfig 描述文档解析模式与 Tika 连接参数。
+type documentConfig struct {
+	Parser        string `yaml:"parser"`
+	TikaURL       string `yaml:"tika_url"`
+	TikaTimeoutMS int    `yaml:"tika_timeout_ms"`
 }
 
 // logConfig 描述日志级别、输出格式和是否附带源码位置。
@@ -81,6 +94,9 @@ func Load() Config {
 		EmbeddingModel:     resolveString("EMBEDDING_MODEL", dotenvValues, defaults.AI.EmbeddingModel, defaultEmbeddingModel),
 		EmbeddingDim:       resolveInt("EMBEDDING_DIM", dotenvValues, defaults.AI.EmbeddingDim, defaultEmbeddingDim),
 		RerankerModel:      resolveString("RERANKER_MODEL", dotenvValues, defaults.AI.RerankerModel, defaultRerankerModel),
+		DocumentParser:     resolveString("DOCUMENT_PARSER", dotenvValues, defaults.Document.Parser, defaultDocumentParser),
+		TikaURL:            resolveString("TIKA_URL", dotenvValues, defaults.Document.TikaURL, ""),
+		TikaTimeoutMS:      resolveInt("TIKA_TIMEOUT_MS", dotenvValues, defaults.Document.TikaTimeoutMS, defaultTikaTimeoutMS),
 		LogLevel:           resolveString("LOG_LEVEL", dotenvValues, defaults.Log.Level, defaultLogLevel),
 		LogFormat:          resolveString("LOG_FORMAT", dotenvValues, defaults.Log.Format, defaultLogFormat),
 		LogAddSource:       resolveBool("LOG_ADD_SOURCE", dotenvValues, defaults.Log.AddSource, false),
@@ -123,7 +139,22 @@ func (c Config) ValidateForServer() error {
 		return fmt.Errorf("EMBEDDING_DIM 无效：%d", c.EmbeddingDim)
 	}
 
-	return nil
+	parserMode := strings.ToLower(strings.TrimSpace(c.DocumentParser))
+	switch parserMode {
+	case "", defaultDocumentParser:
+		return nil
+	case "tika":
+		if strings.TrimSpace(c.TikaURL) == "" {
+			return fmt.Errorf("缺少必填配置：TIKA_URL")
+		}
+		if c.TikaTimeoutMS <= 0 {
+			return fmt.Errorf("TIKA_TIMEOUT_MS 无效：%d", c.TikaTimeoutMS)
+		}
+		return nil
+	default:
+		return fmt.Errorf("DOCUMENT_PARSER 无效：%s", c.DocumentParser)
+	}
+
 }
 
 // loadDefaultFileConfig 允许命令从仓库根目录或嵌套应用目录启动时都能读取 config/default.yaml。

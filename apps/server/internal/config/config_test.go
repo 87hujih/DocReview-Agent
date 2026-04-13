@@ -215,6 +215,46 @@ func TestLoadUsesHardcodedLLMDefault(t *testing.T) {
 	}
 }
 
+func TestLoadUsesDocumentParserOverrides(t *testing.T) {
+	t.Setenv("SERVER_PORT", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("SILICONFLOW_API_KEY", "")
+	t.Setenv("SILICONFLOW_BASE_URL", "")
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("DOCUMENT_PARSER", "")
+	t.Setenv("TIKA_URL", "")
+	t.Setenv("TIKA_TIMEOUT_MS", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
+
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	writeTestFile(t, filepath.Join(tempDir, ".env"), strings.Join([]string{
+		"DOCUMENT_PARSER=tika",
+		"TIKA_URL=http://127.0.0.1:9998",
+		"TIKA_TIMEOUT_MS=45000",
+	}, "\n"))
+
+	cfg := Load()
+
+	if cfg.DocumentParser != "tika" {
+		t.Fatalf("expected document parser %q, got %q", "tika", cfg.DocumentParser)
+	}
+
+	if cfg.TikaURL != "http://127.0.0.1:9998" {
+		t.Fatalf("expected tika url %q, got %q", "http://127.0.0.1:9998", cfg.TikaURL)
+	}
+
+	if cfg.TikaTimeoutMS != 45000 {
+		t.Fatalf("expected tika timeout %d, got %d", 45000, cfg.TikaTimeoutMS)
+	}
+}
+
 func TestLoadStopsDotEnvSearchAtWorktreeRoot(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -441,6 +481,70 @@ func TestValidateForServerRequiresLLMModel(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "LLM_MODEL") {
 		t.Fatalf("expected LLM_MODEL validation error, got %v", err)
+	}
+}
+
+func TestValidateForServerAllowsTextParserWithoutTika(t *testing.T) {
+	cfg := Config{
+		ServerPort:        "8080",
+		DatabaseURL:       "postgres://example",
+		SiliconFlowAPIKey: "api-key",
+		LLMModel:          "llm-model",
+		EmbeddingModel:    "embedding-model",
+		EmbeddingDim:      1024,
+		RerankerModel:     "reranker-model",
+		DocumentParser:    "text",
+	}
+
+	if err := cfg.ValidateForServer(); err != nil {
+		t.Fatalf("expected valid text parser config, got %v", err)
+	}
+}
+
+func TestValidateForServerRequiresTikaURLWhenTikaParserEnabled(t *testing.T) {
+	cfg := Config{
+		ServerPort:        "8080",
+		DatabaseURL:       "postgres://example",
+		SiliconFlowAPIKey: "api-key",
+		LLMModel:          "llm-model",
+		EmbeddingModel:    "embedding-model",
+		EmbeddingDim:      1024,
+		RerankerModel:     "reranker-model",
+		DocumentParser:    "tika",
+		TikaTimeoutMS:     30000,
+	}
+
+	err := cfg.ValidateForServer()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "TIKA_URL") {
+		t.Fatalf("expected TIKA_URL validation error, got %v", err)
+	}
+}
+
+func TestValidateForServerRequiresPositiveTikaTimeout(t *testing.T) {
+	cfg := Config{
+		ServerPort:        "8080",
+		DatabaseURL:       "postgres://example",
+		SiliconFlowAPIKey: "api-key",
+		LLMModel:          "llm-model",
+		EmbeddingModel:    "embedding-model",
+		EmbeddingDim:      1024,
+		RerankerModel:     "reranker-model",
+		DocumentParser:    "tika",
+		TikaURL:           "http://127.0.0.1:9998",
+		TikaTimeoutMS:     0,
+	}
+
+	err := cfg.ValidateForServer()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "TIKA_TIMEOUT_MS") {
+		t.Fatalf("expected TIKA_TIMEOUT_MS validation error, got %v", err)
 	}
 }
 

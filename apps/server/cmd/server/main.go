@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"agent_project/apps/server/internal/agent/editor"
 	"agent_project/apps/server/internal/agent/executor"
@@ -13,6 +14,7 @@ import (
 	"agent_project/apps/server/internal/approval"
 	"agent_project/apps/server/internal/assistant"
 	appconfig "agent_project/apps/server/internal/config"
+	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/job"
 	"agent_project/apps/server/internal/knowledge/embedder"
 	"agent_project/apps/server/internal/knowledge/ingest"
@@ -62,7 +64,16 @@ func main() {
 
 	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
 	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient)
-	ingestService := ingest.NewService(resourceRepo, emb)
+	docParser, err := documentparser.New(documentparser.Options{
+		Mode:        cfg.DocumentParser,
+		TikaURL:     cfg.TikaURL,
+		TikaTimeout: time.Duration(cfg.TikaTimeoutMS) * time.Millisecond,
+	})
+	if err != nil {
+		log.Fatalf("文档解析器初始化失败：%v", err)
+	}
+
+	ingestService := ingest.NewService(resourceRepo, emb, ingest.WithParser(docParser))
 
 	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
 	if err != nil {

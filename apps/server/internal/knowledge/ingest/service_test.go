@@ -2,9 +2,11 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
@@ -60,11 +62,69 @@ func TestImportDocumentRejectsEmptyContent(t *testing.T) {
 	}
 }
 
+func TestImportDocumentUsesParsedTextWhenParserConfigured(t *testing.T) {
+	repo := &fakeResourceRepo{}
+	service := NewService(repo, fakeEmbedder{}, WithParser(fakeDocumentParser{
+		result: &documentparser.Result{
+			Text: "# 解析后的标题\n解析后的正文",
+		},
+	}))
+
+	result, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName: "学生守则.pdf",
+		Content:  []byte("%PDF-binary-content"),
+	})
+	if err != nil {
+		t.Fatalf("import document with parser: %v", err)
+	}
+
+	if result.Version == nil || result.Version.Content != "# 解析后的标题\n解析后的正文" {
+		t.Fatalf("expected parsed content to be stored in current version, got %#v", result.Version)
+	}
+
+	if len(repo.createdChunks) == 0 {
+		t.Fatal("expected parsed content to create chunks")
+	}
+
+	if repo.createdChunks[0].SectionTitle != "解析后的标题" {
+		t.Fatalf("expected chunk section title %q, got %q", "解析后的标题", repo.createdChunks[0].SectionTitle)
+	}
+
+	if repo.createSourceRef == nil || *repo.createSourceRef != "学生守则.pdf" {
+		t.Fatalf("expected original filename to remain source_ref, got %#v", repo.createSourceRef)
+	}
+}
+
+func TestImportDocumentReturnsParserErrorBeforeWritingResource(t *testing.T) {
+	repo := &fakeResourceRepo{}
+	parserErr := errors.New("解析失败")
+	service := NewService(repo, fakeEmbedder{}, WithParser(fakeDocumentParser{
+		err: parserErr,
+	}))
+
+	_, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName: "学生守则.docx",
+		Content:  []byte("binary-docx-content"),
+	})
+	if !errors.Is(err, parserErr) {
+		t.Fatalf("expected parser error %v, got %v", parserErr, err)
+	}
+
+	if repo.createCalls != 0 {
+		t.Fatalf("expected parser failure to stop before creating resources, got %d create calls", repo.createCalls)
+	}
+
+	if len(repo.createdChunks) != 0 {
+		t.Fatalf("expected no chunks when parser fails, got %d", len(repo.createdChunks))
+	}
+}
+
 type fakeResourceRepo struct {
 	createSourceRef *string
 	createdChunks   []*postgres.ResourceChunk
 	resource        *postgres.Resource
 	version         *postgres.ResourceVersion
+	createCalls     int
 }
 
 func (r *fakeResourceRepo) List(context.Context) ([]postgres.Resource, error) {
@@ -72,6 +132,7 @@ func (r *fakeResourceRepo) List(context.Context) ([]postgres.Resource, error) {
 }
 
 func (r *fakeResourceRepo) CreateWithSourceRef(_ context.Context, title string, sourceType string, sourceRef *string) (*postgres.Resource, error) {
+	r.createCalls++
 	r.createSourceRef = sourceRef
 	if r.resource != nil {
 		return r.resource, nil
@@ -121,4 +182,17 @@ func testVector(seed float32) []float32 {
 	}
 
 	return values
+}
+
+type fakeDocumentParser struct {
+	result *documentparser.Result
+	err    error
+}
+
+func (p fakeDocumentParser) Parse(context.Context, documentparser.Input) (*documentparser.Result, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+
+	return p.result, nil
 }

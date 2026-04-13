@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/knowledge/chunker"
 	"agent_project/apps/server/internal/storage/postgres"
 
@@ -32,17 +33,36 @@ type embedderClient interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
+// ServiceOption 允许按需注入文档解析器等扩展能力。
+type ServiceOption func(*Service)
+
 // Service 负责把 Markdown 文档导入为资源、版本和带 embedding 的分块。
 type Service struct {
 	resourceRepo resourceRepository
 	embedder     embedderClient
+	parser       documentparser.Parser
 }
 
 // NewService 把导入流程依赖的存储层和 embedding 能力接起来。
-func NewService(repo resourceRepository, emb embedderClient) *Service {
-	return &Service{
+func NewService(repo resourceRepository, emb embedderClient, options ...ServiceOption) *Service {
+	service := &Service{
 		resourceRepo: repo,
 		embedder:     emb,
+	}
+
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+
+	return service
+}
+
+// WithParser 为上传导入链路注入正文解析器。
+func WithParser(parser documentparser.Parser) ServiceOption {
+	return func(service *Service) {
+		service.parser = parser
 	}
 }
 
@@ -96,9 +116,21 @@ func (s *Service) ImportDocument(ctx context.Context, input ImportDocumentInput)
 		return nil, ErrContentRequired
 	}
 
-	title := extractTitleFromContent(string(input.Content), input.FileName)
+	content := string(input.Content)
+	if s.parser != nil {
+		result, err := s.parser.Parse(ctx, documentparser.Input{
+			FileName: input.FileName,
+			Content:  input.Content,
+		})
+		if err != nil {
+			return nil, err
+		}
+		content = result.Text
+	}
+
+	title := extractTitleFromContent(content, input.FileName)
 	sourceRef := strings.TrimSpace(input.FileName)
-	resource, version, err := s.saveDocument(ctx, title, "upload", stringPointer(sourceRef), string(input.Content), "assistant_upload")
+	resource, version, err := s.saveDocument(ctx, title, "upload", stringPointer(sourceRef), content, "assistant_upload")
 	if err != nil {
 		return nil, err
 	}
