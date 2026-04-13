@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"agent_project/apps/server/internal/assistant"
@@ -18,15 +19,20 @@ type assistantService interface {
 	ListSessions(ctx context.Context) ([]postgres.AssistantSession, error)
 	GetConversation(ctx context.Context, sessionID string) (*assistant.ConversationResult, error)
 	StartConversation(ctx context.Context, content string) (*assistant.ConversationResult, error)
+	StartConversationStream(ctx context.Context, content string, emit func(assistant.StreamEvent) error) error
 	AppendMessage(ctx context.Context, sessionID string, content string) (*assistant.ConversationResult, error)
+	AppendMessageStream(ctx context.Context, sessionID string, content string, emit func(assistant.StreamEvent) error) error
 	UploadFile(ctx context.Context, sessionID string, fileName string, content []byte) (*assistant.UploadFileResult, error)
 	ConfirmTaskSuggestion(ctx context.Context, messageID string) (*assistant.ConfirmTaskResult, error)
 	DeleteSession(ctx context.Context, sessionID string) (bool, error)
 }
 
+const defaultAssistantUploadMaxBytes int64 = 20 * 1024 * 1024
+
 // AssistantHandler 暴露助手会话列表、消息、文件和任务确认接口。
 type AssistantHandler struct {
-	service assistantService
+	service        assistantService
+	uploadMaxBytes int64
 }
 
 type assistantMessageRequest struct {
@@ -87,9 +93,38 @@ type confirmTaskSuggestionResponse struct {
 	ErrorMessage *string                    `json:"error_message"`
 }
 
+type assistantStreamSessionResponse struct {
+	Session assistantSessionResponse `json:"session"`
+}
+
+type assistantStreamMessageResponse struct {
+	Message assistantMessageResponse `json:"message"`
+}
+
+type assistantStreamDeltaResponse struct {
+	Delta string `json:"delta"`
+}
+
+type assistantStreamErrorResponse struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 // NewAssistantHandler 创建助手 HTTP handler。
 func NewAssistantHandler(service assistantService) *AssistantHandler {
-	return &AssistantHandler{service: service}
+	return NewAssistantHandlerWithUploadLimit(service, defaultAssistantUploadMaxBytes)
+}
+
+// NewAssistantHandlerWithUploadLimit 创建带上传大小限制的助手 HTTP handler。
+func NewAssistantHandlerWithUploadLimit(service assistantService, maxBytes int64) *AssistantHandler {
+	if maxBytes <= 0 {
+		maxBytes = defaultAssistantUploadMaxBytes
+	}
+
+	return &AssistantHandler{
+		service:        service,
+		uploadMaxBytes: maxBytes,
+	}
 }
 
 // ListSessions 返回左侧历史栏需要的会话摘要。
@@ -144,6 +179,23 @@ func (h *AssistantHandler) CreateConversation(requestCtx context.Context, ctx *a
 	})
 }
 
+// CreateConversationStream 用首条消息创建会话并返回 SSE 流。
+func (h *AssistantHandler) CreateConversationStream(requestCtx context.Context, ctx *app.RequestContext) {
+	var request assistantMessageRequest
+	if err := json.Unmarshal(ctx.Request.Body(), &request); err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "消息内容不能为空"})
+		return
+	}
+	if strings.TrimSpace(request.Message) == "" {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": assistant.ErrMessageRequired.Error()})
+		return
+	}
+
+	h.streamAssistantEvents(ctx, func(emit func(assistant.StreamEvent) error) error {
+		return h.service.StartConversationStream(requestCtx, request.Message, emit)
+	})
+}
+
 // AppendMessage 向已有会话追加消息。
 func (h *AssistantHandler) AppendMessage(requestCtx context.Context, ctx *app.RequestContext) {
 	var request assistantMessageRequest
@@ -164,6 +216,28 @@ func (h *AssistantHandler) AppendMessage(requestCtx context.Context, ctx *app.Re
 	})
 }
 
+// AppendMessageStream 向已有会话追加消息并返回 SSE 流。
+func (h *AssistantHandler) AppendMessageStream(requestCtx context.Context, ctx *app.RequestContext) {
+	var request assistantMessageRequest
+	if err := json.Unmarshal(ctx.Request.Body(), &request); err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "消息内容不能为空"})
+		return
+	}
+	if strings.TrimSpace(request.Message) == "" {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": assistant.ErrMessageRequired.Error()})
+		return
+	}
+
+	if _, err := h.service.GetConversation(requestCtx, ctx.Param("id")); err != nil {
+		h.writeAssistantError(ctx, err, "查询会话失败")
+		return
+	}
+
+	h.streamAssistantEvents(ctx, func(emit func(assistant.StreamEvent) error) error {
+		return h.service.AppendMessageStream(requestCtx, ctx.Param("id"), request.Message, emit)
+	})
+}
+
 // UploadFile 接收一个文件并写入资源库与当前会话。
 func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.RequestContext) {
 	file, err := ctx.FormFile("file")
@@ -179,9 +253,13 @@ func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.Reque
 	}
 	defer reader.Close()
 
-	content, err := io.ReadAll(reader)
+	content, err := io.ReadAll(io.LimitReader(reader, h.uploadMaxBytes+1))
 	if err != nil {
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "读取上传文件失败"})
+		return
+	}
+	if int64(len(content)) > h.uploadMaxBytes {
+		ctx.JSON(consts.StatusRequestEntityTooLarge, map[string]string{"error": "上传文件过大"})
 		return
 	}
 
@@ -244,6 +322,43 @@ func (h *AssistantHandler) writeAssistantError(ctx *app.RequestContext, err erro
 	}
 }
 
+func (h *AssistantHandler) streamAssistantEvents(
+	ctx *app.RequestContext,
+	run func(emit func(assistant.StreamEvent) error) error,
+) {
+	reader, writer := io.Pipe()
+	ctx.SetStatusCode(consts.StatusOK)
+	ctx.SetBodyStream(reader, -1)
+	ctx.Response.ImmediateHeaderFlush = true
+	ctx.Header("Cache-Control", "no-cache")
+	ctx.Header("Connection", "keep-alive")
+	ctx.SetContentType("text/event-stream; charset=utf-8")
+
+	go func() {
+		defer writer.Close()
+
+		emit := func(event assistant.StreamEvent) error {
+			if err := writeAssistantStreamEvent(writer, event); err != nil {
+				if errors.Is(err, io.ErrClosedPipe) {
+					return context.Canceled
+				}
+				return err
+			}
+			return nil
+		}
+
+		if err := run(emit); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			_ = writeAssistantStreamError(writer, assistant.NormalizeStreamError(err))
+			return
+		}
+
+		_ = writeAssistantSSEEvent(writer, assistant.StreamEventDone, struct{}{})
+	}()
+}
+
 func toAssistantSessionResponse(session postgres.AssistantSession) assistantSessionResponse {
 	return assistantSessionResponse{
 		ID:            session.ID,
@@ -257,17 +372,21 @@ func toAssistantSessionResponse(session postgres.AssistantSession) assistantSess
 func toAssistantMessageResponses(messages []postgres.AssistantMessage) []assistantMessageResponse {
 	response := make([]assistantMessageResponse, 0, len(messages))
 	for _, message := range messages {
-		response = append(response, assistantMessageResponse{
-			ID:         message.ID,
-			Role:       message.Role,
-			Kind:       message.Kind,
-			SequenceNo: message.SequenceNo,
-			Payload:    json.RawMessage(message.Payload),
-			CreatedAt:  message.CreatedAt,
-		})
+		response = append(response, toAssistantMessageResponse(message))
 	}
 
 	return response
+}
+
+func toAssistantMessageResponse(message postgres.AssistantMessage) assistantMessageResponse {
+	return assistantMessageResponse{
+		ID:         message.ID,
+		Role:       message.Role,
+		Kind:       message.Kind,
+		SequenceNo: message.SequenceNo,
+		Payload:    json.RawMessage(message.Payload),
+		CreatedAt:  message.CreatedAt,
+	}
 }
 
 func toAssistantResourceResponse(resource *postgres.Resource) *assistantResourceResponse {
@@ -294,4 +413,69 @@ func toAssistantTaskResponse(task *postgres.Task) *assistantTaskResponse {
 		Status:      task.Status,
 		CreatedAt:   task.CreatedAt,
 	}
+}
+
+func writeAssistantStreamEvent(writer *io.PipeWriter, event assistant.StreamEvent) error {
+	switch event.Type {
+	case assistant.StreamEventSessionCreated:
+		if event.Session == nil {
+			return writeAssistantSSEEvent(writer, event.Type, struct{}{})
+		}
+		return writeAssistantSSEEvent(writer, event.Type, assistantStreamSessionResponse{
+			Session: toAssistantSessionResponse(*event.Session),
+		})
+	case assistant.StreamEventMessageDelta:
+		return writeAssistantSSEEvent(writer, event.Type, assistantStreamDeltaResponse{
+			Delta: event.Delta,
+		})
+	case assistant.StreamEventMessageCompleted, assistant.StreamEventTaskSuggestion:
+		if event.Message == nil {
+			return writeAssistantSSEEvent(writer, event.Type, struct{}{})
+		}
+		return writeAssistantSSEEvent(writer, event.Type, assistantStreamMessageResponse{
+			Message: toAssistantMessageResponse(*event.Message),
+		})
+	case assistant.StreamEventMessageStarted:
+		return writeAssistantSSEEvent(writer, event.Type, struct{}{})
+	default:
+		return writeAssistantSSEEvent(writer, event.Type, struct{}{})
+	}
+}
+
+func writeAssistantStreamError(writer *io.PipeWriter, streamErr *assistant.StreamError) error {
+	if streamErr == nil {
+		streamErr = assistant.NewStreamError(
+			assistant.StreamErrorCodeInternal,
+			"助手暂时不可用，请稍后重试。",
+			nil,
+		)
+	}
+
+	return writeAssistantSSEEvent(writer, assistant.StreamEventError, assistantStreamErrorResponse{
+		Code:    streamErr.Code,
+		Message: streamErr.Message,
+	})
+}
+
+func writeAssistantSSEEvent(writer *io.PipeWriter, eventType string, payload any) error {
+	body := []byte("{}")
+	if payload != nil {
+		marshaled, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		body = marshaled
+	}
+
+	if _, err := io.WriteString(writer, "event: "+eventType+"\n"); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(writer, "data: "); err != nil {
+		return err
+	}
+	if _, err := writer.Write(body); err != nil {
+		return err
+	}
+	_, err := io.WriteString(writer, "\n\n")
+	return err
 }

@@ -21,6 +21,7 @@ import (
 	"agent_project/apps/server/internal/observability/logging"
 	"agent_project/apps/server/internal/server/handlers"
 	"agent_project/apps/server/internal/server/router"
+	"agent_project/apps/server/internal/storage/filestore"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
 	taskservice "agent_project/apps/server/internal/task/service"
@@ -53,6 +54,7 @@ func main() {
 	jobRepo := postgres.NewJobRepo(pool)
 	eventRepo := postgres.NewTaskEventRepo(pool)
 	assistantRepo := postgres.NewAssistantRepo(pool)
+	uploadedFileRepo := postgres.NewUploadedFileRepo(pool)
 	eventService := taskevents.New(eventRepo)
 
 	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
@@ -84,14 +86,19 @@ func main() {
 		log.Printf("警告：演示数据导入失败：%v", err)
 	}
 
+	uploadStore, err := filestore.NewLocalStore(projectPath(cfg.UploadStorageDir))
+	if err != nil {
+		log.Fatalf("原文件存储初始化失败：%v", err)
+	}
+
 	exec := executor.New(taskRepo, resourceRepo)
 	worker := job.New(jobRepo, exec, taskRepo, 100, eventService)
 	worker.Start(ctx, 3)
 
 	resourceHandler := handlers.NewResourceHandler(resourceRepo, retrieverService)
-	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService)
+	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService)
 	taskService := taskservice.New(taskRepo, resourceRepo, orchestrator, eventService)
-	taskHandler := handlers.NewTaskHandler(taskService, taskRepo)
+	taskHandler := handlers.NewTaskHandler(taskService, taskRepo, eventRepo)
 	approvalService := approval.NewService(approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	assistantResponder, err := assistant.NewChatResponder(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
@@ -105,17 +112,53 @@ func main() {
 		taskService,
 		assistantResponder,
 		resourceRepo,
+		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
 	)
-	assistantHandler := handlers.NewAssistantHandler(assistantService)
+	assistantHandler := handlers.NewAssistantHandlerWithUploadLimit(assistantService, int64(cfg.UploadMaxBytes))
+	fileHandler := handlers.NewFileHandler(uploadedFileRepo, uploadStore)
 	h := router.New(cfg, logger, router.Deps{
 		ResourceHandler:  resourceHandler,
 		TaskHandler:      taskHandler,
 		ApprovalHandler:  approvalHandler,
 		AssistantHandler: assistantHandler,
+		FileHandler:      fileHandler,
 	})
 
 	if err := h.Run(); err != nil {
 		log.Fatalf("服务退出：%v", err)
+	}
+}
+
+func projectPath(relative string) string {
+	if filepath.IsAbs(relative) {
+		return relative
+	}
+
+	root := findProjectRoot()
+	if root == "" {
+		return relative
+	}
+
+	return filepath.Join(root, relative)
+}
+
+func findProjectRoot() string {
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+
+	for {
+		if _, err := os.Stat(filepath.Join(currentDir, ".git")); err == nil {
+			return currentDir
+		}
+
+		parentDir := filepath.Dir(currentDir)
+		if parentDir == currentDir {
+			return ""
+		}
+
+		currentDir = parentDir
 	}
 }
 

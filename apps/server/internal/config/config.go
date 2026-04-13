@@ -18,6 +18,8 @@ const (
 	defaultEmbeddingModel     = "Qwen/Qwen3-Embedding-8B"
 	defaultEmbeddingDim       = 1024
 	defaultRerankerModel      = "Qwen/Qwen3-Reranker-8B"
+	defaultUploadStorageDir   = "data/uploads"
+	defaultUploadMaxBytes     = 20 * 1024 * 1024
 	defaultLogLevel           = "info"
 	defaultLogFormat          = "json"
 )
@@ -33,6 +35,8 @@ type Config struct {
 	EmbeddingModel     string
 	EmbeddingDim       int
 	RerankerModel      string
+	UploadStorageDir   string
+	UploadMaxBytes     int
 
 	LogLevel     string
 	LogFormat    string
@@ -81,6 +85,8 @@ func Load() Config {
 		EmbeddingModel:     resolveString("EMBEDDING_MODEL", dotenvValues, defaults.AI.EmbeddingModel, defaultEmbeddingModel),
 		EmbeddingDim:       resolveInt("EMBEDDING_DIM", dotenvValues, defaults.AI.EmbeddingDim, defaultEmbeddingDim),
 		RerankerModel:      resolveString("RERANKER_MODEL", dotenvValues, defaults.AI.RerankerModel, defaultRerankerModel),
+		UploadStorageDir:   resolveString("UPLOAD_STORAGE_DIR", dotenvValues, "", defaultUploadStorageDir),
+		UploadMaxBytes:     resolveInt("UPLOAD_MAX_BYTES", dotenvValues, 0, defaultUploadMaxBytes),
 		LogLevel:           resolveString("LOG_LEVEL", dotenvValues, defaults.Log.Level, defaultLogLevel),
 		LogFormat:          resolveString("LOG_FORMAT", dotenvValues, defaults.Log.Format, defaultLogFormat),
 		LogAddSource:       resolveBool("LOG_ADD_SOURCE", dotenvValues, defaults.Log.AddSource, false),

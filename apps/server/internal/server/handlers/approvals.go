@@ -14,7 +14,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
-// ApprovalHandler 暴露审批列表、通过和拒绝接口。
+// ApprovalHandler 暴露审批与执行作业相关接口。
 type ApprovalHandler struct {
 	approvalService *approval.Service
 }
@@ -28,12 +28,28 @@ type approvalResponse struct {
 	CreatedAt    time.Time  `json:"created_at"`
 }
 
+type executionJobResponse struct {
+	ID           string     `json:"id"`
+	TaskID       string     `json:"task_id"`
+	ApprovalID   string     `json:"approval_id"`
+	Status       string     `json:"status"`
+	ErrorMessage *string    `json:"error_message"`
+	NewVersionID *string    `json:"new_version_id"`
+	StartedAt    *time.Time `json:"started_at"`
+	CompletedAt  *time.Time `json:"completed_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
 type listApprovalsResponse struct {
 	Approvals []approvalResponse `json:"approvals"`
 }
 
 type getApprovalResponse struct {
 	Approval approvalResponse `json:"approval"`
+}
+
+type getExecutionJobResponse struct {
+	Job executionJobResponse `json:"job"`
 }
 
 type rejectApprovalRequest struct {
@@ -66,6 +82,52 @@ func (h *ApprovalHandler) List(requestCtx context.Context, ctx *app.RequestConte
 	}
 
 	ctx.JSON(consts.StatusOK, response)
+}
+
+// GetByID 返回单条审批记录。
+func (h *ApprovalHandler) GetByID(requestCtx context.Context, ctx *app.RequestContext) {
+	if h.approvalService == nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "审批服务未配置"})
+		return
+	}
+
+	approvalRecord, err := h.approvalService.GetApproval(requestCtx, ctx.Param("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, approval.ErrApprovalNotFound):
+			ctx.JSON(consts.StatusNotFound, map[string]string{"error": "审批不存在"})
+		default:
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询审批详情失败"})
+		}
+		return
+	}
+
+	ctx.JSON(consts.StatusOK, getApprovalResponse{
+		Approval: approvalToResponse(*approvalRecord),
+	})
+}
+
+// GetJobByID 返回单条执行作业记录。
+func (h *ApprovalHandler) GetJobByID(requestCtx context.Context, ctx *app.RequestContext) {
+	if h.approvalService == nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "审批服务未配置"})
+		return
+	}
+
+	job, err := h.approvalService.GetJob(requestCtx, ctx.Param("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, approval.ErrJobNotFound):
+			ctx.JSON(consts.StatusNotFound, map[string]string{"error": "执行作业不存在"})
+		default:
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询执行作业详情失败"})
+		}
+		return
+	}
+
+	ctx.JSON(consts.StatusOK, getExecutionJobResponse{
+		Job: executionJobToResponse(*job),
+	})
 }
 
 // Approve 将指定审批切换为 approved。
@@ -137,5 +199,19 @@ func approvalToResponse(approvalRecord postgres.Approval) approvalResponse {
 		RejectReason: approvalRecord.RejectReason,
 		DecidedAt:    approvalRecord.DecidedAt,
 		CreatedAt:    approvalRecord.CreatedAt,
+	}
+}
+
+func executionJobToResponse(job postgres.ExecutionJob) executionJobResponse {
+	return executionJobResponse{
+		ID:           job.ID,
+		TaskID:       job.TaskID,
+		ApprovalID:   job.ApprovalID,
+		Status:       job.Status,
+		ErrorMessage: job.ErrorMessage,
+		NewVersionID: job.NewVersionID,
+		StartedAt:    job.StartedAt,
+		CompletedAt:  job.CompletedAt,
+		CreatedAt:    job.CreatedAt,
 	}
 }

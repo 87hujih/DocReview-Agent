@@ -212,6 +212,82 @@ func TestApproveAlreadyDecidedReturnsError(t *testing.T) {
 	}
 }
 
+func TestGetApprovalReturnsRecord(t *testing.T) {
+	pool := newApprovalTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	ctx := approvalTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "审批详情服务测试-"+approvalUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupApprovalResource(t, pool, resource.ID)
+	})
+
+	task, err := taskRepo.Create(ctx, resource.ID, "读取审批详情")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+
+	service := NewService(approvalRepo, jobRepo, taskRepo, nil, nil)
+
+	found, err := service.GetApproval(ctx, approvalRecord.ID)
+	if err != nil {
+		t.Fatalf("get approval: %v", err)
+	}
+	if found.ID != approvalRecord.ID {
+		t.Fatalf("expected approval id %q, got %q", approvalRecord.ID, found.ID)
+	}
+}
+
+func TestGetJobReturnsRecord(t *testing.T) {
+	pool := newApprovalTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	ctx := approvalTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "执行作业详情服务测试-"+approvalUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupApprovalResource(t, pool, resource.ID)
+	})
+
+	task, err := taskRepo.Create(ctx, resource.ID, "读取执行作业详情")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	service := NewService(approvalRepo, jobRepo, taskRepo, nil, nil)
+
+	found, err := service.GetJob(ctx, jobRecord.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if found.ID != jobRecord.ID {
+		t.Fatalf("expected job id %q, got %q", jobRecord.ID, found.ID)
+	}
+}
+
 func newApprovalTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 

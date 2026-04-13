@@ -18,6 +18,7 @@ import (
 type TaskHandler struct {
 	taskService *taskservice.Service
 	taskRepo    *postgres.TaskRepo
+	eventRepo   *postgres.TaskEventRepo
 }
 
 type createTaskRequest struct {
@@ -26,28 +27,31 @@ type createTaskRequest struct {
 }
 
 type taskSummaryResponse struct {
-	ID          string    `json:"id"`
-	ResourceID  string    `json:"resource_id"`
-	Instruction string    `json:"instruction"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	ResourceID   string    `json:"resource_id"`
+	Instruction  string    `json:"instruction"`
+	Status       string    `json:"status"`
+	ErrorMessage *string   `json:"error_message"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type taskDetailResponse struct {
-	ID          string    `json:"id"`
-	ResourceID  string    `json:"resource_id"`
-	Instruction string    `json:"instruction"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	ResourceID   string    `json:"resource_id"`
+	Instruction  string    `json:"instruction"`
+	Status       string    `json:"status"`
+	ErrorMessage *string   `json:"error_message"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type taskStepResponse struct {
-	ID          string     `json:"id"`
-	StepName    string     `json:"step_name"`
-	Status      string     `json:"status"`
-	StartedAt   *time.Time `json:"started_at"`
-	CompletedAt *time.Time `json:"completed_at"`
+	ID           string     `json:"id"`
+	StepName     string     `json:"step_name"`
+	Status       string     `json:"status"`
+	ErrorMessage *string    `json:"error_message"`
+	StartedAt    *time.Time `json:"started_at"`
+	CompletedAt  *time.Time `json:"completed_at"`
 }
 
 type taskArtifactResponse struct {
@@ -55,6 +59,19 @@ type taskArtifactResponse struct {
 	ArtifactType string          `json:"artifact_type"`
 	Content      json.RawMessage `json:"content"`
 	CreatedAt    time.Time       `json:"created_at"`
+}
+
+type taskEventResponse struct {
+	ID        string          `json:"id"`
+	TaskID    string          `json:"task_id"`
+	RunID     *string         `json:"run_id"`
+	StepName  string          `json:"step_name"`
+	Source    string          `json:"source"`
+	Level     string          `json:"level"`
+	EventType string          `json:"event_type"`
+	Message   string          `json:"message"`
+	Payload   json.RawMessage `json:"payload"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 type createTaskResponse struct {
@@ -74,11 +91,16 @@ type getTaskArtifactsResponse struct {
 	Artifacts []taskArtifactResponse `json:"artifacts"`
 }
 
+type getTaskEventsResponse struct {
+	Events []taskEventResponse `json:"events"`
+}
+
 // NewTaskHandler 创建任务 handler。
-func NewTaskHandler(svc *taskservice.Service, repo *postgres.TaskRepo) *TaskHandler {
+func NewTaskHandler(svc *taskservice.Service, repo *postgres.TaskRepo, eventRepo *postgres.TaskEventRepo) *TaskHandler {
 	return &TaskHandler{
 		taskService: svc,
 		taskRepo:    repo,
+		eventRepo:   eventRepo,
 	}
 }
 
@@ -186,34 +208,70 @@ func (h *TaskHandler) GetArtifacts(requestCtx context.Context, ctx *app.RequestC
 	ctx.JSON(consts.StatusOK, response)
 }
 
+// GetEvents 返回任务执行过程中的结构化事件流。
+func (h *TaskHandler) GetEvents(requestCtx context.Context, ctx *app.RequestContext) {
+	if h.eventRepo == nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "任务事件服务未配置"})
+		return
+	}
+
+	task, err := h.taskRepo.GetByID(requestCtx, ctx.Param("id"))
+	if err != nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务失败"})
+		return
+	}
+	if task == nil {
+		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "任务不存在"})
+		return
+	}
+
+	events, err := h.eventRepo.ListByTask(requestCtx, task.ID)
+	if err != nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务事件失败"})
+		return
+	}
+
+	response := getTaskEventsResponse{
+		Events: make([]taskEventResponse, 0, len(events)),
+	}
+	for _, event := range events {
+		response.Events = append(response.Events, taskEventToResponse(event))
+	}
+
+	ctx.JSON(consts.StatusOK, response)
+}
+
 func taskToSummaryResponse(task postgres.Task) taskSummaryResponse {
 	return taskSummaryResponse{
-		ID:          task.ID,
-		ResourceID:  task.ResourceID,
-		Instruction: task.Instruction,
-		Status:      task.Status,
-		CreatedAt:   task.CreatedAt,
+		ID:           task.ID,
+		ResourceID:   task.ResourceID,
+		Instruction:  task.Instruction,
+		Status:       task.Status,
+		ErrorMessage: task.ErrorMessage,
+		CreatedAt:    task.CreatedAt,
 	}
 }
 
 func taskToDetailResponse(task postgres.Task) taskDetailResponse {
 	return taskDetailResponse{
-		ID:          task.ID,
-		ResourceID:  task.ResourceID,
-		Instruction: task.Instruction,
-		Status:      task.Status,
-		CreatedAt:   task.CreatedAt,
-		UpdatedAt:   task.UpdatedAt,
+		ID:           task.ID,
+		ResourceID:   task.ResourceID,
+		Instruction:  task.Instruction,
+		Status:       task.Status,
+		ErrorMessage: task.ErrorMessage,
+		CreatedAt:    task.CreatedAt,
+		UpdatedAt:    task.UpdatedAt,
 	}
 }
 
 func taskStepToResponse(step postgres.TaskStep) taskStepResponse {
 	return taskStepResponse{
-		ID:          step.ID,
-		StepName:    step.StepName,
-		Status:      step.Status,
-		StartedAt:   step.StartedAt,
-		CompletedAt: step.CompletedAt,
+		ID:           step.ID,
+		StepName:     step.StepName,
+		Status:       step.Status,
+		ErrorMessage: step.ErrorMessage,
+		StartedAt:    step.StartedAt,
+		CompletedAt:  step.CompletedAt,
 	}
 }
 
@@ -223,5 +281,20 @@ func taskArtifactToResponse(artifact postgres.TaskArtifact) taskArtifactResponse
 		ArtifactType: artifact.ArtifactType,
 		Content:      json.RawMessage(artifact.Content),
 		CreatedAt:    artifact.CreatedAt,
+	}
+}
+
+func taskEventToResponse(event postgres.TaskEvent) taskEventResponse {
+	return taskEventResponse{
+		ID:        event.ID,
+		TaskID:    event.TaskID,
+		RunID:     event.RunID,
+		StepName:  event.StepName,
+		Source:    event.Source,
+		Level:     event.Level,
+		EventType: event.EventType,
+		Message:   event.Message,
+		Payload:   json.RawMessage(event.Payload),
+		CreatedAt: event.CreatedAt,
 	}
 }
