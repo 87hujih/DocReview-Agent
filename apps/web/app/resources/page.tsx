@@ -12,6 +12,12 @@ export default function ResourcesPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [resources, setResources] = useState<Resource[]>([]);
+  const showErrorOnly = !isLoading && resources.length === 0 && Boolean(errorMessage);
+  const frameTitle = isLoading
+    ? "正在加载资源索引"
+    : showErrorOnly
+      ? "加载失败"
+      : `资源数量 ${resources.length}`;
 
   useEffect(() => {
     let active = true;
@@ -46,21 +52,16 @@ export default function ResourcesPage() {
   return (
     <div className={styles.page}>
       <TerminalFrame
-        label="资源索引"
-        title="资源库"
-      >
-        <p className={styles.banner}>输出 &gt; 正在调用 /api/resources</p>
-      </TerminalFrame>
-
-      <TerminalFrame
-        label="资源列表"
-        title={`资源数量 ${resources.length}`}
+        bodyClassName={styles.listBody}
+        className={styles.listFrame}
+        label="资源库"
+        title={frameTitle}
       >
         {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
 
         {isLoading ? (
           <p className={styles.placeholder}>正在加载资源索引</p>
-        ) : (
+        ) : showErrorOnly ? null : (
           <ResourceList resources={resources} />
         )}
       </TerminalFrame>

@@ -6,7 +6,7 @@ export interface Task {
   resource_id: string;
   instruction: string;
   status: string;
-  error_message?: string;
+  error_message?: string | null;
   created_at: string;
   updated_at?: string;
 }
@@ -15,7 +15,7 @@ export interface TaskStep {
   id: string;
   step_name: string;
   status: string;
-  error_message?: string;
+  error_message?: string | null;
   started_at?: string;
   completed_at?: string;
 }
@@ -40,6 +40,19 @@ export interface TaskArtifact<T = unknown> {
   id: string;
   artifact_type: string;
   content: T;
+  created_at: string;
+}
+
+export interface TaskEvent {
+  id: string;
+  task_id: string;
+  run_id?: string | null;
+  step_name: string;
+  source: string;
+  level: string;
+  event_type: string;
+  message: string;
+  payload: Record<string, unknown>;
   created_at: string;
 }
 
@@ -71,6 +84,12 @@ export function getTask(id: string): Promise<TaskDetailsResponse> {
 export function getTaskArtifacts(id: string): Promise<TaskArtifact[]> {
   return apiFetch<{ artifacts: TaskArtifact[] }>(`/api/tasks/${id}/artifacts`).then(
     (response) => response.artifacts
+  );
+}
+
+export function getTaskEvents(id: string): Promise<TaskEvent[]> {
+  return apiFetch<{ events: TaskEvent[] }>(`/api/tasks/${id}/events`).then(
+    (response) => response.events
   );
 }
 

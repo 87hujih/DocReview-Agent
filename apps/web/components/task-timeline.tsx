@@ -1,4 +1,4 @@
-import type { TaskStep } from "../lib/api/tasks";
+import type { TaskEvent, TaskStep } from "../lib/api/tasks";
 import { formatDuration, formatStepLabel, formatStatusLabel, toIsoSeconds } from "../lib/terminal";
 import { LogLine } from "./ui/log-line";
 import { MetaRow } from "./ui/meta-row";
@@ -7,10 +7,11 @@ import { TerminalFrame } from "./ui/terminal-frame";
 import styles from "./task-timeline.module.css";
 
 type TaskTimelineProps = {
+  events?: TaskEvent[];
   steps: TaskStep[];
 };
 
-export function TaskTimeline({ steps }: TaskTimelineProps) {
+export function TaskTimeline({ events = [], steps }: TaskTimelineProps) {
   return (
     <TerminalFrame
       label="执行流"
@@ -52,6 +53,26 @@ export function TaskTimeline({ steps }: TaskTimelineProps) {
           })}
         </ol>
       )}
+
+      {events.length > 0 ? (
+        <section className={styles.events} aria-label="任务事件流">
+          <h3 className={styles.eventsTitle}>事件流</h3>
+          <ol className={styles.eventList}>
+            {events.map((event) => (
+              <li key={event.id} className={styles.eventItem} data-level={event.level}>
+                <div className={styles.eventHeader}>
+                  <span className={styles.eventType}>{event.event_type}</span>
+                  <span className={styles.eventTime}>{toIsoSeconds(event.created_at)}</span>
+                </div>
+                <LogLine prefix={`${event.source} >`} tone={event.level === "error" ? "error" : "info"}>
+                  {event.message}
+                </LogLine>
+                {event.step_name ? <MetaRow label="step" value={formatStepLabel(event.step_name)} /> : null}
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
     </TerminalFrame>
   );
 }

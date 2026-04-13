@@ -22,11 +22,13 @@
 
 .textarea {
   width: 100%;
-  min-height: 220px;
+  min-height: 180px;
+  max-height: 320px;
   padding: var(--terminal-space-3);
   border: var(--terminal-border-width) solid var(--terminal-border);
   background: var(--terminal-bg);
-  resize: vertical;
+  resize: none;
+  overflow-y: auto;
   line-height: 1.7;
 }
 
@@ -38,5 +40,16 @@
 .button {
   min-height: 42px;
   padding: 0 var(--terminal-space-4);
-  justify-self: start;
+  min-width: 140px;
+  justify-self: end;
+  border-color: var(--terminal-info);
+  color: var(--terminal-info);
+  background: rgba(0, 200, 165, 0.08);
+}
+
+@media (max-width: 640px) {
+  .button {
+    width: 100%;
+    justify-self: stretch;
+  }
 }

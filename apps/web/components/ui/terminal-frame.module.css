@@ -1,14 +1,20 @@
 .frame {
-  border: var(--terminal-border-width) solid var(--terminal-border);
-  background: var(--terminal-surface);
+  border: none;
+  border-radius: 28px;
+  background:
+    linear-gradient(180deg, rgba(17, 28, 46, 0.94), rgba(17, 28, 46, 0.78));
+  box-shadow:
+    inset 0 0 0 1px rgba(148, 163, 184, 0.08),
+    0 24px 60px rgba(2, 6, 23, 0.24);
+  overflow: hidden;
 }
 
 .header {
   display: flex;
   justify-content: space-between;
   gap: var(--terminal-space-5);
-  padding: var(--terminal-space-5);
-  border-bottom: var(--terminal-border-width) dashed var(--terminal-border);
+  padding: 26px 28px 18px;
+  border-bottom: var(--terminal-border-width) solid rgba(148, 163, 184, 0.08);
 }
 
 .heading {
@@ -56,12 +62,12 @@
 .body {
   display: grid;
   gap: var(--terminal-space-4);
-  padding: var(--terminal-space-5);
+  padding: 0 28px 28px;
 }
 
 .footer {
-  padding: var(--terminal-space-4) var(--terminal-space-5);
-  border-top: var(--terminal-border-width) dashed var(--terminal-border);
+  padding: var(--terminal-space-4) 28px;
+  border-top: var(--terminal-border-width) solid rgba(148, 163, 184, 0.08);
   color: var(--terminal-text-muted);
 }
 

@@ -1,15 +1,21 @@
 .list {
   display: grid;
-  gap: 14px;
-  padding: 24px 20px 28px;
+  gap: 18px;
+  width: min(100%, 800px);
+  margin: 0 auto;
+  padding: 72px 0 40px;
 }
 
 .emptyState {
   display: grid;
   align-content: center;
+  justify-items: center;
+  width: min(100%, 800px);
+  margin: 0 auto;
+  text-align: center;
   gap: 12px;
   min-height: 100%;
-  padding: 28px 20px;
+  padding: 88px 0 56px;
 }
 
 .emptyEyebrow {
@@ -34,24 +40,74 @@
   font-size: 1rem;
 }
 
-.message,
+/* ── message row: avatar + bubble ── */
+
+.messageRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.messageRow[data-role="assistant"] {
+  justify-self: flex-start;
+  flex-direction: row;
+}
+
+.messageRow[data-role="user"] {
+  justify-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.avatar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+  border-radius: 50%;
+}
+
+.messageRow[data-role="assistant"] .avatar {
+  background: rgba(0, 200, 165, 0.14);
+  color: #00C8A5;
+}
+
+.messageRow[data-role="user"] .avatar {
+  background: rgba(206, 224, 235, 0.1);
+  color: rgba(206, 224, 235, 0.7);
+}
+
+/* ── bubble shared ── */
+
+.message {
+  display: grid;
+  gap: 10px;
+  max-width: min(70%, 680px);
+  padding: 14px 16px;
+}
+
 .card,
 .systemMessage {
   display: grid;
   gap: 10px;
-  width: min(100%, 760px);
-  padding: 16px 18px;
-  border: 1px solid rgba(92, 113, 125, 0.24);
+  max-width: min(70%, 680px);
+  padding: 14px 16px;
 }
 
+/* ── role-specific bubble ── */
+
 .message[data-role="assistant"] {
-  justify-self: flex-start;
-  background: rgba(9, 18, 24, 0.78);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px 16px 16px 4px;
 }
 
 .message[data-role="user"] {
-  justify-self: flex-end;
-  background: linear-gradient(180deg, rgba(18, 50, 64, 0.86), rgba(8, 24, 31, 0.96));
+  background: rgba(0, 200, 165, 0.12);
+  border: 1px solid rgba(0, 200, 165, 0.18);
+  border-radius: 16px 16px 4px 16px;
 }
 
 .role {
@@ -91,6 +147,8 @@
 .card {
   justify-self: flex-start;
   background: rgba(8, 16, 21, 0.86);
+  border: 1px solid rgba(92, 113, 125, 0.24);
+  border-radius: 12px;
 }
 
 .cardLabel {
@@ -132,13 +190,15 @@
   min-height: 38px;
   padding: 0 14px;
   border: 1px solid rgba(115, 215, 255, 0.34);
+  border-radius: 8px;
   width: fit-content;
 }
 
 .systemMessage {
   justify-self: flex-start;
   background: rgba(58, 29, 18, 0.34);
-  border-color: rgba(255, 173, 141, 0.28);
+  border: 1px solid rgba(255, 173, 141, 0.28);
+  border-radius: 12px;
 }
 
 .systemText {
@@ -146,10 +206,12 @@
   color: #ffd9cc;
 }
 
-.pendingMessage {
-  border-style: dashed;
-  border-color: rgba(115, 215, 255, 0.3);
-  background: linear-gradient(180deg, rgba(8, 18, 24, 0.92), rgba(6, 13, 18, 0.98));
+.streamFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .pendingRow {
@@ -170,6 +232,30 @@
 .pendingText {
   margin: 0;
   color: #e8f8ff;
+}
+
+.streamAction {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(115, 215, 255, 0.28);
+  border-radius: 8px;
+  background: transparent;
+  color: #cde9f3;
+}
+
+@media (max-width: 920px) {
+  .list,
+  .emptyState {
+    width: 100%;
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .message,
+  .card,
+  .systemMessage {
+    max-width: min(82%, 680px);
+  }
 }
 
 @keyframes pending-pulse {
