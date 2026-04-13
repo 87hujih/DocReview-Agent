@@ -24,6 +24,12 @@ export default function ApprovalsPage() {
   const [rejectReason, setRejectReason] = useState("");
   const rejectInputRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
+  const showErrorOnly = !isLoading && approvals.length === 0 && Boolean(errorMessage);
+  const frameTitle = isLoading
+    ? "正在加载审批队列"
+    : showErrorOnly
+      ? "加载失败"
+      : `队列深度 ${approvals.length}`;
 
   async function loadApprovals() {
     try {
@@ -99,16 +105,17 @@ export default function ApprovalsPage() {
 
   return (
     <div className={styles.page}>
-      <TerminalFrame label="审批队列" title="审批中心">
-        <p className={styles.banner}>输出 &gt; 正在调用 /api/approvals?status=pending</p>
-      </TerminalFrame>
-
-      <TerminalFrame label="待处理项" title={`队列深度 ${approvals.length}`}>
+      <TerminalFrame
+        bodyClassName={styles.listBody}
+        className={styles.listFrame}
+        label="审批中心"
+        title={frameTitle}
+      >
         {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
 
         {isLoading ? (
           <p className={styles.placeholder}>正在加载审批队列</p>
-        ) : approvals.length === 0 ? (
+        ) : showErrorOnly ? null : approvals.length === 0 ? (
           <p className={styles.placeholder}>当前没有待审批任务</p>
         ) : (
           <ul className={styles.list}>

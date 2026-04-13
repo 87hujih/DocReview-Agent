@@ -8,11 +8,16 @@ apps/server/bin/
 data/
 .idea/
 .worktrees/
+.gstack/
+.tmp/
+.codex/skills/**/__pycache__/
+*.pyc
 *.log
 *.exe
 .claude/
 findings.md
 progress.md
 task_plan.md
-tasks/
+/tasks/
 docs/superpowers/
+scripts/dev/.local-dev-state.json

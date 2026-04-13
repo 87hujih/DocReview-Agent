@@ -20,6 +20,8 @@ var (
 	ErrReasonRequired = errors.New("必须提供原因")
 	// ErrTaskNotFound 表示审批对应的任务不存在。
 	ErrTaskNotFound = errors.New("任务不存在")
+	// ErrJobNotFound 表示执行作业不存在。
+	ErrJobNotFound = errors.New("执行作业不存在")
 )
 
 // Service 负责审批通过/拒绝时的业务协调。
@@ -51,6 +53,32 @@ func NewService(
 // List 返回审批列表，可按状态过滤。
 func (s *Service) List(ctx context.Context, statusFilter string) ([]postgres.Approval, error) {
 	return s.approvalRepo.List(ctx, strings.TrimSpace(statusFilter))
+}
+
+// GetApproval 返回单条审批记录。
+func (s *Service) GetApproval(ctx context.Context, approvalID string) (*postgres.Approval, error) {
+	approvalRecord, err := s.approvalRepo.GetByID(ctx, strings.TrimSpace(approvalID))
+	if err != nil {
+		return nil, err
+	}
+	if approvalRecord == nil {
+		return nil, ErrApprovalNotFound
+	}
+
+	return approvalRecord, nil
+}
+
+// GetJob 返回单条执行作业记录。
+func (s *Service) GetJob(ctx context.Context, jobID string) (*postgres.ExecutionJob, error) {
+	job, err := s.jobRepo.GetByID(ctx, strings.TrimSpace(jobID))
+	if err != nil {
+		return nil, err
+	}
+	if job == nil {
+		return nil, ErrJobNotFound
+	}
+
+	return job, nil
 }
 
 // Approve 将审批切换为 approved，并创建待执行 job。

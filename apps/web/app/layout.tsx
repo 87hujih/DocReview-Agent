@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-import Nav from "../components/nav";
+import { AppChrome } from "../components/app-chrome";
 import "./globals.css";
 
 type RootLayoutProps = {
@@ -17,8 +17,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="zh-CN">
       <body>
-        <Nav />
-        <main className="app-shell">{children}</main>
+        <AppChrome>{children}</AppChrome>
       </body>
     </html>
   );

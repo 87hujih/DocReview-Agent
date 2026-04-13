@@ -20,6 +20,8 @@ const (
 	defaultRerankerModel      = "Qwen/Qwen3-Reranker-8B"
 	defaultDocumentParser     = "text"
 	defaultTikaTimeoutMS      = 30000
+	defaultUploadStorageDir   = "data/uploads"
+	defaultUploadMaxBytes     = 20 * 1024 * 1024
 	defaultLogLevel           = "info"
 	defaultLogFormat          = "json"
 )
@@ -38,6 +40,8 @@ type Config struct {
 	DocumentParser     string
 	TikaURL            string
 	TikaTimeoutMS      int
+	UploadStorageDir   string
+	UploadMaxBytes     int
 
 	LogLevel     string
 	LogFormat    string
@@ -97,6 +101,8 @@ func Load() Config {
 		DocumentParser:     resolveString("DOCUMENT_PARSER", dotenvValues, defaults.Document.Parser, defaultDocumentParser),
 		TikaURL:            resolveString("TIKA_URL", dotenvValues, defaults.Document.TikaURL, ""),
 		TikaTimeoutMS:      resolveInt("TIKA_TIMEOUT_MS", dotenvValues, defaults.Document.TikaTimeoutMS, defaultTikaTimeoutMS),
+		UploadStorageDir:   resolveString("UPLOAD_STORAGE_DIR", dotenvValues, "", defaultUploadStorageDir),
+		UploadMaxBytes:     resolveInt("UPLOAD_MAX_BYTES", dotenvValues, 0, defaultUploadMaxBytes),
 		LogLevel:           resolveString("LOG_LEVEL", dotenvValues, defaults.Log.Level, defaultLogLevel),
 		LogFormat:          resolveString("LOG_FORMAT", dotenvValues, defaults.Log.Format, defaultLogFormat),
 		LogAddSource:       resolveBool("LOG_ADD_SOURCE", dotenvValues, defaults.Log.AddSource, false),

@@ -5,6 +5,7 @@ import styles from "./terminal-frame.module.css";
 type TerminalFrameProps = HTMLAttributes<HTMLElement> & {
   actions?: ReactNode;
   as?: "article" | "div" | "section";
+  bodyClassName?: string;
   description?: ReactNode;
   footer?: ReactNode;
   label?: string;
@@ -15,6 +16,7 @@ type TerminalFrameProps = HTMLAttributes<HTMLElement> & {
 export function TerminalFrame({
   actions,
   as = "section",
+  bodyClassName,
   children,
   className,
   description,
@@ -45,7 +47,7 @@ export function TerminalFrame({
         </header>
       )}
 
-      <div className={styles.body}>{children}</div>
+      <div className={[styles.body, bodyClassName].filter(Boolean).join(" ")}>{children}</div>
 
       {footer ? <footer className={styles.footer}>{footer}</footer> : null}
     </Component>

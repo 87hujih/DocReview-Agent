@@ -2,15 +2,17 @@
 
 import Link from "next/link";
 
-import type { AssistantMessage } from "../../lib/assistant/types";
 import { getFileDownloadURL } from "../../lib/api/files";
+import type { AssistantRenderableMessage } from "../../lib/assistant/types";
 import styles from "./assistant-message-list.module.css";
 
 type AssistantMessageListProps = {
   activeTaskSuggestionId: string | null;
-  messages: AssistantMessage[];
+  messages: AssistantRenderableMessage[];
   onConfirmTaskSuggestion: (messageId: string) => Promise<void> | void;
-  pendingLabel?: string | null;
+  onStopGeneration?: () => void;
+  showStopAction?: boolean;
+  stopActionLabel?: string;
 };
 
 function formatTime(isoString: string): string {
@@ -25,14 +27,16 @@ export function AssistantMessageList({
   activeTaskSuggestionId,
   messages,
   onConfirmTaskSuggestion,
-  pendingLabel = null
+  onStopGeneration,
+  showStopAction = false,
+  stopActionLabel = "停止生成"
 }: AssistantMessageListProps) {
-  if (messages.length === 0 && pendingLabel === null) {
+  if (messages.length === 0) {
     return (
       <div className={styles.emptyState}>
-        <p className={styles.emptyEyebrow}>新的对话</p>
-        <h2 className={styles.emptyTitle}>发送第一条消息后才会真正创建会话。</h2>
-        <p className={styles.emptyText}>你可以先自由聊，再决定是否创建任务。</p>
+        <p className={styles.emptyEyebrow}>个人助手</p>
+        <h2 className={styles.emptyTitle}>有什么可以帮到你？</h2>
+        <p className={styles.emptyText}>输入你的问题或需求，我来为你解答和整理。</p>
       </div>
     );
   }
@@ -45,7 +49,9 @@ export function AssistantMessageList({
             <section key={message.id} className={styles.card}>
               <div className={styles.labelRow}>
                 <p className={styles.cardLabel}>任务建议</p>
-                <time className={styles.timestamp} dateTime={message.created_at}>{formatTime(message.created_at)}</time>
+                <time className={styles.timestamp} dateTime={message.created_at}>
+                  {formatTime(message.created_at)}
+                </time>
               </div>
               <h3 className={styles.cardTitle}>{message.payload.title}</h3>
               <p className={styles.cardBody}>{message.payload.instruction}</p>
@@ -67,7 +73,9 @@ export function AssistantMessageList({
             <section key={message.id} className={styles.card}>
               <div className={styles.labelRow}>
                 <p className={styles.cardLabel}>任务已创建</p>
-                <time className={styles.timestamp} dateTime={message.created_at}>{formatTime(message.created_at)}</time>
+                <time className={styles.timestamp} dateTime={message.created_at}>
+                  {formatTime(message.created_at)}
+                </time>
               </div>
               <h3 className={styles.cardTitle}>{message.payload.instruction}</h3>
               <p className={styles.cardMeta}>任务状态：{message.payload.status}</p>
@@ -83,7 +91,9 @@ export function AssistantMessageList({
             <section key={message.id} className={styles.card}>
               <div className={styles.labelRow}>
                 <p className={styles.cardLabel}>会话文件</p>
-                <time className={styles.timestamp} dateTime={message.created_at}>{formatTime(message.created_at)}</time>
+                <time className={styles.timestamp} dateTime={message.created_at}>
+                  {formatTime(message.created_at)}
+                </time>
               </div>
               <h3 className={styles.cardTitle}>{message.payload.file_name}</h3>
               <p className={styles.cardMeta}>
@@ -106,26 +116,58 @@ export function AssistantMessageList({
           );
         }
 
+        if (message.kind === "local_error") {
+          return (
+            <article key={message.id} className={styles.systemMessage}>
+              <p className={styles.systemText}>{message.payload.content}</p>
+            </article>
+          );
+        }
+
+        const isStreamingAssistant = message.kind === "local_text" && message.role === "assistant" && message.local_state === "streaming";
+        const content = message.payload.content;
+
         return (
-          <article key={message.id} className={styles.message} data-role={message.role}>
-            <div className={styles.messageHeader}>
-              <p className={styles.role}>{message.role === "assistant" ? "助手" : "你"}</p>
-              <time className={styles.timestamp} dateTime={message.created_at}>{formatTime(message.created_at)}</time>
-            </div>
-            <p className={styles.content}>{message.payload.content}</p>
-          </article>
+          <div key={message.id} className={styles.messageRow} data-role={message.role}>
+            <span className={styles.avatar} aria-hidden="true">
+              {message.role === "assistant" ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2L14.09 8.26L20 9.27L15.55 13.97L16.91 20L12 16.9L7.09 20L8.45 13.97L4 9.27L9.91 8.26L12 2Z" />
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" />
+                </svg>
+              )}
+            </span>
+            <article className={styles.message} data-role={message.role}>
+              <div className={styles.messageHeader}>
+                <p className={styles.role}>{message.role === "assistant" ? "助手" : "你"}</p>
+                <time className={styles.timestamp} dateTime={message.created_at}>
+                  {formatTime(message.created_at)}
+                </time>
+              </div>
+
+              {content ? <p className={styles.content}>{content}</p> : null}
+
+              {isStreamingAssistant ? (
+                <div className={styles.streamFooter}>
+                  <div className={styles.pendingRow}>
+                    <span aria-hidden="true" className={styles.pendingPulse} />
+                    <p className={styles.pendingText}>{content ? "继续生成中" : "正在生成回复"}</p>
+                  </div>
+
+                  {showStopAction && onStopGeneration ? (
+                    <button className={styles.streamAction} onClick={() => onStopGeneration()} type="button">
+                      {stopActionLabel}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </article>
+          </div>
         );
       })}
-
-      {pendingLabel ? (
-        <article aria-live="polite" className={`${styles.message} ${styles.pendingMessage}`} data-role="assistant">
-          <p className={styles.role}>助手</p>
-          <div className={styles.pendingRow}>
-            <span aria-hidden="true" className={styles.pendingPulse} />
-            <p className={styles.pendingText}>{pendingLabel}</p>
-          </div>
-        </article>
-      ) : null}
     </div>
   );
 }

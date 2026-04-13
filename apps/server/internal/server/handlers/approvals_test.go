@@ -53,6 +53,128 @@ func TestListApprovalsHandler(t *testing.T) {
 	}
 }
 
+func TestGetApprovalHandler(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2), nil))
+	engine := server.New()
+	engine.GET("/api/approvals/:id", handler.GetByID)
+
+	ctx := testContext(t)
+	resource, err := resourceRepo.Create(ctx, "审批详情接口测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	task, err := taskRepo.Create(ctx, resource.ID, "读取审批详情")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/approvals/"+approvalRecord.ID, nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	body := string(response.Body())
+	if !strings.Contains(body, `"id":"`+approvalRecord.ID+`"`) {
+		t.Fatalf("expected body to contain approval id, got %q", body)
+	}
+	if !strings.Contains(body, `"task_id":"`+task.ID+`"`) {
+		t.Fatalf("expected body to contain task id, got %q", body)
+	}
+}
+
+func TestGetApprovalHandlerNotFound(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2), nil))
+	engine := server.New()
+	engine.GET("/api/approvals/:id", handler.GetByID)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/approvals/00000000-0000-0000-0000-000000000000", nil).Result()
+
+	if response.StatusCode() != consts.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", consts.StatusNotFound, response.StatusCode())
+	}
+}
+
+func TestGetJobHandler(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2), nil))
+	engine := server.New()
+	engine.GET("/api/jobs/:id", handler.GetJobByID)
+
+	ctx := testContext(t)
+	resource, err := resourceRepo.Create(ctx, "执行作业详情接口测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	task, err := taskRepo.Create(ctx, resource.ID, "读取执行作业详情")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/jobs/"+jobRecord.ID, nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	body := string(response.Body())
+	if !strings.Contains(body, `"id":"`+jobRecord.ID+`"`) {
+		t.Fatalf("expected body to contain job id, got %q", body)
+	}
+	if !strings.Contains(body, `"approval_id":"`+approvalRecord.ID+`"`) {
+		t.Fatalf("expected body to contain approval id, got %q", body)
+	}
+}
+
+func TestGetJobHandlerNotFound(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	handler := NewApprovalHandler(approval.NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2), nil))
+	engine := server.New()
+	engine.GET("/api/jobs/:id", handler.GetJobByID)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/jobs/00000000-0000-0000-0000-000000000000", nil).Result()
+
+	if response.StatusCode() != consts.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", consts.StatusNotFound, response.StatusCode())
+	}
+}
+
 func TestApproveApprovalHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)

@@ -4,14 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"agent_project/apps/server/internal/agent/editor"
 	"agent_project/apps/server/internal/agent/planner"
-	"agent_project/apps/server/internal/agent/reviewer"
 	"agent_project/apps/server/internal/knowledge/citation"
-	"agent_project/apps/server/internal/knowledge/retriever"
 	"agent_project/apps/server/internal/storage/postgres"
+	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
 )
 
@@ -22,10 +22,27 @@ type Orchestrator struct {
 	taskRepo      *postgres.TaskRepo
 	resourceRepo  *postgres.ResourceRepo
 	approvalRepo  *postgres.ApprovalRepo
-	plannerAgent  *planner.Agent
-	reviewerAgent *reviewer.Agent
-	editorAgent   *editor.Agent
-	retrieverSvc  *retriever.Service
+	plannerAgent  plannerRunner
+	reviewerAgent reviewerRunner
+	editorAgent   editorRunner
+	retrieverSvc  resourceSearcher
+	eventService  *taskevents.Service
+}
+
+type plannerRunner interface {
+	Plan(ctx context.Context, instruction string, resourceTitle string, resourceSummary string) (*planner.PlanResult, error)
+}
+
+type reviewerRunner interface {
+	Review(ctx context.Context, resourceContent string, citations []citation.Citation, intent string) (string, error)
+}
+
+type editorRunner interface {
+	Edit(ctx context.Context, resourceContent string, reviewSummary string, citations []citation.Citation) (*editor.DiffPreview, error)
+}
+
+type resourceSearcher interface {
+	SearchByResource(ctx context.Context, resourceID string, query string, limit int) ([]citation.Citation, error)
 }
 
 // New 构造任务编排器。
@@ -33,10 +50,11 @@ func New(
 	taskRepo *postgres.TaskRepo,
 	resourceRepo *postgres.ResourceRepo,
 	approvalRepo *postgres.ApprovalRepo,
-	plannerAgent *planner.Agent,
-	reviewerAgent *reviewer.Agent,
-	editorAgent *editor.Agent,
-	retrieverSvc *retriever.Service,
+	plannerAgent plannerRunner,
+	reviewerAgent reviewerRunner,
+	editorAgent editorRunner,
+	retrieverSvc resourceSearcher,
+	eventService *taskevents.Service,
 ) *Orchestrator {
 	return &Orchestrator{
 		taskRepo:      taskRepo,
@@ -46,6 +64,7 @@ func New(
 		reviewerAgent: reviewerAgent,
 		editorAgent:   editorAgent,
 		retrieverSvc:  retrieverSvc,
+		eventService:  eventService,
 	}
 }
 
@@ -83,6 +102,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		o.failTask(ctx, task, nil, err)
 		return
 	}
+	o.recordStepEvent(ctx, task, plannerStep, "info", "step.started", "规划步骤开始")
 
 	planResult, err := o.plannerAgent.Plan(ctx, task.Instruction, resource.Title, resourceSummary)
 	if err != nil {
@@ -97,6 +117,8 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		o.failTask(ctx, task, plannerStep, err)
 		return
 	}
+	plannerStep.Status = "completed"
+	o.recordStepEvent(ctx, task, plannerStep, "info", "step.completed", "规划步骤完成")
 
 	if err := o.transitionTask(ctx, task, models.StatusRetrieving, nil); err != nil {
 		o.failTask(ctx, task, nil, err)
@@ -108,6 +130,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		o.failTask(ctx, task, nil, err)
 		return
 	}
+	o.recordStepEvent(ctx, task, retrieverStep, "info", "step.started", "检索步骤开始")
 
 	allCitations := make([]citation.Citation, 0)
 	for _, query := range planResult.SearchQueries {
@@ -126,14 +149,20 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		o.failTask(ctx, task, retrieverStep, err)
 		return
 	}
-	if _, err := o.taskRepo.AddArtifact(ctx, task.ID, "citations", citationsContent); err != nil {
+	citationsArtifact, err := o.taskRepo.AddArtifact(ctx, task.ID, "citations", citationsContent)
+	if err != nil {
 		o.failTask(ctx, task, retrieverStep, err)
 		return
 	}
+	o.recordArtifactCreated(ctx, task, citationsArtifact, map[string]any{
+		"citation_count": len(citations),
+	})
 	if err := o.taskRepo.UpdateStep(ctx, retrieverStep.ID, "completed", nil); err != nil {
 		o.failTask(ctx, task, retrieverStep, err)
 		return
 	}
+	retrieverStep.Status = "completed"
+	o.recordStepEvent(ctx, task, retrieverStep, "info", "step.completed", "检索步骤完成")
 
 	if err := o.transitionTask(ctx, task, models.StatusDrafting, nil); err != nil {
 		o.failTask(ctx, task, nil, err)
@@ -145,6 +174,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		o.failTask(ctx, task, nil, err)
 		return
 	}
+	o.recordStepEvent(ctx, task, reviewerStep, "info", "step.started", "审阅步骤开始")
 
 	reviewSummary, err := o.reviewerAgent.Review(ctx, version.Content, citations, planResult.Intent)
 	if err != nil {
@@ -162,20 +192,25 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		o.failTask(ctx, task, reviewerStep, err)
 		return
 	}
-	if _, err := o.taskRepo.AddArtifact(ctx, task.ID, "review_summary", reviewSummaryContent); err != nil {
+	reviewArtifact, err := o.taskRepo.AddArtifact(ctx, task.ID, "review_summary", reviewSummaryContent)
+	if err != nil {
 		o.failTask(ctx, task, reviewerStep, err)
 		return
 	}
+	o.recordArtifactCreated(ctx, task, reviewArtifact, nil)
 	if err := o.taskRepo.UpdateStep(ctx, reviewerStep.ID, "completed", nil); err != nil {
 		o.failTask(ctx, task, reviewerStep, err)
 		return
 	}
+	reviewerStep.Status = "completed"
+	o.recordStepEvent(ctx, task, reviewerStep, "info", "step.completed", "审阅步骤完成")
 
 	editorStep, err := o.taskRepo.AddStep(ctx, task.ID, models.StepEditor)
 	if err != nil {
 		o.failTask(ctx, task, nil, err)
 		return
 	}
+	o.recordStepEvent(ctx, task, editorStep, "info", "step.started", "编辑步骤开始")
 
 	diffPreview, err := o.editorAgent.Edit(ctx, version.Content, reviewSummary, citations)
 	if err != nil {
@@ -192,19 +227,37 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		o.failTask(ctx, task, editorStep, err)
 		return
 	}
-	if _, err := o.taskRepo.AddArtifact(ctx, task.ID, "diff_preview", diffPreviewContent); err != nil {
+	diffArtifact, err := o.taskRepo.AddArtifact(ctx, task.ID, "diff_preview", diffPreviewContent)
+	if err != nil {
 		o.failTask(ctx, task, editorStep, err)
 		return
 	}
+	o.recordArtifactCreated(ctx, task, diffArtifact, map[string]any{
+		"section_count": len(diffPreview.Sections),
+	})
 	if err := o.taskRepo.UpdateStep(ctx, editorStep.ID, "completed", nil); err != nil {
 		o.failTask(ctx, task, editorStep, err)
 		return
 	}
+	editorStep.Status = "completed"
+	o.recordStepEvent(ctx, task, editorStep, "info", "step.completed", "编辑步骤完成")
 
-	if _, err := o.approvalRepo.Create(ctx, task.ID); err != nil {
+	approvalRecord, err := o.approvalRepo.Create(ctx, task.ID)
+	if err != nil {
 		o.failTask(ctx, task, nil, err)
 		return
 	}
+	o.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "orchestrator",
+		Level:     "info",
+		EventType: "approval.created",
+		Message:   "审批记录已创建，等待人工处理",
+		Payload: map[string]any{
+			"approval_id": approvalRecord.ID,
+			"status":      approvalRecord.Status,
+		},
+	})
 
 	if err := o.transitionTask(ctx, task, models.StatusAwaitingApproval, nil); err != nil {
 		o.failTask(ctx, task, nil, err)
@@ -213,6 +266,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 }
 
 func (o *Orchestrator) transitionTask(ctx context.Context, task *postgres.Task, to string, errorMessage *string) error {
+	from := task.Status
 	if err := models.Transition(task.Status, to); err != nil {
 		return err
 	}
@@ -223,6 +277,17 @@ func (o *Orchestrator) transitionTask(ctx context.Context, task *postgres.Task, 
 
 	task.Status = to
 	task.ErrorMessage = errorMessage
+	o.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "orchestrator",
+		Level:     "info",
+		EventType: "task.status_changed",
+		Message:   "任务状态已更新",
+		Payload: map[string]any{
+			"from_status": from,
+			"to_status":   to,
+		},
+	})
 	return nil
 }
 
@@ -230,13 +295,86 @@ func (o *Orchestrator) failTask(ctx context.Context, task *postgres.Task, step *
 	if step != nil {
 		errorMessage := cause.Error()
 		_ = o.taskRepo.UpdateStep(ctx, step.ID, "failed", &errorMessage)
+		step.Status = "failed"
+		step.ErrorMessage = &errorMessage
+		o.recordStepEvent(ctx, task, step, "error", "step.failed", "步骤执行失败")
 	}
 
 	errorMessage := cause.Error()
 	if err := models.Transition(task.Status, models.StatusFailed); err == nil {
+		from := task.Status
 		_ = o.taskRepo.UpdateStatus(ctx, task.ID, models.StatusFailed, &errorMessage)
 		task.Status = models.StatusFailed
 		task.ErrorMessage = &errorMessage
+		o.recordEvent(ctx, taskevents.RecordInput{
+			TaskID:    task.ID,
+			Source:    "orchestrator",
+			Level:     "error",
+			EventType: "task.status_changed",
+			Message:   "任务状态已更新为失败",
+			Payload: map[string]any{
+				"error_message": errorMessage,
+				"from_status":   from,
+				"to_status":     models.StatusFailed,
+			},
+		})
+	}
+}
+
+func (o *Orchestrator) recordStepEvent(
+	ctx context.Context,
+	task *postgres.Task,
+	step *postgres.TaskStep,
+	level string,
+	eventType string,
+	message string,
+) {
+	o.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		StepName:  step.StepName,
+		Source:    "orchestrator",
+		Level:     level,
+		EventType: eventType,
+		Message:   message,
+		Payload: map[string]any{
+			"step_id":   step.ID,
+			"step_name": step.StepName,
+			"status":    step.Status,
+		},
+	})
+}
+
+func (o *Orchestrator) recordArtifactCreated(
+	ctx context.Context,
+	task *postgres.Task,
+	artifact *postgres.TaskArtifact,
+	extraPayload map[string]any,
+) {
+	payload := map[string]any{
+		"artifact_id":   artifact.ID,
+		"artifact_type": artifact.ArtifactType,
+	}
+	for key, value := range extraPayload {
+		payload[key] = value
+	}
+
+	o.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "orchestrator",
+		Level:     "info",
+		EventType: "artifact.created",
+		Message:   "任务产物已生成",
+		Payload:   payload,
+	})
+}
+
+func (o *Orchestrator) recordEvent(ctx context.Context, input taskevents.RecordInput) {
+	if o.eventService == nil {
+		return
+	}
+
+	if _, err := o.eventService.Record(ctx, input); err != nil {
+		log.Printf("警告：记录任务事件失败：task=%s event=%s err=%v", input.TaskID, input.EventType, err)
 	}
 }
 

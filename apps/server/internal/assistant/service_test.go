@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
 	"agent_project/apps/server/internal/knowledge/citation"
+	"agent_project/apps/server/internal/storage/filestore"
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
@@ -231,6 +233,139 @@ func TestAppendMessageUsesLatestUploadedResourceForTaskSuggestion(t *testing.T) 
 	}
 }
 
+func TestStartConversationStreamPersistsUserFirstAndAssistantAfterCompletion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	responder := &fakeChatResponder{
+		stream: &fakeChatStream{
+			chunks: []string{"当然可以", "，我们先梳理目标。"},
+		},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, fakeResourceSearcher{})
+
+	var events []StreamEvent
+	err := service.StartConversationStream(context.Background(), "帮我梳理这周学习安排", func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("start conversation stream: %v", err)
+	}
+
+	if len(events) != 5 {
+		t.Fatalf("expected 5 events, got %d", len(events))
+	}
+
+	if events[0].Type != StreamEventSessionCreated {
+		t.Fatalf("expected first event %q, got %q", StreamEventSessionCreated, events[0].Type)
+	}
+
+	if events[1].Type != StreamEventMessageStarted {
+		t.Fatalf("expected second event %q, got %q", StreamEventMessageStarted, events[1].Type)
+	}
+
+	if events[2].Type != StreamEventMessageDelta || events[2].Delta != "当然可以" {
+		t.Fatalf("expected first delta event, got %#v", events[2])
+	}
+
+	if events[3].Type != StreamEventMessageDelta || events[3].Delta != "，我们先梳理目标。" {
+		t.Fatalf("expected second delta event, got %#v", events[3])
+	}
+
+	if events[4].Type != StreamEventMessageCompleted {
+		t.Fatalf("expected final event %q, got %q", StreamEventMessageCompleted, events[4].Type)
+	}
+
+	sessionID := events[0].Session.ID
+	messages, err := repo.ListMessages(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 persisted messages, got %d", len(messages))
+	}
+
+	reply := decodeTextPayload(t, messages[1].Payload)
+	if reply.Content != "当然可以，我们先梳理目标。" {
+		t.Fatalf("expected persisted reply %q, got %q", "当然可以，我们先梳理目标。", reply.Content)
+	}
+}
+
+func TestAppendMessageStreamDoesNotPersistAssistantOnCancellation(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-user-history",
+		SessionID:  session.ID,
+		Role:       RoleUser,
+		Kind:       KindText,
+		SequenceNo: 1,
+		Payload:    mustJSON(t, TextPayload{Content: "先看第二章"}),
+		CreatedAt:  time.Now(),
+	})
+
+	responder := &fakeChatResponder{
+		stream: &fakeChatStream{
+			chunks: []string{"我先看一下"},
+			errs:   []error{nil, context.Canceled},
+		},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, fakeResourceSearcher{})
+
+	err := service.AppendMessageStream(context.Background(), session.ID, "继续看看考勤部分", func(StreamEvent) error {
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled error, got %v", err)
+	}
+
+	messages, err := repo.ListMessages(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+
+	if len(messages) != 2 {
+		t.Fatalf("expected only history + latest user message to be persisted, got %d messages", len(messages))
+	}
+
+	if messages[1].Role != RoleUser {
+		t.Fatalf("expected latest persisted message role %q, got %q", RoleUser, messages[1].Role)
+	}
+}
+
+func TestStartConversationStreamReturnsEmptyReplyError(t *testing.T) {
+	repo := newFakeSessionRepo()
+	responder := &fakeChatResponder{
+		stream: &fakeChatStream{},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, fakeResourceSearcher{})
+
+	err := service.StartConversationStream(context.Background(), "帮我总结学生手册", func(StreamEvent) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected empty reply error")
+	}
+
+	var streamErr *StreamError
+	if !errors.As(err, &streamErr) {
+		t.Fatalf("expected StreamError, got %T", err)
+	}
+
+	if streamErr.Code != StreamErrorCodeEmptyReply {
+		t.Fatalf("expected error code %q, got %q", StreamErrorCodeEmptyReply, streamErr.Code)
+	}
+
+	if len(repo.messages) != 1 {
+		t.Fatalf("expected only one session to be created, got %d", len(repo.messages))
+	}
+	for _, messages := range repo.messages {
+		if len(messages) != 1 {
+			t.Fatalf("expected only user message to be persisted on empty reply, got %d", len(messages))
+		}
+	}
+}
+
 func TestUploadFilePersistsSessionFileMessage(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("空白会话")
@@ -265,6 +400,71 @@ func TestUploadFilePersistsSessionFileMessage(t *testing.T) {
 	filePayload := decodeSessionFilePayload(t, result.Messages[0].Payload)
 	if filePayload.ResourceID != "resource-uploaded" {
 		t.Fatalf("expected payload resource id %q, got %q", "resource-uploaded", filePayload.ResourceID)
+	}
+}
+
+func TestUploadFileStoresOriginalFileAndPersistsFileID(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("原文件保存")
+	fileStore := &fakeFileStore{
+		result: &filestore.StoredFile{
+			SHA256:     "sha256-uploaded",
+			SizeBytes:  int64(len([]byte("# 学生手册\n内容"))),
+			StorageKey: "sh/sha256-uploaded",
+		},
+	}
+	uploadedFiles := &fakeUploadedFileRepo{
+		result: &postgres.UploadedFile{
+			ID:               "file-1",
+			OriginalFilename: "学生手册.md",
+			ContentType:      "text/plain; charset=utf-8",
+			SizeBytes:        int64(len([]byte("# 学生手册\n内容"))),
+			SHA256:           "sha256-uploaded",
+			StorageKey:       "sh/sha256-uploaded",
+		},
+	}
+	importer := fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-uploaded",
+				Title:      "学生手册",
+				SourceType: "upload",
+			},
+		},
+	}
+
+	service := NewService(
+		repo,
+		importer,
+		fakeTaskCreator{},
+		&fakeChatResponder{},
+		fakeResourceSearcher{},
+		WithUploadedFileStorage(fileStore, uploadedFiles),
+	)
+	result, err := service.UploadFile(context.Background(), session.ID, "学生手册.md", []byte("# 学生手册\n内容"))
+	if err != nil {
+		t.Fatalf("upload file: %v", err)
+	}
+
+	if string(fileStore.savedContent) != "# 学生手册\n内容" {
+		t.Fatalf("expected original bytes to be saved, got %q", string(fileStore.savedContent))
+	}
+	if uploadedFiles.createInput == nil {
+		t.Fatal("expected uploaded file metadata to be created")
+	}
+	if uploadedFiles.createInput.SessionID == nil || *uploadedFiles.createInput.SessionID != session.ID {
+		t.Fatalf("expected session id %q, got %#v", session.ID, uploadedFiles.createInput.SessionID)
+	}
+	if uploadedFiles.updatedFileID != "file-1" {
+		t.Fatalf("expected updated file id %q, got %q", "file-1", uploadedFiles.updatedFileID)
+	}
+	if uploadedFiles.updatedResourceID != "resource-uploaded" {
+		t.Fatalf("expected uploaded file to bind resource %q, got %q", "resource-uploaded", uploadedFiles.updatedResourceID)
+	}
+
+	filePayload := decodeSessionFilePayload(t, result.Messages[0].Payload)
+	if filePayload.FileID != "file-1" {
+		t.Fatalf("expected payload file id %q, got %q", "file-1", filePayload.FileID)
 	}
 }
 
@@ -520,6 +720,43 @@ func (i fakeDocumentImporter) ImportDocument(context.Context, ImportDocumentInpu
 	return i.result, nil
 }
 
+type fakeFileStore struct {
+	result       *filestore.StoredFile
+	err          error
+	savedContent []byte
+}
+
+func (s *fakeFileStore) Save(_ context.Context, _ string, content []byte) (*filestore.StoredFile, error) {
+	s.savedContent = append([]byte(nil), content...)
+	if s.err != nil {
+		return nil, s.err
+	}
+
+	return s.result, nil
+}
+
+type fakeUploadedFileRepo struct {
+	createInput       *postgres.UploadedFileCreateParams
+	result            *postgres.UploadedFile
+	updatedFileID     string
+	updatedResourceID string
+}
+
+func (r *fakeUploadedFileRepo) Create(_ context.Context, input postgres.UploadedFileCreateParams) (*postgres.UploadedFile, error) {
+	r.createInput = &input
+	if r.result != nil {
+		return r.result, nil
+	}
+
+	return &postgres.UploadedFile{ID: "file-default"}, nil
+}
+
+func (r *fakeUploadedFileRepo) UpdateResourceID(_ context.Context, fileID string, resourceID string) error {
+	r.updatedFileID = fileID
+	r.updatedResourceID = resourceID
+	return nil
+}
+
 type fakeTaskCreator struct {
 	result *postgres.Task
 	err    error
@@ -537,6 +774,7 @@ type fakeChatResponder struct {
 	lastInput *ChatCompletionInput
 	result    *ChatCompletionResult
 	err       error
+	stream    *fakeChatStream
 }
 
 func (r *fakeChatResponder) Reply(_ context.Context, input ChatCompletionInput) (*ChatCompletionResult, error) {
@@ -555,6 +793,52 @@ func (r *fakeChatResponder) Reply(_ context.Context, input ChatCompletionInput) 
 	}
 
 	return r.result, nil
+}
+
+func (r *fakeChatResponder) Stream(_ context.Context, input ChatCompletionInput) (chatStream, error) {
+	copied := input
+	copied.History = append([]postgres.AssistantMessage(nil), input.History...)
+	copied.Citations = append([]citation.Citation(nil), input.Citations...)
+	r.lastInput = &copied
+
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.stream == nil {
+		return &fakeChatStream{}, nil
+	}
+
+	return r.stream, nil
+}
+
+type fakeChatStream struct {
+	chunks []string
+	errs   []error
+	index  int
+}
+
+func (s *fakeChatStream) Recv() (string, error) {
+	if s.index < len(s.chunks) {
+		chunk := s.chunks[s.index]
+		var err error
+		if s.index < len(s.errs) {
+			err = s.errs[s.index]
+		}
+		s.index++
+		return chunk, err
+	}
+
+	errIndex := s.index
+	s.index++
+	if errIndex < len(s.errs) && s.errs[errIndex] != nil {
+		return "", s.errs[errIndex]
+	}
+
+	return "", io.EOF
+}
+
+func (s *fakeChatStream) Close() error {
+	return nil
 }
 
 type fakeResourceSearcher struct {

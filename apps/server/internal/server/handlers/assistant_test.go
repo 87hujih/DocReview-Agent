@@ -7,6 +7,7 @@ import (
 	"errors"
 	"mime/multipart"
 	"net/textproto"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +173,232 @@ func TestAppendAssistantMessageHandler(t *testing.T) {
 	}
 }
 
+func TestCreateConversationStreamHandler(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{
+		startConversationStreamEvents: []assistant.StreamEvent{
+			{
+				Type: assistant.StreamEventSessionCreated,
+				Session: &postgres.AssistantSession{
+					ID:            "session-stream",
+					Title:         "流式会话",
+					LastMessageAt: time.Unix(1710000000, 0),
+					CreatedAt:     time.Unix(1710000000, 0),
+					UpdatedAt:     time.Unix(1710000000, 0),
+				},
+			},
+			{Type: assistant.StreamEventMessageStarted},
+			{Type: assistant.StreamEventMessageDelta, Delta: "当然可以"},
+			{
+				Type: assistant.StreamEventMessageCompleted,
+				Message: &postgres.AssistantMessage{
+					ID:         "message-stream",
+					SessionID:  "session-stream",
+					Role:       assistant.RoleAssistant,
+					Kind:       assistant.KindText,
+					SequenceNo: 2,
+					Payload: mustMarshalHandlerJSON(t, assistant.TextPayload{
+						Content: "当然可以，我们先梳理目标。",
+					}),
+					CreatedAt: time.Unix(1710000001, 0),
+				},
+			},
+		},
+	})
+
+	engine := server.New()
+	engine.POST("/api/assistant/conversations/stream", handler.CreateConversationStream)
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/conversations/stream",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"message":"帮我梳理本周安排"}`),
+			Len:  len(`{"message":"帮我梳理本周安排"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	if value := string(response.Header.ContentType()); !strings.HasPrefix(value, "text/event-stream") {
+		t.Fatalf("expected text/event-stream content type, got %q", value)
+	}
+
+	events := parseSSEEvents(t, string(response.Body()))
+	if len(events) != 5 {
+		t.Fatalf("expected 5 sse events, got %d", len(events))
+	}
+
+	expectedTypes := []string{
+		assistant.StreamEventSessionCreated,
+		assistant.StreamEventMessageStarted,
+		assistant.StreamEventMessageDelta,
+		assistant.StreamEventMessageCompleted,
+		assistant.StreamEventDone,
+	}
+	for index, expected := range expectedTypes {
+		if events[index].Type != expected {
+			t.Fatalf("expected event %d type %q, got %q", index, expected, events[index].Type)
+		}
+	}
+
+	var sessionPayload struct {
+		Session struct {
+			ID string `json:"id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(events[0].Data, &sessionPayload); err != nil {
+		t.Fatalf("unmarshal session payload: %v", err)
+	}
+	if sessionPayload.Session.ID != "session-stream" {
+		t.Fatalf("expected session id %q, got %q", "session-stream", sessionPayload.Session.ID)
+	}
+}
+
+func TestAppendMessageStreamHandler(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{
+		getConversationResult: &assistant.ConversationResult{
+			Session: postgres.AssistantSession{
+				ID:            "session-1",
+				Title:         "学生手册",
+				LastMessageAt: time.Unix(1710000000, 0),
+				CreatedAt:     time.Unix(1710000000, 0),
+				UpdatedAt:     time.Unix(1710000000, 0),
+			},
+		},
+		appendMessageStreamEvents: []assistant.StreamEvent{
+			{Type: assistant.StreamEventMessageStarted},
+			{Type: assistant.StreamEventMessageDelta, Delta: "我先看第二章"},
+			{
+				Type: assistant.StreamEventMessageCompleted,
+				Message: &postgres.AssistantMessage{
+					ID:         "message-stream-append",
+					SessionID:  "session-1",
+					Role:       assistant.RoleAssistant,
+					Kind:       assistant.KindText,
+					SequenceNo: 3,
+					Payload: mustMarshalHandlerJSON(t, assistant.TextPayload{
+						Content: "我先看第二章，再给你建议。",
+					}),
+					CreatedAt: time.Unix(1710000001, 0),
+				},
+			},
+		},
+	})
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/messages/stream", handler.AppendMessageStream)
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/session-1/messages/stream",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"message":"继续看看第二章"}`),
+			Len:  len(`{"message":"继续看看第二章"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	if value := string(response.Header.ContentType()); !strings.HasPrefix(value, "text/event-stream") {
+		t.Fatalf("expected text/event-stream content type, got %q", value)
+	}
+
+	events := parseSSEEvents(t, string(response.Body()))
+	if len(events) != 4 {
+		t.Fatalf("expected 4 sse events, got %d", len(events))
+	}
+
+	expectedTypes := []string{
+		assistant.StreamEventMessageStarted,
+		assistant.StreamEventMessageDelta,
+		assistant.StreamEventMessageCompleted,
+		assistant.StreamEventDone,
+	}
+	for index, expected := range expectedTypes {
+		if events[index].Type != expected {
+			t.Fatalf("expected event %d type %q, got %q", index, expected, events[index].Type)
+		}
+	}
+}
+
+func TestAppendMessageStreamHandlerReturnsJSON404BeforeOpeningStream(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{
+		getConversationErr: assistant.ErrSessionNotFound,
+	})
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/messages/stream", handler.AppendMessageStream)
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/missing/messages/stream",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"message":"继续看看第二章"}`),
+			Len:  len(`{"message":"继续看看第二章"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", consts.StatusNotFound, response.StatusCode())
+	}
+
+	if value := string(response.Header.ContentType()); strings.HasPrefix(value, "text/event-stream") {
+		t.Fatalf("expected json error response before stream starts, got %q", value)
+	}
+}
+
+func TestCreateConversationStreamHandlerWritesErrorEventAfterStreamStarts(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{
+		startConversationStreamErr: errors.New("stream failed"),
+	})
+
+	engine := server.New()
+	engine.POST("/api/assistant/conversations/stream", handler.CreateConversationStream)
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/conversations/stream",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"message":"帮我梳理本周安排"}`),
+			Len:  len(`{"message":"帮我梳理本周安排"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	events := parseSSEEvents(t, string(response.Body()))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 sse event, got %d", len(events))
+	}
+	if events[0].Type != assistant.StreamEventError {
+		t.Fatalf("expected error event, got %q", events[0].Type)
+	}
+
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(events[0].Data, &payload); err != nil {
+		t.Fatalf("unmarshal error payload: %v", err)
+	}
+	if payload.Code != assistant.StreamErrorCodeInternal {
+		t.Fatalf("expected error code %q, got %q", assistant.StreamErrorCodeInternal, payload.Code)
+	}
+}
+
 func TestUploadAssistantFileHandler(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		uploadFileResult: &assistant.UploadFileResult{
@@ -196,6 +423,7 @@ func TestUploadAssistantFileHandler(t *testing.T) {
 					SequenceNo: 1,
 					Payload: mustMarshalHandlerJSON(t, assistant.SessionFilePayload{
 						FileName:      "学生守则.md",
+						FileID:        "file-1",
 						ResourceID:    "resource-1",
 						ResourceTitle: "学生守则",
 						SourceType:    "upload",
@@ -291,6 +519,40 @@ func TestUploadAssistantFileHandlerRejectsUnsupportedExtension(t *testing.T) {
 	}
 }
 
+func TestUploadAssistantFileHandlerRejectsTooLargeFile(t *testing.T) {
+	handler := NewAssistantHandlerWithUploadLimit(fakeAssistantService{}, 4)
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/files", handler.UploadFile)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "too-large.md")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write([]byte("12345")); err != nil {
+		t.Fatalf("write multipart body: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/session-1/files",
+		&ut.Body{
+			Body: body,
+			Len:  body.Len(),
+		},
+		ut.Header{Key: "Content-Type", Value: writer.FormDataContentType()},
+	).Result()
+
+	if response.StatusCode() != consts.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d", consts.StatusRequestEntityTooLarge, response.StatusCode())
+	}
+}
+
 func TestConfirmTaskSuggestionHandlerReturnsHandledFailurePayload(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		confirmTaskResult: &assistant.ConfirmTaskResult{
@@ -354,21 +616,25 @@ func TestDeleteAssistantSessionHandler(t *testing.T) {
 }
 
 type fakeAssistantService struct {
-	listSessionsResult      []postgres.AssistantSession
-	getConversationResult   *assistant.ConversationResult
-	startConversationResult *assistant.ConversationResult
-	appendMessageResult     *assistant.ConversationResult
-	uploadFileResult        *assistant.UploadFileResult
-	confirmTaskResult       *assistant.ConfirmTaskResult
-	deleteSessionResult     bool
+	listSessionsResult            []postgres.AssistantSession
+	getConversationResult         *assistant.ConversationResult
+	startConversationResult       *assistant.ConversationResult
+	startConversationStreamEvents []assistant.StreamEvent
+	appendMessageResult           *assistant.ConversationResult
+	appendMessageStreamEvents     []assistant.StreamEvent
+	uploadFileResult              *assistant.UploadFileResult
+	confirmTaskResult             *assistant.ConfirmTaskResult
+	deleteSessionResult           bool
 
-	listSessionsErr      error
-	getConversationErr   error
-	startConversationErr error
-	appendMessageErr     error
-	uploadFileErr        error
-	confirmTaskErr       error
-	deleteSessionErr     error
+	listSessionsErr            error
+	getConversationErr         error
+	startConversationErr       error
+	startConversationStreamErr error
+	appendMessageErr           error
+	appendMessageStreamErr     error
+	uploadFileErr              error
+	confirmTaskErr             error
+	deleteSessionErr           error
 
 	uploadFileHook func(context.Context, string, string, []byte)
 }
@@ -385,8 +651,28 @@ func (f fakeAssistantService) StartConversation(context.Context, string) (*assis
 	return f.startConversationResult, f.startConversationErr
 }
 
+func (f fakeAssistantService) StartConversationStream(_ context.Context, _ string, emit func(assistant.StreamEvent) error) error {
+	for _, event := range f.startConversationStreamEvents {
+		if err := emit(event); err != nil {
+			return err
+		}
+	}
+
+	return f.startConversationStreamErr
+}
+
 func (f fakeAssistantService) AppendMessage(context.Context, string, string) (*assistant.ConversationResult, error) {
 	return f.appendMessageResult, f.appendMessageErr
+}
+
+func (f fakeAssistantService) AppendMessageStream(_ context.Context, _ string, _ string, emit func(assistant.StreamEvent) error) error {
+	for _, event := range f.appendMessageStreamEvents {
+		if err := emit(event); err != nil {
+			return err
+		}
+	}
+
+	return f.appendMessageStreamErr
 }
 
 func (f fakeAssistantService) UploadFile(context.Context, string, string, []byte) (*assistant.UploadFileResult, error) {
@@ -417,6 +703,38 @@ func mustMarshalHandlerJSON(t *testing.T, value any) []byte {
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+type parsedSSEEvent struct {
+	Type string
+	Data json.RawMessage
+}
+
+func parseSSEEvents(t *testing.T, body string) []parsedSSEEvent {
+	t.Helper()
+
+	blocks := strings.Split(strings.TrimSpace(body), "\n\n")
+	events := make([]parsedSSEEvent, 0, len(blocks))
+	for _, block := range blocks {
+		trimmed := strings.TrimSpace(block)
+		if trimmed == "" {
+			continue
+		}
+
+		var event parsedSSEEvent
+		for _, line := range strings.Split(trimmed, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				event.Type = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+			case strings.HasPrefix(line, "data: "):
+				event.Data = append(event.Data, strings.TrimSpace(strings.TrimPrefix(line, "data: "))...)
+			}
+		}
+
+		events = append(events, event)
+	}
+
+	return events
 }
 
 func TestGetAssistantConversationNotFound(t *testing.T) {

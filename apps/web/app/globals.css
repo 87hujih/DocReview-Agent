@@ -1,14 +1,23 @@
 :root {
-  --terminal-bg: #000000;
-  --terminal-surface: #0a0a0a;
-  --terminal-border: #2a2a2a;
-  --terminal-text: #c9c9c9;
-  --terminal-text-strong: #f4f4f4;
-  --terminal-text-dim: #7a7a7a;
-  --terminal-text-muted: #5d5d5d;
-  --terminal-success: #00ff41;
-  --terminal-warning: #ffb000;
-  --terminal-info: #00e5ff;
+  --app-canvas: #08111f;
+  --app-canvas-glow: rgba(0, 200, 165, 0.12);
+  --app-sidebar-bg: #0f172a;
+  --app-panel-bg: #111c2e;
+  --app-surface: rgba(17, 28, 46, 0.82);
+  --app-surface-strong: rgba(21, 33, 53, 0.94);
+  --app-divider: rgba(148, 163, 184, 0.12);
+  --app-divider-strong: rgba(148, 163, 184, 0.2);
+  --app-shadow: 0 24px 60px rgba(2, 6, 23, 0.34);
+  --terminal-bg: var(--app-canvas);
+  --terminal-surface: var(--app-surface);
+  --terminal-border: var(--app-divider);
+  --terminal-text: #d9e7f5;
+  --terminal-text-strong: #F8FAFC;
+  --terminal-text-dim: #90a4be;
+  --terminal-text-muted: #6f839d;
+  --terminal-success: #00C8A5;
+  --terminal-warning: #F59E0B;
+  --terminal-info: #00C8A5;
   --terminal-border-width: 1px;
   --terminal-space-1: 4px;
   --terminal-space-2: 8px;
@@ -19,7 +28,7 @@
   --terminal-space-8: 32px;
   --terminal-space-10: 40px;
   --terminal-space-12: 48px;
-  --terminal-font-stack: "Fira Code", "JetBrains Mono", "Courier New", monospace;
+  --terminal-font-stack: "Segoe UI Variable", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --terminal-blink-duration: 1s;
 }
 
@@ -32,15 +41,14 @@ body {
   margin: 0;
   height: 100%;
   background:
-    radial-gradient(circle at top, rgba(0, 170, 255, 0.08), transparent 32%),
-    linear-gradient(180deg, #020507 0%, #020507 38%, #04090d 100%);
+    radial-gradient(circle at top left, var(--app-canvas-glow), transparent 28%),
+    radial-gradient(circle at top right, rgba(115, 215, 255, 0.08), transparent 24%),
+    var(--terminal-bg);
   color: var(--terminal-text);
   font-family: var(--terminal-font-stack);
 }
 
 body {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   height: 100dvh;
   line-height: 1.5;
   overflow: hidden;
@@ -100,13 +108,60 @@ button:disabled {
   background: var(--terminal-success);
 }
 
-.app-shell {
+.app-body {
+  display: flex;
   height: 100%;
   min-height: 0;
-  width: min(1400px, calc(100% - 28px));
-  margin: 0 auto;
-  padding: var(--terminal-space-3) 0;
+}
+
+.app-rail {
+  display: flex;
+  flex-direction: column;
+  width: 272px;
+  flex-shrink: 0;
+  min-height: 0;
   overflow: hidden;
+  background: var(--app-sidebar-bg);
+  box-shadow: inset -1px 0 0 var(--app-divider);
+  transition: width 180ms ease, box-shadow 180ms ease;
+}
+
+.app-body[data-rail-collapsed="true"] .app-rail {
+  width: 0;
+  box-shadow: none;
+}
+
+.app-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 24px 28px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(17, 28, 46, 0.92), rgba(8, 17, 31, 0.96));
+}
+
+.app-main > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+@media (max-width: 920px) {
+  .app-body {
+    flex-direction: column;
+  }
+
+  .app-rail {
+    width: 100%;
+    min-height: auto;
+    box-shadow: inset 0 -1px 0 var(--app-divider);
+  }
+
+  .app-main {
+    padding: 16px;
+  }
 }
 
 @keyframes terminal-blink {

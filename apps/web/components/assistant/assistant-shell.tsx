@@ -1,51 +1,51 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import type { MutableRefObject } from "react";
 import { startTransition, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
-import type { AssistantMessage, AssistantSession } from "../../lib/assistant/types";
+import type {
+  AssistantMessage,
+  AssistantRenderableMessage,
+  AssistantSession,
+  AssistantStreamEvent,
+  AssistantTurnError
+} from "../../lib/assistant/types";
 import {
-  appendAssistantMessage,
   confirmAssistantTaskSuggestion,
-  createAssistantConversation,
   deleteAssistantSession,
   getAssistantSession,
   getAssistantSessions,
+  streamAssistantConversation,
+  streamAssistantMessage,
+  toAssistantTurnError,
   uploadAssistantFile
 } from "../../lib/api/assistant";
 import { getErrorMessage } from "../../lib/terminal";
+import { APP_RAIL_EXTRA_ID, useAppChrome } from "../app-chrome";
 import { AssistantComposer } from "./assistant-composer";
 import { AssistantMessageList } from "./assistant-message-list";
 import { SessionHistory } from "./session-history";
 import styles from "./assistant-shell.module.css";
 
-const DEFAULT_SIDEBAR_WIDTH = 360;
-const MAX_SIDEBAR_WIDTH = 520;
-const MIN_SIDEBAR_WIDTH = 280;
-
-type ShellStatus =
-  | "confirming_task"
-  | "creating_session"
-  | "draft"
-  | "load_failed"
-  | "loading_conversation"
-  | "loading_history"
-  | "ready"
-  | "sending_message"
-  | "uploading_file";
+type HistoryStatus = "history_error" | "history_ready" | "loading_history";
+type TurnStatus = "confirming_task" | "idle" | "loading_conversation" | "stopping" | "streaming" | "uploading_file";
 
 export function AssistantShell() {
+  const { railCollapsed, setRailCollapsed } = useAppChrome();
   const [sessions, setSessions] = useState<AssistantSession[]>([]);
   const [currentSession, setCurrentSession] = useState<AssistantSession | null>(null);
-  const [messages, setMessages] = useState<AssistantMessage[]>([]);
-  const [status, setStatus] = useState<ShellStatus>("loading_history");
+  const [messages, setMessages] = useState<AssistantRenderableMessage[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading_history");
+  const [turnStatus, setTurnStatus] = useState<TurnStatus>("idle");
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [activeTaskSuggestionId, setActiveTaskSuggestionId] = useState<string | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
+  const [historyHost, setHistoryHost] = useState<HTMLElement | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const localMessageCounterRef = useRef(0);
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
-  const resizeStateRef = useRef<{ startWidth: number; startX: number } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -59,8 +59,8 @@ export function AssistantShell() {
 
         startTransition(() => {
           setSessions(items);
-          setStatus("draft");
           setHistoryError(null);
+          setHistoryStatus("history_ready");
         });
       } catch (error) {
         if (!active) {
@@ -68,7 +68,7 @@ export function AssistantShell() {
         }
 
         setHistoryError(getErrorMessage(error));
-        setStatus("load_failed");
+        setHistoryStatus("history_error");
       }
     }
 
@@ -112,100 +112,171 @@ export function AssistantShell() {
   }, [messages, stickToBottom, currentSession?.id]);
 
   useEffect(() => {
-    function handleMouseMove(event: MouseEvent) {
-      if (!resizeStateRef.current) {
-        return;
-      }
-
-      const nextWidth = resizeStateRef.current.startWidth + (event.clientX - resizeStateRef.current.startX);
-      setSidebarWidth(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, nextWidth)));
-    }
-
-    function handleMouseUp() {
-      resizeStateRef.current = null;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    }
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
+    setHistoryHost(document.getElementById(APP_RAIL_EXTRA_ID));
     return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
+      setHistoryHost(null);
     };
-  }, []);
+  }, [railCollapsed]);
 
   function resetToDraft() {
+    abortControllerRef.current?.abort();
     startTransition(() => {
       setCurrentSession(null);
       setMessages([]);
-      setActionError(null);
-      setStatus("draft");
+      setActionNotice(null);
+      setTurnStatus("idle");
       setStickToBottom(true);
     });
   }
 
   async function handleSelectSession(sessionId: string) {
-    if (currentSession?.id === sessionId) {
+    if (turnStatus !== "idle" || currentSession?.id === sessionId) {
       return;
     }
 
-    setStatus("loading_conversation");
-    setActionError(null);
+    setActionNotice(null);
+    setTurnStatus("loading_conversation");
 
     try {
       const result = await getAssistantSession(sessionId);
-      startTransition(() => {
-        setCurrentSession(result.session);
-        setMessages(result.messages);
-        setStatus("ready");
-        setStickToBottom(true);
-      });
+      setCurrentSession(result.session);
+      setMessages(result.messages);
+      setStickToBottom(true);
+      setTurnStatus("idle");
     } catch (error) {
-      setActionError(getErrorMessage(error));
-      setStatus("ready");
+      setActionNotice(getErrorMessage(error));
+      setTurnStatus("idle");
     }
   }
 
   async function handleSubmitMessage(message: string) {
-    setActionError(null);
+    if (turnStatus !== "idle") {
+      return;
+    }
+
+    const localUserMessage = buildLocalTextMessage(
+      nextLocalId(localMessageCounterRef, "local-user"),
+      "user",
+      message,
+      messages.length + 1
+    );
+    const localAssistantMessage = buildLocalTextMessage(
+      nextLocalId(localMessageCounterRef, "local-assistant"),
+      "assistant",
+      "",
+      messages.length + 2,
+      "streaming"
+    );
+
+    let sessionSnapshot = currentSession;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    startTransition(() => {
+      setActionNotice(null);
+      setMessages((current) => [...removeLocalErrorMessages(current), localUserMessage, localAssistantMessage]);
+      setStickToBottom(true);
+      setTurnStatus("streaming");
+    });
+
+    const handleEvent = (event: AssistantStreamEvent) => {
+      switch (event.type) {
+        case "session_created":
+          sessionSnapshot = event.session;
+          startTransition(() => {
+            setCurrentSession(event.session);
+            setSessions((current) => upsertSession(current, event.session));
+          });
+          return;
+        case "message_delta":
+          startTransition(() => {
+            setMessages((current) => updateLocalStreamingMessage(current, localAssistantMessage.id, event.delta));
+          });
+          return;
+        case "message_completed":
+          if (sessionSnapshot) {
+            sessionSnapshot = patchSessionTimestamp(sessionSnapshot, event.message.created_at);
+          }
+          startTransition(() => {
+            setMessages((current) => replaceLocalMessage(current, localAssistantMessage.id, event.message));
+            if (sessionSnapshot) {
+              setCurrentSession(sessionSnapshot);
+              setSessions((current) => upsertSession(current, sessionSnapshot!));
+            }
+          });
+          return;
+        case "task_suggestion":
+          if (sessionSnapshot) {
+            sessionSnapshot = patchSessionTimestamp(sessionSnapshot, event.message.created_at);
+          }
+          startTransition(() => {
+            setMessages((current) => [...current, event.message]);
+            if (sessionSnapshot) {
+              setCurrentSession(sessionSnapshot);
+              setSessions((current) => upsertSession(current, sessionSnapshot!));
+            }
+          });
+          return;
+        default:
+          return;
+      }
+    };
 
     try {
-      if (!currentSession) {
-        setStatus("creating_session");
-        const result = await createAssistantConversation(message);
+      const result = currentSession
+        ? await streamAssistantMessage(currentSession.id, message, {
+            onEvent: handleEvent,
+            signal: controller.signal
+          })
+        : await streamAssistantConversation(message, {
+            onEvent: handleEvent,
+            signal: controller.signal
+          });
+
+      if (result.status === "stopped") {
         startTransition(() => {
-          setCurrentSession(result.session);
-          setMessages(result.messages);
-          setSessions((current) => upsertSession(current, result.session));
-          setStatus("ready");
-          setStickToBottom(true);
+          setMessages((current) => finalizeTurnFailure(current, localAssistantMessage.id, result.error));
+          setTurnStatus("idle");
         });
         return;
       }
 
-      setStatus("sending_message");
-      const result = await appendAssistantMessage(currentSession.id, message);
       startTransition(() => {
-        setCurrentSession(result.session);
-        setMessages((current) => [...current, ...result.messages]);
-        setSessions((current) => upsertSession(current, result.session));
-        setStatus("ready");
+        setTurnStatus("idle");
       });
     } catch (error) {
-      setActionError(getErrorMessage(error));
-      setStatus(currentSession ? "ready" : "draft");
+      const turnError = toAssistantTurnError(error);
+      startTransition(() => {
+        setMessages((current) => finalizeTurnFailure(current, localAssistantMessage.id, turnError));
+        setTurnStatus("idle");
+      });
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
+  }
+
+  function handleStopGeneration() {
+    if (turnStatus !== "streaming") {
+      return;
+    }
+
+    setTurnStatus("stopping");
+    abortControllerRef.current?.abort();
   }
 
   async function handleUploadFile(file: File) {
     if (!currentSession) {
-      setActionError("请先发送第一条消息后再上传文件。");
+      setActionNotice("请先发送第一条消息后再上传文件。");
+      return;
+    }
+    if (turnStatus !== "idle") {
       return;
     }
 
-    setStatus("uploading_file");
-    setActionError(null);
+    setActionNotice(null);
+    setTurnStatus("uploading_file");
 
     try {
       const result = await uploadAssistantFile(currentSession.id, file);
@@ -213,19 +284,23 @@ export function AssistantShell() {
         setCurrentSession(result.session);
         setMessages((current) => [...current, ...result.messages]);
         setSessions((current) => upsertSession(current, result.session));
-        setActionError(result.error_message || null);
-        setStatus("ready");
+        setActionNotice(result.error_message || null);
+        setTurnStatus("idle");
       });
     } catch (error) {
-      setActionError(getErrorMessage(error));
-      setStatus("ready");
+      setActionNotice(getErrorMessage(error));
+      setTurnStatus("idle");
     }
   }
 
   async function handleConfirmTaskSuggestion(messageId: string) {
+    if (turnStatus !== "idle") {
+      return;
+    }
+
+    setActionNotice(null);
     setActiveTaskSuggestionId(messageId);
-    setStatus("confirming_task");
-    setActionError(null);
+    setTurnStatus("confirming_task");
 
     try {
       const result = await confirmAssistantTaskSuggestion(messageId);
@@ -233,18 +308,22 @@ export function AssistantShell() {
         setCurrentSession(result.session);
         setMessages((current) => [...current, ...result.messages]);
         setSessions((current) => upsertSession(current, result.session));
-        setActionError(result.error_message || null);
-        setStatus("ready");
+        setActionNotice(result.error_message || null);
+        setTurnStatus("idle");
       });
     } catch (error) {
-      setActionError(getErrorMessage(error));
-      setStatus("ready");
+      setActionNotice(getErrorMessage(error));
+      setTurnStatus("idle");
     } finally {
       setActiveTaskSuggestionId(null);
     }
   }
 
   async function handleDeleteSession(sessionId: string) {
+    if (turnStatus !== "idle") {
+      return;
+    }
+
     try {
       await deleteAssistantSession(sessionId);
       setSessions((current) => current.filter((session) => session.id !== sessionId));
@@ -252,99 +331,183 @@ export function AssistantShell() {
         resetToDraft();
       }
     } catch (error) {
-      setActionError(getErrorMessage(error));
+      setActionNotice(getErrorMessage(error));
     }
   }
 
-  const shellTitle = currentSession?.title || "开始新的对话";
-  const isBusy =
-    status === "creating_session" ||
-    status === "sending_message" ||
-    status === "uploading_file" ||
-    status === "confirming_task" ||
-    status === "loading_conversation";
-  const pendingLabel = buildPendingLabel(status);
+  const isBusy = turnStatus !== "idle";
+  const historyPanel = !railCollapsed ? (
+    <SessionHistory
+      activeSessionId={currentSession?.id || null}
+      embedded
+      isLoading={historyStatus === "loading_history"}
+      onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
+      onNewConversation={resetToDraft}
+      onSelectSession={(sessionId) => void handleSelectSession(sessionId)}
+      sessions={sessions}
+    />
+  ) : null;
 
   return (
-    <section
-      className={styles.shell}
-      style={
-        {
-          "--assistant-sidebar-width": `${sidebarWidth}px`
-        } as CSSProperties
-      }
-    >
-      <SessionHistory
-        activeSessionId={currentSession?.id || null}
-        isLoading={status === "loading_history"}
-        onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
-        onNewConversation={resetToDraft}
-        onSelectSession={(sessionId) => void handleSelectSession(sessionId)}
-        sessions={sessions}
-      />
-
-      <div
-        aria-orientation="vertical"
-        className={styles.divider}
-        onMouseDown={(event) => {
-          resizeStateRef.current = {
-            startWidth: sidebarWidth,
-            startX: event.clientX
-          };
-          document.body.style.cursor = "col-resize";
-          document.body.style.userSelect = "none";
-          event.preventDefault();
-        }}
-        role="separator"
-      />
-
-      <section className={styles.workspace}>
-        <header className={styles.workspaceHeader}>
-          <div className={styles.headerText}>
-            <p className={styles.workspaceLabel}>
-              {currentSession ? "当前会话" : status === "loading_history" ? "正在启动" : "草稿态"}
-            </p>
-            <h2 className={styles.workspaceTitle}>{shellTitle}</h2>
+    <>
+      {historyHost ? createPortal(historyPanel, historyHost) : null}
+      <section className={styles.shell}>
+        <section className={styles.workspace}>
+          <div className={styles.workspaceTools}>
+            <button
+              aria-label={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
+              className={styles.sidebarToggle}
+              onClick={() => setRailCollapsed((prev) => !prev)}
+              title={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
+              type="button"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {railCollapsed ? (
+                  <>
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <polyline points="10 8 6 12 10 16" />
+                  </>
+                ) : (
+                  <>
+                    <rect x="3" y="4" width="18" height="16" rx="3" />
+                    <polyline points="14 8 18 12 14 16" />
+                  </>
+                )}
+              </svg>
+            </button>
           </div>
 
-          {currentSession ? <span className={styles.headerState}>已持久化</span> : <span className={styles.headerState}>未创建</span>}
-        </header>
+          <div className={styles.banners}>
+            {historyError ? <p className={styles.banner}>历史加载失败：{historyError}</p> : null}
+            {actionNotice ? <p className={styles.banner}>提示：{actionNotice}</p> : null}
+          </div>
 
-        {historyError ? <p className={styles.banner}>历史加载失败：{historyError}</p> : null}
-        {actionError ? <p className={styles.banner}>提示：{actionError}</p> : null}
+          <div aria-busy={isBusy} className={styles.messageViewport} ref={messageViewportRef}>
+            <AssistantMessageList
+              activeTaskSuggestionId={activeTaskSuggestionId}
+              messages={messages}
+              onConfirmTaskSuggestion={(messageId) => void handleConfirmTaskSuggestion(messageId)}
+              onStopGeneration={handleStopGeneration}
+              showStopAction={turnStatus === "streaming" || turnStatus === "stopping"}
+              stopActionLabel={turnStatus === "stopping" ? "正在停止" : "停止生成"}
+            />
+          </div>
 
-        <div aria-busy={isBusy} className={styles.messageViewport} ref={messageViewportRef}>
-          <AssistantMessageList
-            activeTaskSuggestionId={activeTaskSuggestionId}
-            messages={messages}
-            onConfirmTaskSuggestion={(messageId) => void handleConfirmTaskSuggestion(messageId)}
-            pendingLabel={pendingLabel}
+          <AssistantComposer
+            canUpload={currentSession !== null}
+            isBusy={isBusy}
+            onSubmitMessage={(nextMessage) => handleSubmitMessage(nextMessage)}
+            onUploadFile={(file) => handleUploadFile(file)}
           />
-        </div>
-
-        <AssistantComposer
-          canUpload={currentSession !== null}
-          isBusy={isBusy}
-          onSubmitMessage={(message) => handleSubmitMessage(message)}
-          onUploadFile={(file) => handleUploadFile(file)}
-        />
+        </section>
       </section>
-    </section>
+    </>
   );
 }
 
-function buildPendingLabel(status: ShellStatus): string | null {
-  switch (status) {
-    case "creating_session":
-    case "sending_message":
-      return "助手处理中";
-    case "uploading_file":
-      return "正在上传资料";
-    case "confirming_task":
-      return "正在创建任务";
-    default:
-      return null;
+function buildLocalTextMessage(
+  id: string,
+  role: "assistant" | "user",
+  content: string,
+  sequenceNo: number,
+  localState?: "streaming"
+) {
+  return {
+    created_at: new Date().toISOString(),
+    id,
+    kind: "local_text" as const,
+    local_state: localState,
+    payload: {
+      content
+    },
+    role,
+    sequence_no: sequenceNo
+  };
+}
+
+function nextLocalId(counterRef: MutableRefObject<number>, prefix: string): string {
+  counterRef.current += 1;
+  return `${prefix}-${counterRef.current}`;
+}
+
+function patchSessionTimestamp(session: AssistantSession, isoString: string): AssistantSession {
+  return {
+    ...session,
+    last_message_at: isoString,
+    updated_at: isoString
+  };
+}
+
+function replaceLocalMessage(
+  current: AssistantRenderableMessage[],
+  localMessageId: string,
+  nextMessage: AssistantMessage
+): AssistantRenderableMessage[] {
+  return current.map((message) => (message.id === localMessageId ? nextMessage : message));
+}
+
+function updateLocalStreamingMessage(
+  current: AssistantRenderableMessage[],
+  localMessageId: string,
+  delta: string
+): AssistantRenderableMessage[] {
+  return current.map((message) => {
+    if (message.id !== localMessageId || message.kind !== "local_text") {
+      return message;
+    }
+
+    return {
+      ...message,
+      payload: {
+        content: message.payload.content + delta
+      }
+    };
+  });
+}
+
+function removeLocalErrorMessages(current: AssistantRenderableMessage[]): AssistantRenderableMessage[] {
+  return current.filter((message) => message.kind !== "local_error");
+}
+
+function finalizeTurnFailure(
+  current: AssistantRenderableMessage[],
+  localMessageId: string,
+  turnError: AssistantTurnError
+): AssistantRenderableMessage[] {
+  const nextMessages: AssistantRenderableMessage[] = [];
+  let sequenceNo = 0;
+
+  for (const message of current) {
+    sequenceNo = Math.max(sequenceNo, message.sequence_no);
+
+    if (message.id !== localMessageId || message.kind !== "local_text") {
+      nextMessages.push(message);
+      continue;
+    }
+
+    if (message.payload.content.trim() === "") {
+      continue;
+    }
+
+    nextMessages.push({
+      ...message,
+      local_state: undefined
+    });
   }
+
+  nextMessages.push({
+    created_at: new Date().toISOString(),
+    id: `local-error-${sequenceNo + 1}`,
+    kind: "local_error",
+    payload: {
+      code: turnError.code,
+      content: turnError.message
+    },
+    role: "assistant",
+    sequence_no: sequenceNo + 1
+  });
+
+  return nextMessages;
 }
 
 function upsertSession(current: AssistantSession[], session: AssistantSession): AssistantSession[] {

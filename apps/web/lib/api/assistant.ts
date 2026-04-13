@@ -5,6 +5,11 @@ import type {
   AssistantUploadResult
 } from "../assistant/types";
 import { apiFetch } from "./client";
+export {
+  streamAssistantConversation,
+  streamAssistantMessage,
+  toAssistantTurnError
+} from "./assistant-stream";
 
 export async function getAssistantSessions(): Promise<AssistantSession[]> {
   const response = await apiFetch<{ sessions: AssistantSession[] }>("/api/assistant/sessions");

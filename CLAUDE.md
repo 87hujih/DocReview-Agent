@@ -87,3 +87,17 @@
 - 不回滚非本人修改。
 - 不做未获批准的破坏性命令。
 - 遇到高风险歧义先停下确认。
+
+## gstack（推荐）
+
+本项目推荐使用 [gstack](https://github.com/garrytan/gstack) 辅助 AI 工作流。
+如需获得完整体验，请先安装：
+
+```bash
+git clone --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack
+cd ~/.claude/skills/gstack && ./setup --team
+```
+
+安装后可使用 `/qa`、`/ship`、`/review`、`/investigate`、`/browse` 等技能。
+进行网页浏览时优先使用 `/browse`。
+引用 gstack 文件路径时使用 `~/.claude/skills/gstack/...`。

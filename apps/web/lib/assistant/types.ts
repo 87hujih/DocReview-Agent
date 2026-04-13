@@ -114,3 +114,79 @@ export type AssistantConfirmTaskResult = {
   session: AssistantSession;
   task: AssistantTaskSummary;
 };
+
+export type AssistantTurnErrorCode =
+  | "assistant_empty_reply"
+  | "backend_offline"
+  | "generation_stopped"
+  | "request_timeout"
+  | "service_error";
+
+export type AssistantTurnError = {
+  code: AssistantTurnErrorCode;
+  message: string;
+};
+
+export type AssistantStreamEvent =
+  | {
+      session: AssistantSession;
+      type: "session_created";
+    }
+  | {
+      type: "message_started";
+    }
+  | {
+      delta: string;
+      type: "message_delta";
+    }
+  | {
+      message: AssistantMessage;
+      type: "message_completed";
+    }
+  | {
+      message: AssistantTaskSuggestionMessage;
+      type: "task_suggestion";
+    }
+  | {
+      error: AssistantTurnError;
+      type: "error";
+    }
+  | {
+      type: "done";
+    };
+
+export type AssistantStreamRunResult =
+  | {
+      status: "completed";
+    }
+  | {
+      error: AssistantTurnError;
+      status: "stopped";
+    };
+
+type AssistantLocalMessageBase = {
+  created_at: string;
+  id: string;
+  role: "assistant" | "user";
+  sequence_no: number;
+};
+
+export type AssistantLocalTextMessage = AssistantLocalMessageBase & {
+  kind: "local_text";
+  local_state?: "streaming";
+  payload: AssistantTextPayload;
+};
+
+export type AssistantLocalErrorMessage = AssistantLocalMessageBase & {
+  kind: "local_error";
+  payload: {
+    code: AssistantTurnErrorCode;
+    content: string;
+  };
+  role: "assistant";
+};
+
+export type AssistantRenderableMessage =
+  | AssistantLocalErrorMessage
+  | AssistantLocalTextMessage
+  | AssistantMessage;

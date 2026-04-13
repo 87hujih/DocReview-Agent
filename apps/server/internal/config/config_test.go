@@ -17,6 +17,8 @@ func TestLoadUsesYAMLDefaults(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
 	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("UPLOAD_STORAGE_DIR", "")
+	t.Setenv("UPLOAD_MAX_BYTES", "")
 	t.Setenv("LOG_LEVEL", "")
 	t.Setenv("LOG_FORMAT", "")
 	t.Setenv("LOG_ADD_SOURCE", "")
@@ -63,6 +65,14 @@ func TestLoadUsesYAMLDefaults(t *testing.T) {
 
 	if cfg.RerankerModel != "yaml-reranker" {
 		t.Fatalf("expected yaml reranker model, got %q", cfg.RerankerModel)
+	}
+
+	if cfg.UploadStorageDir != "data/uploads" {
+		t.Fatalf("expected default upload storage dir %q, got %q", "data/uploads", cfg.UploadStorageDir)
+	}
+
+	if cfg.UploadMaxBytes != 20*1024*1024 {
+		t.Fatalf("expected default upload max bytes %d, got %d", 20*1024*1024, cfg.UploadMaxBytes)
 	}
 }
 

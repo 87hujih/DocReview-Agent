@@ -3,8 +3,11 @@ package assistant
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +30,16 @@ const assistantSystemPrompt = `你是中文个人助手。
 
 type chatResponder interface {
 	Reply(ctx context.Context, input ChatCompletionInput) (*ChatCompletionResult, error)
+	Stream(ctx context.Context, input ChatCompletionInput) (chatStream, error)
+}
+
+type chatStream interface {
+	Close() error
+	Recv() (string, error)
+}
+
+type chatStreamResultProvider interface {
+	Result() (*ChatCompletionResult, error)
 }
 
 // ChatCompletionInput 描述一次助手回复所需的会话上下文。
@@ -79,24 +92,7 @@ func NewChatResponder(ctx context.Context, baseURL string, apiKey string, model 
 
 // Reply 基于历史、当前资源上下文和最新消息生成一轮助手回复。
 func (r *ChatResponder) Reply(ctx context.Context, input ChatCompletionInput) (*ChatCompletionResult, error) {
-	messages := []*schema.Message{
-		{Role: schema.System, Content: assistantSystemPrompt},
-	}
-
-	if runtimeContext := buildRuntimeContext(input); runtimeContext != "" {
-		messages = append(messages, &schema.Message{
-			Role:    schema.System,
-			Content: runtimeContext,
-		})
-	}
-
-	messages = append(messages, buildHistoryMessages(input.History)...)
-	messages = append(messages, &schema.Message{
-		Role:    schema.User,
-		Content: strings.TrimSpace(input.Message),
-	})
-
-	response, err := r.client.Generate(ctx, messages)
+	response, err := r.client.Generate(ctx, buildChatMessages(input))
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +116,40 @@ func (r *ChatResponder) Reply(ctx context.Context, input ChatCompletionInput) (*
 	}
 
 	return result, nil
+}
+
+// Stream 基于历史、资源上下文和最新消息流式返回 reply 文本增量。
+func (r *ChatResponder) Stream(ctx context.Context, input ChatCompletionInput) (chatStream, error) {
+	stream, err := r.client.Stream(ctx, buildChatMessages(input))
+	if err != nil {
+		return nil, err
+	}
+
+	return &responseChunkStream{
+		extractor: &replyJSONStreamExtractor{},
+		stream:    stream,
+	}, nil
+}
+
+func buildChatMessages(input ChatCompletionInput) []*schema.Message {
+	messages := []*schema.Message{
+		{Role: schema.System, Content: assistantSystemPrompt},
+	}
+
+	if runtimeContext := buildRuntimeContext(input); runtimeContext != "" {
+		messages = append(messages, &schema.Message{
+			Role:    schema.System,
+			Content: runtimeContext,
+		})
+	}
+
+	messages = append(messages, buildHistoryMessages(input.History)...)
+	messages = append(messages, &schema.Message{
+		Role:    schema.User,
+		Content: strings.TrimSpace(input.Message),
+	})
+
+	return messages
 }
 
 func buildRuntimeContext(input ChatCompletionInput) string {
@@ -301,4 +331,250 @@ func unmarshalSystemPayload(payload []byte) (SystemPayload, error) {
 	}
 
 	return value, nil
+}
+
+type responseChunkStream struct {
+	done         bool
+	extractor    *replyJSONStreamExtractor
+	result       *ChatCompletionResult
+	resultErr    error
+	resultLoaded bool
+	raw          strings.Builder
+	stream       *schema.StreamReader[*schema.Message]
+}
+
+func (s *responseChunkStream) Recv() (string, error) {
+	for {
+		message, err := s.stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				s.done = true
+				return "", io.EOF
+			}
+
+			return "", err
+		}
+
+		if message == nil || message.Content == "" {
+			continue
+		}
+
+		s.raw.WriteString(message.Content)
+
+		delta, extractErr := s.extractor.Feed(message.Content)
+		if extractErr != nil {
+			return "", extractErr
+		}
+
+		if delta == "" {
+			continue
+		}
+
+		return delta, nil
+	}
+}
+
+func (s *responseChunkStream) Close() error {
+	s.stream.Close()
+	return nil
+}
+
+func (s *responseChunkStream) Result() (*ChatCompletionResult, error) {
+	if s.resultLoaded {
+		return s.result, s.resultErr
+	}
+
+	s.resultLoaded = true
+
+	replyText := strings.TrimSpace(s.extractor.Text())
+	raw := strings.TrimSpace(s.raw.String())
+	if raw == "" {
+		s.result = &ChatCompletionResult{Reply: replyText}
+		return s.result, nil
+	}
+
+	var payload chatResponsePayload
+	if err := json.Unmarshal([]byte(trimJSONCodeFence(raw)), &payload); err != nil {
+		if replyText != "" {
+			s.result = &ChatCompletionResult{Reply: replyText}
+			return s.result, nil
+		}
+
+		s.resultErr = fmt.Errorf("解析助手流式结果失败：%w", err)
+		return nil, s.resultErr
+	}
+
+	s.result = &ChatCompletionResult{
+		Reply: strings.TrimSpace(payload.Reply),
+	}
+	if payload.TaskInstruction != nil {
+		trimmed := strings.TrimSpace(*payload.TaskInstruction)
+		if trimmed != "" {
+			s.result.TaskInstruction = &trimmed
+		}
+	}
+
+	return s.result, nil
+}
+
+type replyJSONStreamExtractor struct {
+	keyBuffer     strings.Builder
+	replyBuffer   strings.Builder
+	state         replyJSONStreamState
+	unicodeBuffer strings.Builder
+}
+
+type replyJSONStreamState int
+
+const (
+	replyJSONStreamStateSeekString replyJSONStreamState = iota
+	replyJSONStreamStateReadString
+	replyJSONStreamStateReadStringEscape
+	replyJSONStreamStateAfterReplyKey
+	replyJSONStreamStateBeforeReplyValue
+	replyJSONStreamStateInReply
+	replyJSONStreamStateInReplyEscape
+	replyJSONStreamStateInReplyUnicode
+	replyJSONStreamStateDone
+)
+
+func (e *replyJSONStreamExtractor) Feed(chunk string) (string, error) {
+	if e.state == replyJSONStreamStateDone {
+		return "", nil
+	}
+
+	var output strings.Builder
+	for _, r := range chunk {
+		switch e.state {
+		case replyJSONStreamStateSeekString:
+			if r == '"' {
+				e.keyBuffer.Reset()
+				e.state = replyJSONStreamStateReadString
+			}
+		case replyJSONStreamStateReadString:
+			switch r {
+			case '\\':
+				e.state = replyJSONStreamStateReadStringEscape
+			case '"':
+				if e.keyBuffer.String() == "reply" {
+					e.state = replyJSONStreamStateAfterReplyKey
+					continue
+				}
+				e.state = replyJSONStreamStateSeekString
+			default:
+				e.keyBuffer.WriteRune(r)
+			}
+		case replyJSONStreamStateReadStringEscape:
+			e.keyBuffer.WriteRune(r)
+			e.state = replyJSONStreamStateReadString
+		case replyJSONStreamStateAfterReplyKey:
+			if isJSONWhitespace(r) {
+				continue
+			}
+			if r == ':' {
+				e.state = replyJSONStreamStateBeforeReplyValue
+				continue
+			}
+			e.state = replyJSONStreamStateSeekString
+		case replyJSONStreamStateBeforeReplyValue:
+			if isJSONWhitespace(r) {
+				continue
+			}
+			if r == '"' {
+				e.state = replyJSONStreamStateInReply
+				continue
+			}
+			e.state = replyJSONStreamStateSeekString
+		case replyJSONStreamStateInReply:
+			switch r {
+			case '\\':
+				e.state = replyJSONStreamStateInReplyEscape
+			case '"':
+				e.state = replyJSONStreamStateDone
+			default:
+				output.WriteRune(r)
+				e.replyBuffer.WriteRune(r)
+			}
+		case replyJSONStreamStateInReplyEscape:
+			if r == 'u' {
+				e.unicodeBuffer.Reset()
+				e.state = replyJSONStreamStateInReplyUnicode
+				continue
+			}
+
+			decoded, err := decodeJSONStringEscape(r)
+			if err != nil {
+				return "", err
+			}
+			output.WriteRune(decoded)
+			e.replyBuffer.WriteRune(decoded)
+			e.state = replyJSONStreamStateInReply
+		case replyJSONStreamStateInReplyUnicode:
+			if !isHexDigit(r) {
+				return "", fmt.Errorf("解析助手流式结果失败：非法 unicode 转义 %q", string(r))
+			}
+
+			e.unicodeBuffer.WriteRune(r)
+			if e.unicodeBuffer.Len() < 4 {
+				continue
+			}
+
+			value, err := strconv.ParseInt(e.unicodeBuffer.String(), 16, 32)
+			if err != nil {
+				return "", fmt.Errorf("解析助手流式结果失败：%w", err)
+			}
+
+			decoded := rune(value)
+			output.WriteRune(decoded)
+			e.replyBuffer.WriteRune(decoded)
+			e.state = replyJSONStreamStateInReply
+		}
+	}
+
+	return output.String(), nil
+}
+
+func (e *replyJSONStreamExtractor) Text() string {
+	return e.replyBuffer.String()
+}
+
+func decodeJSONStringEscape(r rune) (rune, error) {
+	switch r {
+	case '"', '\\', '/':
+		return r, nil
+	case 'b':
+		return '\b', nil
+	case 'f':
+		return '\f', nil
+	case 'n':
+		return '\n', nil
+	case 'r':
+		return '\r', nil
+	case 't':
+		return '\t', nil
+	default:
+		return 0, fmt.Errorf("解析助手流式结果失败：非法转义字符 %q", string(r))
+	}
+}
+
+func isHexDigit(r rune) bool {
+	switch {
+	case r >= '0' && r <= '9':
+		return true
+	case r >= 'a' && r <= 'f':
+		return true
+	case r >= 'A' && r <= 'F':
+		return true
+	default:
+		return false
+	}
+}
+
+func isJSONWhitespace(r rune) bool {
+	switch r {
+	case ' ', '\n', '\r', '\t':
+		return true
+	default:
+		return false
+	}
 }
