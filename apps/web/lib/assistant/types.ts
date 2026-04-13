@@ -30,6 +30,7 @@ export type AssistantTaskCreatedPayload = {
 };
 
 export type AssistantSessionFilePayload = {
+  file_id?: string;
   file_name: string;
   resource_id: string;
   resource_title: string;

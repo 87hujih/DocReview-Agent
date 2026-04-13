@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import type { AssistantMessage } from "../../lib/assistant/types";
+import { getFileDownloadURL } from "../../lib/api/files";
 import styles from "./assistant-message-list.module.css";
 
 type AssistantMessageListProps = {
@@ -88,6 +89,11 @@ export function AssistantMessageList({
               <p className={styles.cardMeta}>
                 已自动入库：{message.payload.resource_title} · {message.payload.source_type}
               </p>
+              {message.payload.file_id ? (
+                <Link className={styles.linkButton} href={getFileDownloadURL(message.payload.file_id)}>
+                  下载原文件
+                </Link>
+              ) : null}
             </section>
           );
         }

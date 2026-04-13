@@ -105,7 +105,7 @@ describe("AssistantShell", () => {
       expect(mockedGetAssistantSessions).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.change(screen.getByLabelText("输入消息"), {
+    fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "请帮我梳理学生守则第二章" }
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
@@ -161,7 +161,9 @@ describe("AssistantShell", () => {
       expect(mockedGetAssistantSession).toHaveBeenCalledWith("session-1");
     });
 
-    expect(screen.getByText("昨天那条历史消息")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("昨天那条历史消息")).toBeInTheDocument();
+    });
   });
 
   it("shows a pending assistant bubble inside the conversation while creating the first session", async () => {
@@ -199,7 +201,7 @@ describe("AssistantShell", () => {
       expect(mockedGetAssistantSessions).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.change(screen.getByLabelText("输入消息"), {
+    fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "帮我整理今天的学习安排" }
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
