@@ -8,6 +8,10 @@ apps/server/bin/
 data/
 .idea/
 .worktrees/
+.gstack/
+.tmp/
+.codex/skills/**/__pycache__/
+*.pyc
 *.log
 *.exe
 .claude/
