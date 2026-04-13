@@ -10,6 +10,7 @@ import (
 
 	executoragent "agent_project/apps/server/internal/agent/executor"
 	appconfig "agent_project/apps/server/internal/config"
+	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
@@ -76,7 +77,8 @@ func TestWorkerProcessesJob(t *testing.T) {
 		t.Fatalf("create job: %v", err)
 	}
 
-	exec := executoragent.New(taskRepo, resourceRepo)
+	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
+	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
 	eventService := taskevents.New(eventRepo)
 	worker := New(jobRepo, exec, taskRepo, 1, eventService)
 
@@ -170,6 +172,13 @@ func cleanupJobResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
 	ctx := jobTestContext(t)
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM execution_jobs
+		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
+		   OR new_version_id IN (SELECT id FROM resource_versions WHERE resource_id = $1)
+	`, resourceID); err != nil {
+		t.Fatalf("cleanup execution jobs for resource %q: %v", resourceID, err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM tasks WHERE resource_id = $1`, resourceID); err != nil {
 		t.Fatalf("cleanup tasks for resource %q: %v", resourceID, err)
 	}
@@ -188,4 +197,17 @@ func jobTestContext(t *testing.T) context.Context {
 
 func jobUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+type jobEmbedder struct{}
+
+func (jobEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	vectors := make([][]float32, 0, len(texts))
+	for index := range texts {
+		vector := make([]float32, 1024)
+		vector[index%len(vector)] = 1
+		vectors = append(vectors, vector)
+	}
+
+	return vectors, nil
 }

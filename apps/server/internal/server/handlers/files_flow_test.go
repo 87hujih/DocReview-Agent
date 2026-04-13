@@ -277,6 +277,13 @@ func cleanupFlowData(t *testing.T, pool *pgxpool.Pool, resourceID string, sessio
 	if _, err := pool.Exec(ctx, `DELETE FROM assistant_sessions WHERE id = $1`, sessionID); err != nil {
 		t.Fatalf("cleanup assistant session %q: %v", sessionID, err)
 	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM execution_jobs
+		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
+		   OR new_version_id IN (SELECT id FROM resource_versions WHERE resource_id = $1)
+	`, resourceID); err != nil {
+		t.Fatalf("cleanup execution jobs for resource %q: %v", resourceID, err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM resources WHERE id = $1`, resourceID); err != nil {
 		t.Fatalf("cleanup resource %q: %v", resourceID, err)
 	}
