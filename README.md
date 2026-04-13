@@ -1,6 +1,6 @@
 # DocReview Agent
 
-一个支持企业文档检索问答、修订建议生成、人工审批和异步执行的任务型 AI 应用。
+一个集成检索问答、修订建议生成、人工审批和异步执行的任务型 AI 应用。
 
 ## 核心功能
 
@@ -34,19 +34,28 @@ cp .env.example .env
 # 3. 启动 PostgreSQL（pgvector/pgvector:pg16）
 docker compose up -d
 
-# 4. 启动后端（迁移在启动时自动执行）
-cd apps/server && go run ./cmd/server
+# 4. 安装前端依赖（首次或 lockfile 变化后执行）
+cd apps/web && npm install && cd ../..
 
-# 5. 新开终端，启动前端
-cd apps/web && npm install && npm run dev
+# 5. 统一启动本地 web + server
+pwsh -File scripts/dev/start-local.ps1
 
 # 6. 打开浏览器
-# http://localhost:3000
+# http://127.0.0.1:3000
 ```
 
 > 如果使用远程或已有的 PostgreSQL 实例，跳过步骤 3，直接在 `.env` 中配置 `DATABASE_URL` 即可。数据库需要预装 `pgvector` 和 `pg_trgm` 扩展，迁移脚本会自动创建。
 >
 > 当前前端首页已经切到“助手”入口：用户先在 `/` 自由聊天，再通过会话里的任务确认卡片创建任务。聊天内容已经接到真实模型回复；文件上传会真实进入后端会话并自动入资源库。当前仍是单人本地使用形态，暂未引入登录和多用户隔离。
+>
+> 本地联调当前统一约定为：
+> - `web`: `http://127.0.0.1:3000`
+> - `server`: `http://127.0.0.1:18080`
+>
+> 可用以下脚本辅助联调：
+> - `pwsh -File scripts/dev/start-local.ps1`
+> - `pwsh -File scripts/dev/status-local.ps1`
+> - `pwsh -File scripts/dev/stop-local.ps1`
 
 ## 演示走查
 

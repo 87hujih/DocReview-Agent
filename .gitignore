@@ -14,5 +14,6 @@ data/
 findings.md
 progress.md
 task_plan.md
-tasks/
+/tasks/
 docs/superpowers/
+scripts/dev/.local-dev-state.json
