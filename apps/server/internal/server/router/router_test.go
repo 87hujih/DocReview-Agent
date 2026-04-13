@@ -126,6 +126,31 @@ func TestNewHandlesAssistantPreflightOPTIONS(t *testing.T) {
 	}
 }
 
+func TestNewAddsRequestIDToPreflightOPTIONS(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{})
+
+	response := ut.PerformRequest(
+		h.Engine,
+		"OPTIONS",
+		"/api/resources",
+		nil,
+		ut.Header{Key: "Origin", Value: "http://127.0.0.1:3000"},
+		ut.Header{Key: "Access-Control-Request-Method", Value: "GET"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", consts.StatusNoContent, response.StatusCode())
+	}
+
+	if value := string(response.Header.Peek("X-Request-ID")); value == "" {
+		t.Fatal("expected X-Request-ID on preflight response")
+	}
+
+	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "*" {
+		t.Fatalf("expected Access-Control-Allow-Origin header '*', got %q", value)
+	}
+}
+
 func TestNewRegistersAssistantStreamingRoutesWhenHandlerProvided(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		AssistantHandler: handlers.NewAssistantHandler(fakeAssistantRouterService{}),

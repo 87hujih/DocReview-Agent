@@ -48,7 +48,7 @@ type ResourceChunk struct {
 	CreatedAt    time.Time
 }
 
-// ResourceChunkInput 表示写入资源图时预先算好的单个 chunk。
+// ResourceChunkInput 表示写入资源图或重建版本索引时预先算好的单个 chunk。
 type ResourceChunkInput struct {
 	ChunkIndex   int
 	SectionTitle string
@@ -58,7 +58,7 @@ type ResourceChunkInput struct {
 
 // CreateDocumentGraphParams 描述一次原子写入资源、版本和 chunks 所需的数据。
 type CreateDocumentGraphParams struct {
-	ResourceID     string
+	ResourceID    string
 	Title         string
 	SourceType    string
 	SourceRef     *string
@@ -205,13 +205,7 @@ func (r *ResourceRepo) CreateChunk(ctx context.Context, chunk *ResourceChunk) er
 
 // CreateDocumentGraph 在单事务里写入资源、版本和全部 chunks，避免残留半成品资源。
 func (r *ResourceRepo) CreateDocumentGraph(ctx context.Context, params CreateDocumentGraphParams) (*Resource, *ResourceVersion, error) {
-	conn, err := r.pool.Acquire(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer conn.Release()
-
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -278,6 +272,39 @@ func (r *ResourceRepo) CreateDocumentGraph(ctx context.Context, params CreateDoc
 	return &resource, &version, nil
 }
 
+// ReplaceVersionChunks 以“先删后建”的方式重建一个版本的全部分块。
+func (r *ResourceRepo) ReplaceVersionChunks(ctx context.Context, versionID string, resourceID string, chunks []ResourceChunkInput) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM resource_chunks
+		WHERE version_id = $1
+	`, versionID); err != nil {
+		return err
+	}
+
+	for _, chunk := range chunks {
+		if err := createChunkTx(ctx, tx, &ResourceChunk{
+			ResourceID:   resourceID,
+			VersionID:    versionID,
+			ChunkIndex:   chunk.ChunkIndex,
+			SectionTitle: chunk.SectionTitle,
+			Content:      chunk.Content,
+			Embedding:    chunk.Embedding,
+		}); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 // SearchChunks 使用 pgvector 距离排序，在全部资源范围内执行语义检索。
 func (r *ResourceRepo) SearchChunks(ctx context.Context, embedding pgvector.Vector, limit int) ([]ResourceChunk, error) {
 	rows, err := r.pool.Query(ctx, `
@@ -303,6 +330,23 @@ func (r *ResourceRepo) SearchChunksByResource(ctx context.Context, embedding pgv
 		ORDER BY embedding <=> $1
 		LIMIT $3
 	`, embedding, resourceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectResourceChunks(rows)
+}
+
+// SearchChunksByVersion 把语义检索范围收敛到单个资源版本。
+func (r *ResourceRepo) SearchChunksByVersion(ctx context.Context, embedding pgvector.Vector, limit int, versionID string) ([]ResourceChunk, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		FROM resource_chunks
+		WHERE version_id = $2
+		ORDER BY embedding <=> $1
+		LIMIT $3
+	`, embedding, versionID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -364,6 +408,38 @@ func (r *ResourceRepo) SearchChunksLexicalByResource(ctx context.Context, query 
 			chunk_index ASC
 		LIMIT $3
 	`, normalizedQuery, resourceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectResourceChunks(rows)
+}
+
+// SearchChunksLexicalByVersion 把词法候选召回范围限制在单个资源版本内。
+func (r *ResourceRepo) SearchChunksLexicalByVersion(ctx context.Context, query string, limit int, versionID string) ([]ResourceChunk, error) {
+	normalizedQuery := normalizeLexicalQuery(query)
+	if normalizedQuery == "" || limit <= 0 {
+		return []ResourceChunk{}, nil
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		FROM resource_chunks
+		WHERE version_id = $2
+		  AND (
+			lower(coalesce(section_title, '') || ' ' || content) LIKE '%' || $1 || '%'
+			OR lower(coalesce(section_title, '') || ' ' || content) % $1
+		  )
+		ORDER BY
+			CASE
+				WHEN lower(coalesce(section_title, '') || ' ' || content) LIKE '%' || $1 || '%' THEN 1
+				ELSE 0
+			END DESC,
+			similarity(lower(coalesce(section_title, '') || ' ' || content), $1) DESC,
+			chunk_index ASC
+		LIMIT $3
+	`, normalizedQuery, versionID, limit)
 	if err != nil {
 		return nil, err
 	}

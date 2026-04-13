@@ -405,6 +405,198 @@ func TestTaskAndStepsCRUD(t *testing.T) {
 	}
 }
 
+func TestCountChunksByVersion(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, repo, ctx, "版本分块统计测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	count, err := repo.CountChunksByVersion(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("count chunks before insert: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 chunks before insert, got %d", count)
+	}
+
+	if err := repo.CreateChunk(ctx, &ResourceChunk{
+		ResourceID:   resource.ID,
+		VersionID:    version.ID,
+		ChunkIndex:   0,
+		SectionTitle: "考勤管理",
+		Content:      "员工必须在九点前完成签到。",
+		Embedding:    testVector(0.42),
+	}); err != nil {
+		t.Fatalf("create chunk: %v", err)
+	}
+
+	count, err = repo.CountChunksByVersion(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("count chunks after insert: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 chunk after insert, got %d", count)
+	}
+}
+
+func TestReplaceVersionChunksIsIdempotent(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, repo, ctx, "版本分块替换测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	if err := repo.CreateChunk(ctx, &ResourceChunk{
+		ResourceID:   resource.ID,
+		VersionID:    version.ID,
+		ChunkIndex:   0,
+		SectionTitle: "旧章节",
+		Content:      "旧版本正文",
+		Embedding:    testVector(0.11),
+	}); err != nil {
+		t.Fatalf("seed old chunk: %v", err)
+	}
+
+	inputs := []ResourceChunkInput{
+		{
+			ChunkIndex:   0,
+			SectionTitle: "考勤管理",
+			Content:      "第一版正文",
+			Embedding:    testVector(0.21),
+		},
+	}
+
+	if err := repo.ReplaceVersionChunks(ctx, version.ID, resource.ID, inputs); err != nil {
+		t.Fatalf("replace version chunks first run: %v", err)
+	}
+	if err := repo.ReplaceVersionChunks(ctx, version.ID, resource.ID, inputs); err != nil {
+		t.Fatalf("replace version chunks second run: %v", err)
+	}
+
+	count, err := repo.CountChunksByVersion(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("count chunks after replace: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 chunk after repeated replace, got %d", count)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT section_title, content, chunk_index
+		FROM resource_chunks
+		WHERE version_id = $1
+	`, version.ID)
+	if err != nil {
+		t.Fatalf("query version chunks: %v", err)
+	}
+	defer rows.Close()
+
+	type storedChunk struct {
+		sectionTitle string
+		content      string
+		chunkIndex   int
+	}
+
+	storedChunks := make([]storedChunk, 0)
+	for rows.Next() {
+		var chunk storedChunk
+		if err := rows.Scan(&chunk.sectionTitle, &chunk.content, &chunk.chunkIndex); err != nil {
+			t.Fatalf("scan stored chunk: %v", err)
+		}
+
+		storedChunks = append(storedChunks, chunk)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate stored chunks: %v", err)
+	}
+
+	if len(storedChunks) != 1 {
+		t.Fatalf("expected exactly 1 stored chunk row, got %d", len(storedChunks))
+	}
+	if storedChunks[0].sectionTitle != "考勤管理" {
+		t.Fatalf("expected section title %q, got %q", "考勤管理", storedChunks[0].sectionTitle)
+	}
+	if storedChunks[0].content != "第一版正文" {
+		t.Fatalf("expected content %q, got %q", "第一版正文", storedChunks[0].content)
+	}
+	if storedChunks[0].chunkIndex != 0 {
+		t.Fatalf("expected chunk index 0, got %d", storedChunks[0].chunkIndex)
+	}
+}
+
+func TestSearchChunksByVersionExcludesOlderVersion(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, oldVersion := seedResourceVersion(t, repo, ctx, "版本语义检索测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	newVersion, err := repo.CreateVersion(ctx, resource.ID, 2, "## 考勤管理\n新版本考勤条款", "agent_edit")
+	if err != nil {
+		t.Fatalf("create new version: %v", err)
+	}
+
+	seedVersionChunk(t, repo, ctx, resource.ID, oldVersion.ID, 0, "考勤管理", "旧版本考勤条款", testVector(0.21))
+	seedVersionChunk(t, repo, ctx, resource.ID, newVersion.ID, 0, "考勤管理", "新版本考勤条款", testVector(0.41))
+
+	chunks, err := repo.SearchChunksByVersion(ctx, testVector(0.41), 5, newVersion.ID)
+	if err != nil {
+		t.Fatalf("search chunks by version: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk from current version, got %d", len(chunks))
+	}
+	if chunks[0].VersionID != newVersion.ID {
+		t.Fatalf("expected version id %q, got %q", newVersion.ID, chunks[0].VersionID)
+	}
+	if chunks[0].Content != "新版本考勤条款" {
+		t.Fatalf("expected current version content %q, got %q", "新版本考勤条款", chunks[0].Content)
+	}
+}
+
+func TestSearchChunksLexicalByVersionExcludesOlderVersion(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, oldVersion := seedResourceVersion(t, repo, ctx, "版本词法检索测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	newVersion, err := repo.CreateVersion(ctx, resource.ID, 2, "## 考勤管理\n新版本考勤条款", "agent_edit")
+	if err != nil {
+		t.Fatalf("create new version: %v", err)
+	}
+
+	seedVersionChunk(t, repo, ctx, resource.ID, oldVersion.ID, 0, "考勤管理", "旧版本考勤条款", testVector(0.22))
+	seedVersionChunk(t, repo, ctx, resource.ID, newVersion.ID, 0, "考勤管理", "新版本考勤条款", testVector(0.42))
+
+	chunks, err := repo.SearchChunksLexicalByVersion(ctx, "考勤", 5, newVersion.ID)
+	if err != nil {
+		t.Fatalf("search lexical chunks by version: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 lexical chunk from current version, got %d", len(chunks))
+	}
+	if chunks[0].VersionID != newVersion.ID {
+		t.Fatalf("expected lexical version id %q, got %q", newVersion.ID, chunks[0].VersionID)
+	}
+	if chunks[0].Content != "新版本考勤条款" {
+		t.Fatalf("expected lexical content %q, got %q", "新版本考勤条款", chunks[0].Content)
+	}
+}
+
 // newTestPool 为 PostgreSQL 存储测试创建可复用连接池并执行迁移。
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -481,6 +673,47 @@ func testContext(t *testing.T) context.Context {
 // uniqueSuffix 生成测试数据使用的唯一后缀。
 func uniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+func seedResourceVersion(t *testing.T, repo *ResourceRepo, ctx context.Context, title string) (*Resource, *ResourceVersion) {
+	t.Helper()
+
+	resource, err := repo.Create(ctx, title, "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+
+	version, err := repo.CreateVersion(ctx, resource.ID, 1, "## 考勤管理\n员工必须在九点前签到。", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	return resource, version
+}
+
+func seedVersionChunk(
+	t *testing.T,
+	repo *ResourceRepo,
+	ctx context.Context,
+	resourceID string,
+	versionID string,
+	chunkIndex int,
+	sectionTitle string,
+	content string,
+	embedding pgvector.Vector,
+) {
+	t.Helper()
+
+	if err := repo.CreateChunk(ctx, &ResourceChunk{
+		ResourceID:   resourceID,
+		VersionID:    versionID,
+		ChunkIndex:   chunkIndex,
+		SectionTitle: sectionTitle,
+		Content:      content,
+		Embedding:    embedding,
+	}); err != nil {
+		t.Fatalf("create version chunk: %v", err)
+	}
 }
 
 // testVector 生成固定维度的测试向量，便于插入和相似度查询。

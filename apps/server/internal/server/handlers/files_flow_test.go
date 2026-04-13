@@ -16,6 +16,7 @@ import (
 	appconfig "agent_project/apps/server/internal/config"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/job"
+	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/knowledge/ingest"
 	"agent_project/apps/server/internal/storage/filestore"
 	"agent_project/apps/server/internal/storage/postgres"
@@ -111,7 +112,8 @@ func TestUploadApproveExecuteAndExportFlow(t *testing.T) {
 		t.Fatalf("mark task awaiting approval: %v", err)
 	}
 
-	exec := executoragent.New(taskRepo, resourceRepo)
+	versionIndexer := indexer.NewService(resourceRepo, flowEmbedder{})
+	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
 	worker := job.New(jobRepo, exec, taskRepo, 1, taskevents.New(eventRepo))
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

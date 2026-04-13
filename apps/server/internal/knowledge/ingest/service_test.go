@@ -9,6 +9,7 @@ import (
 	"time"
 
 	documentparser "agent_project/apps/server/internal/document/parser"
+	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
@@ -112,8 +113,8 @@ func TestImportDocumentReturnsParserErrorBeforeWritingResource(t *testing.T) {
 		t.Fatalf("expected parser error %v, got %v", parserErr, err)
 	}
 
-	if repo.createCalls != 0 {
-		t.Fatalf("expected parser failure to stop before creating resources, got %d create calls", repo.createCalls)
+	if repo.graphCalls != 0 {
+		t.Fatalf("expected parser failure to stop before graph write, got %d graph calls", repo.graphCalls)
 	}
 
 	if len(repo.createdChunks) != 0 {
@@ -134,8 +135,8 @@ func TestImportDocumentReturnsEmbedderErrorBeforeWritingResource(t *testing.T) {
 		t.Fatalf("expected embedder error %v, got %v", embedErr, err)
 	}
 
-	if repo.createCalls != 0 {
-		t.Fatalf("expected embedder failure to stop before creating resources, got %d create calls", repo.createCalls)
+	if repo.graphCalls != 0 {
+		t.Fatalf("expected embedder failure to stop before graph write, got %d graph calls", repo.graphCalls)
 	}
 
 	if len(repo.createdChunks) != 0 {
@@ -176,8 +177,8 @@ func TestImportDocumentUsesAtomicGraphWriteForPersistence(t *testing.T) {
 		t.Fatalf("expected atomic graph write to be called once, got %d", repo.graphCalls)
 	}
 
-	if repo.createCalls != 0 {
-		t.Fatalf("expected old step-by-step create path to stay unused, got %d create calls", repo.createCalls)
+	if repo.replaceCalls != 0 {
+		t.Fatalf("expected new document import to avoid post-create reindex writes, got %d", repo.replaceCalls)
 	}
 
 	if len(repo.graphChunks) == 0 {
@@ -213,7 +214,8 @@ func TestImportDirectoryBackfillsSourceRefForLegacyTitleMatch(t *testing.T) {
 			"version-legacy": 1,
 		},
 	}
-	service := NewService(repo, fakeEmbedder{})
+	versionIndexer := &fakeVersionIndexer{}
+	service := NewService(repo, fakeEmbedder{}, WithIndexer(versionIndexer))
 
 	if err := service.ImportDirectory(context.Background(), dir); err != nil {
 		t.Fatalf("import directory: %v", err)
@@ -231,110 +233,113 @@ func TestImportDirectoryBackfillsSourceRefForLegacyTitleMatch(t *testing.T) {
 		t.Fatalf("expected source_ref %q, got %#v", "student-handbook.md", repo.updateSourceRefCalls[0].sourceRef)
 	}
 
-	if repo.graphCalls != 0 {
-		t.Fatalf("expected healthy legacy resource to skip reindex, got %d graph writes", repo.graphCalls)
+	if versionIndexer.reindexCalls != 0 {
+		t.Fatalf("expected healthy legacy resource to skip reindex, got %d calls", versionIndexer.reindexCalls)
 	}
 }
 
-func TestImportDirectoryRepairsResourceWhenCurrentVersionHasNoChunks(t *testing.T) {
-	dir := t.TempDir()
-	filePath := filepath.Join(dir, "student-handbook.md")
-	if err := os.WriteFile(filePath, []byte("# 学生守则\n正文"), 0o600); err != nil {
-		t.Fatalf("write markdown file: %v", err)
+func TestImportDirectoryReindexesExistingResourceWithoutChunks(t *testing.T) {
+	tempDir := t.TempDir()
+	content := "# 考勤制度\n\n## 考勤管理\n员工必须在九点前签到。"
+	filePath := filepath.Join(tempDir, "attendance-policy.md")
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write markdown: %v", err)
 	}
 
-	sourceRef := "student-handbook.md"
+	sourceRef := "attendance-policy.md"
 	repo := &fakeResourceRepo{
 		listResult: []postgres.Resource{
-			{
-				ID:         "resource-1",
-				Title:      "学生守则",
-				SourceType: "upload",
-				SourceRef:  &sourceRef,
-			},
+			{ID: "resource-existing", Title: "考勤制度", SourceType: "upload", SourceRef: &sourceRef},
 		},
 		currentVersions: map[string]*postgres.ResourceVersion{
-			"resource-1": {
-				ID:            "version-1",
-				ResourceID:    "resource-1",
-				VersionNumber: 1,
-				Content:       "# 学生守则\n旧正文",
-				Source:        "original",
+			"resource-existing": {
+				ID:         "version-existing",
+				ResourceID: "resource-existing",
+				Content:    content,
 			},
 		},
 		chunkCountByVersion: map[string]int{
-			"version-1": 0,
+			"version-existing": 0,
 		},
 	}
-	service := NewService(repo, fakeEmbedder{})
+	versionIndexer := &fakeVersionIndexer{}
+	service := NewService(repo, fakeEmbedder{}, WithIndexer(versionIndexer))
 
-	if err := service.ImportDirectory(context.Background(), dir); err != nil {
+	if err := service.ImportDirectory(context.Background(), tempDir); err != nil {
 		t.Fatalf("import directory: %v", err)
 	}
 
-	if repo.graphCalls != 1 {
-		t.Fatalf("expected missing chunks to trigger one repair write, got %d", repo.graphCalls)
+	if versionIndexer.reindexCalls != 1 {
+		t.Fatalf("expected exactly 1 reindex call, got %d", versionIndexer.reindexCalls)
+	}
+	if versionIndexer.lastInput.Version.ID != "version-existing" {
+		t.Fatalf("expected reindexed version %q, got %q", "version-existing", versionIndexer.lastInput.Version.ID)
+	}
+	if repo.graphCalls != 0 {
+		t.Fatalf("expected no repair version graph write, got %d", repo.graphCalls)
+	}
+}
+
+func TestImportDirectorySkipsIndexedResource(t *testing.T) {
+	tempDir := t.TempDir()
+	content := "# 考勤制度\n\n## 考勤管理\n员工必须在九点前签到。"
+	filePath := filepath.Join(tempDir, "attendance-policy.md")
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write markdown: %v", err)
 	}
 
-	if repo.lastGraphParams.ResourceID != "resource-1" {
-		t.Fatalf("expected repair to target existing resource %q, got %q", "resource-1", repo.lastGraphParams.ResourceID)
+	sourceRef := "attendance-policy.md"
+	repo := &fakeResourceRepo{
+		listResult: []postgres.Resource{
+			{ID: "resource-existing", Title: "考勤制度", SourceType: "upload", SourceRef: &sourceRef},
+		},
+		currentVersions: map[string]*postgres.ResourceVersion{
+			"resource-existing": {
+				ID:         "version-existing",
+				ResourceID: "resource-existing",
+				Content:    content,
+			},
+		},
+		chunkCountByVersion: map[string]int{
+			"version-existing": 2,
+		},
+	}
+	versionIndexer := &fakeVersionIndexer{}
+	service := NewService(repo, fakeEmbedder{}, WithIndexer(versionIndexer))
+
+	if err := service.ImportDirectory(context.Background(), tempDir); err != nil {
+		t.Fatalf("import directory: %v", err)
 	}
 
-	if repo.lastGraphParams.VersionNumber != 2 {
-		t.Fatalf("expected repair to append version 2, got %d", repo.lastGraphParams.VersionNumber)
+	if versionIndexer.reindexCalls != 0 {
+		t.Fatalf("expected indexed resource to skip reindex, got %d calls", versionIndexer.reindexCalls)
+	}
+	if repo.graphCalls != 0 {
+		t.Fatalf("expected no new graph write, got %d", repo.graphCalls)
 	}
 }
 
 type fakeResourceRepo struct {
-	createSourceRef *string
-	createdChunks   []*postgres.ResourceChunk
-	graphChunks     []postgres.ResourceChunkInput
-	resource        *postgres.Resource
-	version         *postgres.ResourceVersion
-	createCalls     int
-	graphCalls      int
-	listResult      []postgres.Resource
-	currentVersions map[string]*postgres.ResourceVersion
-	chunkCountByVersion map[string]int
-	updateSourceRefCalls []sourceRefUpdateCall
-	lastGraphParams postgres.CreateDocumentGraphParams
+	listResult            []postgres.Resource
+	currentVersion        *postgres.ResourceVersion
+	currentVersions       map[string]*postgres.ResourceVersion
+	chunkCount            int
+	chunkCountByVersion   map[string]int
+	createSourceRef       *string
+	createdChunks         []*postgres.ResourceChunk
+	graphChunks           []postgres.ResourceChunkInput
+	resource              *postgres.Resource
+	version               *postgres.ResourceVersion
+	graphCalls            int
+	replaceCalls          int
+	updateSourceRefCalls  []sourceRefUpdateCall
+	lastGraphParams       postgres.CreateDocumentGraphParams
+	lastReplaceVersionID  string
+	lastReplaceResourceID string
 }
 
 func (r *fakeResourceRepo) List(context.Context) ([]postgres.Resource, error) {
 	return append([]postgres.Resource(nil), r.listResult...), nil
-}
-
-func (r *fakeResourceRepo) CreateWithSourceRef(_ context.Context, title string, sourceType string, sourceRef *string) (*postgres.Resource, error) {
-	r.createCalls++
-	r.createSourceRef = sourceRef
-	if r.resource != nil {
-		return r.resource, nil
-	}
-
-	return &postgres.Resource{
-		ID:         "resource-default",
-		Title:      title,
-		SourceType: sourceType,
-	}, nil
-}
-
-func (r *fakeResourceRepo) CreateVersion(_ context.Context, resourceID string, versionNumber int, content string, source string) (*postgres.ResourceVersion, error) {
-	if r.version != nil {
-		return r.version, nil
-	}
-
-	return &postgres.ResourceVersion{
-		ID:            "version-default",
-		ResourceID:    resourceID,
-		VersionNumber: versionNumber,
-		Content:       content,
-		Source:        source,
-	}, nil
-}
-
-func (r *fakeResourceRepo) CreateChunk(_ context.Context, chunk *postgres.ResourceChunk) error {
-	r.createdChunks = append(r.createdChunks, chunk)
-	return nil
 }
 
 func (r *fakeResourceRepo) CreateDocumentGraph(_ context.Context, params postgres.CreateDocumentGraphParams) (*postgres.Resource, *postgres.ResourceVersion, error) {
@@ -351,37 +356,45 @@ func (r *fakeResourceRepo) CreateDocumentGraph(_ context.Context, params postgre
 			Embedding:    chunk.Embedding,
 		})
 	}
-	if r.resource != nil && r.version != nil {
-		return r.resource, r.version, nil
-	}
 
-	return &postgres.Resource{
+	resource := r.resource
+	if resource == nil {
+		resource = &postgres.Resource{
 			ID:         "resource-graph-default",
 			Title:      params.Title,
 			SourceType: params.SourceType,
-		}, &postgres.ResourceVersion{
+			SourceRef:  params.SourceRef,
+		}
+	}
+
+	version := r.version
+	if version == nil {
+		version = &postgres.ResourceVersion{
 			ID:            "version-graph-default",
-			ResourceID:    "resource-graph-default",
+			ResourceID:    resource.ID,
 			VersionNumber: 1,
 			Content:       params.Content,
 			Source:        params.VersionSource,
-		}, nil
+		}
+	}
+
+	return resource, version, nil
 }
 
 func (r *fakeResourceRepo) GetCurrentVersion(_ context.Context, resourceID string) (*postgres.ResourceVersion, error) {
-	if r.currentVersions == nil {
-		return nil, nil
+	if r.currentVersions != nil {
+		return r.currentVersions[resourceID], nil
 	}
 
-	return r.currentVersions[resourceID], nil
+	return r.currentVersion, nil
 }
 
 func (r *fakeResourceRepo) CountChunksByVersion(_ context.Context, versionID string) (int, error) {
-	if r.chunkCountByVersion == nil {
-		return 0, nil
+	if r.chunkCountByVersion != nil {
+		return r.chunkCountByVersion[versionID], nil
 	}
 
-	return r.chunkCountByVersion[versionID], nil
+	return r.chunkCount, nil
 }
 
 func (r *fakeResourceRepo) UpdateSourceRef(_ context.Context, resourceID string, sourceRef *string) error {
@@ -389,6 +402,25 @@ func (r *fakeResourceRepo) UpdateSourceRef(_ context.Context, resourceID string,
 		resourceID: resourceID,
 		sourceRef:  sourceRef,
 	})
+	return nil
+}
+
+func (r *fakeResourceRepo) ReplaceVersionChunks(_ context.Context, versionID string, resourceID string, chunks []postgres.ResourceChunkInput) error {
+	r.replaceCalls++
+	r.lastReplaceVersionID = versionID
+	r.lastReplaceResourceID = resourceID
+	r.createdChunks = r.createdChunks[:0]
+	for _, chunk := range chunks {
+		r.createdChunks = append(r.createdChunks, &postgres.ResourceChunk{
+			ResourceID:   resourceID,
+			VersionID:    versionID,
+			ChunkIndex:   chunk.ChunkIndex,
+			SectionTitle: chunk.SectionTitle,
+			Content:      chunk.Content,
+			Embedding:    chunk.Embedding,
+		})
+	}
+
 	return nil
 }
 
@@ -431,6 +463,31 @@ func (p fakeDocumentParser) Parse(context.Context, documentparser.Input) (*docum
 	}
 
 	return p.result, nil
+}
+
+type fakeVersionIndexer struct {
+	buildCalls   int
+	reindexCalls int
+	lastInput    indexer.Input
+	buildChunks  []postgres.ResourceChunkInput
+	buildErr     error
+	reindexErr   error
+}
+
+func (f *fakeVersionIndexer) BuildVersionChunks(_ context.Context, input indexer.Input) ([]postgres.ResourceChunkInput, error) {
+	f.buildCalls++
+	f.lastInput = input
+	if f.buildErr != nil {
+		return nil, f.buildErr
+	}
+
+	return append([]postgres.ResourceChunkInput(nil), f.buildChunks...), nil
+}
+
+func (f *fakeVersionIndexer) ReindexVersion(_ context.Context, input indexer.Input) error {
+	f.reindexCalls++
+	f.lastInput = input
+	return f.reindexErr
 }
 
 type sourceRefUpdateCall struct {

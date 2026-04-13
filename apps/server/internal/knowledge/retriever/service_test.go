@@ -15,6 +15,8 @@ import (
 	"agent_project/apps/server/internal/knowledge/ingest"
 	"agent_project/apps/server/internal/knowledge/reranker"
 	"agent_project/apps/server/internal/storage/postgres"
+
+	"github.com/pgvector/pgvector-go"
 )
 
 // TestBuildCitationsFromChunks 验证检索分块会被映射成稳定的 citation 结构。
@@ -90,6 +92,59 @@ func TestRerankResultsToChunks(t *testing.T) {
 
 	if ranked[1].ID != "chunk-1" {
 		t.Fatalf("expected second ranked chunk %q, got %q", "chunk-1", ranked[1].ID)
+	}
+}
+
+func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-1",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-current",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "新版本考勤条款",
+			},
+		},
+		lexicalByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-current",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "新版本考勤条款",
+			},
+		},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, fakeRetrieverReranker{
+		results: []reranker.Result{
+			{Index: 0, RelevanceScore: 0.99},
+		},
+	})
+
+	citations, err := service.SearchByResource(context.Background(), "resource-1", "考勤", 3)
+	if err != nil {
+		t.Fatalf("search by resource: %v", err)
+	}
+
+	if repo.currentVersionLookups != 1 {
+		t.Fatalf("expected exactly 1 current version lookup, got %d", repo.currentVersionLookups)
+	}
+	if repo.lastVersionID != "version-current" {
+		t.Fatalf("expected version-scoped search to use %q, got %q", "version-current", repo.lastVersionID)
+	}
+	if repo.searchByResourceCalls != 0 {
+		t.Fatalf("expected resource-scoped search not to be used, got %d calls", repo.searchByResourceCalls)
+	}
+	if len(citations) != 1 {
+		t.Fatalf("expected 1 citation, got %d", len(citations))
+	}
+	if !strings.Contains(citations[0].Snippet, "新版本") {
+		t.Fatalf("expected citation from current version, got %q", citations[0].Snippet)
 	}
 }
 
@@ -175,4 +230,65 @@ func TestSearchIntegration(t *testing.T) {
 	if len(citations) == 0 {
 		t.Fatal("expected at least one citation")
 	}
+}
+
+type fakeRetrieverRepo struct {
+	currentVersion        *postgres.ResourceVersion
+	semanticByVersion     []postgres.ResourceChunk
+	lexicalByVersion      []postgres.ResourceChunk
+	currentVersionLookups int
+	lastVersionID         string
+	searchByResourceCalls int
+}
+
+func (r *fakeRetrieverRepo) GetCurrentVersion(context.Context, string) (*postgres.ResourceVersion, error) {
+	r.currentVersionLookups++
+	return r.currentVersion, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunks(context.Context, pgvector.Vector, int) ([]postgres.ResourceChunk, error) {
+	return nil, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunksLexical(context.Context, string, int) ([]postgres.ResourceChunk, error) {
+	return nil, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunksByResource(context.Context, pgvector.Vector, int, string) ([]postgres.ResourceChunk, error) {
+	r.searchByResourceCalls++
+	return nil, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunksLexicalByResource(context.Context, string, int, string) ([]postgres.ResourceChunk, error) {
+	r.searchByResourceCalls++
+	return nil, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunksByVersion(_ context.Context, _ pgvector.Vector, _ int, versionID string) ([]postgres.ResourceChunk, error) {
+	r.lastVersionID = versionID
+	return r.semanticByVersion, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunksLexicalByVersion(_ context.Context, _ string, _ int, versionID string) ([]postgres.ResourceChunk, error) {
+	r.lastVersionID = versionID
+	return r.lexicalByVersion, nil
+}
+
+type fakeRetrieverEmbedder struct{}
+
+func (fakeRetrieverEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	values := make([]float32, 1024)
+	for index := range values {
+		values[index] = 0.4 + float32(index%5)/10
+	}
+
+	return [][]float32{values}, nil
+}
+
+type fakeRetrieverReranker struct {
+	results []reranker.Result
+}
+
+func (r fakeRetrieverReranker) Rerank(context.Context, string, []string, int) ([]reranker.Result, error) {
+	return r.results, nil
 }
