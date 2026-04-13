@@ -57,14 +57,43 @@ pwsh -File scripts/dev/start-local.ps1
 > - `pwsh -File scripts/dev/status-local.ps1`
 > - `pwsh -File scripts/dev/stop-local.ps1`
 
+### 文档上传与解析
+
+助手上传入口首期支持 `.md`、`.txt`、`.doc`、`.docx`、`.pdf`、`.rtf`、`.odt`。默认 `DOCUMENT_PARSER=text` 只直通 Markdown / 纯文本；如果需要解析 Word、PDF、RTF 或 ODT，请启动 Apache Tika Server，并在 `.env` 中配置：
+
+```bash
+DOCUMENT_PARSER=tika
+TIKA_URL=http://127.0.0.1:9998
+TIKA_TIMEOUT_MS=30000
+```
+
+原始上传文件会保存在 `UPLOAD_STORAGE_DIR`（默认 `data/uploads`），单文件上限由 `UPLOAD_MAX_BYTES` 控制（默认 20MB）。助手消息中的文件卡片会提供“下载原文件”入口；任务审批执行完成后，任务详情页会提供“查看修订结果”和“下载修订结果”，资源详情页默认以 Markdown / 纯文本展示并导出当前版本。
+
 ## 演示走查
 
 1. 打开首页「助手」页面（`/`），先用自然语言描述需求，例如“帮我检查员工手册里考勤相关条款有没有歧义”
-2. 如需明确使用哪份材料，可以到「资源库」页面（`/resources`）挑选资源，再通过「在助手中使用」把目标资源带回首页会话
-3. 助手识别到可落地的审阅 / 修改意图后，会在消息流里插入任务确认卡片；确认后跳转到对应「任务详情」页面
-4. 在「任务详情」页面观察状态流转与产物：左侧查看步骤时间线，右侧查看审阅摘要、结构化 diff 和引用证据
-5. 工作流进入 `awaiting_approval` 后，打开「审批中心」页面（`/approvals`），查看待处理项并执行批准或拒绝
-6. 返回任务详情页，确认状态推进并继续跟踪结果
+2. 在会话中上传 `.md` / `.txt` 文档；如已配置 Tika，也可以上传 `.doc` / `.docx` / `.pdf` / `.rtf` / `.odt`
+3. 上传完成后，在助手文件卡片中确认资源已入库，并点击“下载原文件”验证原始文件可取回
+4. 助手识别到可落地的审阅 / 修改意图后，会在消息流里插入任务确认卡片；确认后跳转到对应「任务详情」页面
+5. 在「任务详情」页面观察状态流转与产物：时间线、审阅摘要、结构化 diff 和引用证据
+6. 工作流进入 `awaiting_approval` 后，打开「审批中心」页面（`/approvals`），查看待处理项并执行批准或拒绝
+7. 返回任务详情页，等待任务进入 `completed`，点击“查看修订结果”打开资源当前版本
+8. 在资源详情页查看最终修订正文，并点击“下载修订结果”导出 Markdown / 纯文本附件
+
+## 验证命令
+
+```bash
+go test ./apps/server/internal/document/parser ./apps/server/internal/config ./apps/server/internal/knowledge/ingest ./apps/server/internal/assistant ./apps/server/internal/server/handlers ./apps/server/internal/server/router -v
+go test ./apps/server/internal/server/handlers -run TestUploadApproveExecuteAndExportFlow -v
+
+cd apps/web
+npm test -- --run components/assistant/assistant-composer.test.tsx components/assistant/assistant-message-list.test.tsx lib/api/files.test.ts components/assistant/assistant-shell.test.tsx
+npm test -- --run lib/api/resources.test.ts components/resource-version-viewer.test.tsx components/resource-detail-page.test.tsx components/task-detail-page.test.tsx components/task-detail-layout-css.test.tsx
+npm test -- --run
+npm run build
+```
+
+`TestUploadApproveExecuteAndExportFlow` 需要可访问的 PostgreSQL / pgvector 环境；未配置 `DATABASE_URL` 或数据库不可达时会按 smoke 测试约定跳过，但仍参与编译校验。
 
 ## 技术亮点
 
