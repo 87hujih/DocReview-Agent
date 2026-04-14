@@ -124,7 +124,7 @@ func main() {
 		assistant.NewIngestDocumentImporter(ingestService),
 		taskService,
 		assistantResponder,
-		resourceRepo,
+		retrieverService,
 		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
 	)
 	assistantHandler := handlers.NewAssistantHandlerWithUploadLimitAndPolicy(
