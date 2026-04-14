@@ -54,6 +54,64 @@ func TestBuildChatMessagesMergesRuntimeContextIntoSingleSystemPrompt(t *testing.
 	}
 }
 
+func TestReplyJSONStreamExtractorHandlesSurrogatePair(t *testing.T) {
+	extractor := &replyJSONStreamExtractor{}
+
+	delta, err := extractor.Feed(`{"reply":"准备 \uD83D\uDE80 完成"}`)
+	if err != nil {
+		t.Fatalf("feed: %v", err)
+	}
+
+	if delta != "准备 🚀 完成" {
+		t.Fatalf("expected decoded emoji reply, got %q", delta)
+	}
+	if extractor.Text() != "准备 🚀 完成" {
+		t.Fatalf("expected buffered text to match, got %q", extractor.Text())
+	}
+}
+
+func TestReplyJSONStreamExtractorHandlesSurrogatePairAcrossChunks(t *testing.T) {
+	extractor := &replyJSONStreamExtractor{}
+	chunks := []string{
+		`{"reply":"准`,
+		`备 \uD83`,
+		`D\uDE`,
+		`80 完成"}`,
+	}
+
+	var got strings.Builder
+	for _, chunk := range chunks {
+		delta, err := extractor.Feed(chunk)
+		if err != nil {
+			t.Fatalf("feed chunk %q: %v", chunk, err)
+		}
+		got.WriteString(delta)
+	}
+
+	if got.String() != "准备 🚀 完成" {
+		t.Fatalf("expected decoded chunked emoji reply, got %q", got.String())
+	}
+	if extractor.Text() != got.String() {
+		t.Fatalf("expected buffered text %q, got %q", got.String(), extractor.Text())
+	}
+}
+
+func TestReplyJSONStreamExtractorRejectsInvalidSurrogatePair(t *testing.T) {
+	cases := []string{
+		`{"reply":"\uDE80"}`,
+		`{"reply":"\uD83D\u0041"}`,
+	}
+
+	for _, input := range cases {
+		extractor := &replyJSONStreamExtractor{}
+		if _, err := extractor.Feed(input); err == nil {
+			t.Fatalf("expected invalid surrogate error for %s", input)
+		} else if !strings.Contains(err.Error(), "Unicode 代理项") {
+			t.Fatalf("expected surrogate error, got %v", err)
+		}
+	}
+}
+
 func countAssistantTestMessagesByRole(messages []*schema.Message, role schema.RoleType) int {
 	count := 0
 	for _, message := range messages {

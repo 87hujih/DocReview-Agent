@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/postgres"
@@ -420,10 +421,11 @@ func (s *responseChunkStream) Result() (*ChatCompletionResult, error) {
 }
 
 type replyJSONStreamExtractor struct {
-	keyBuffer     strings.Builder
-	replyBuffer   strings.Builder
-	state         replyJSONStreamState
-	unicodeBuffer strings.Builder
+	keyBuffer            strings.Builder
+	replyBuffer          strings.Builder
+	state                replyJSONStreamState
+	unicodeBuffer        strings.Builder
+	pendingHighSurrogate rune
 }
 
 type replyJSONStreamState int
@@ -437,6 +439,9 @@ const (
 	replyJSONStreamStateInReply
 	replyJSONStreamStateInReplyEscape
 	replyJSONStreamStateInReplyUnicode
+	replyJSONStreamStateInReplyUnicodeLowEscape
+	replyJSONStreamStateInReplyUnicodeLowMarker
+	replyJSONStreamStateInReplyUnicodeLow
 	replyJSONStreamStateDone
 )
 
@@ -494,8 +499,7 @@ func (e *replyJSONStreamExtractor) Feed(chunk string) (string, error) {
 			case '"':
 				e.state = replyJSONStreamStateDone
 			default:
-				output.WriteRune(r)
-				e.replyBuffer.WriteRune(r)
+				e.writeReplyRune(&output, r)
 			}
 		case replyJSONStreamStateInReplyEscape:
 			if r == 'u' {
@@ -508,8 +512,7 @@ func (e *replyJSONStreamExtractor) Feed(chunk string) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			output.WriteRune(decoded)
-			e.replyBuffer.WriteRune(decoded)
+			e.writeReplyRune(&output, decoded)
 			e.state = replyJSONStreamStateInReply
 		case replyJSONStreamStateInReplyUnicode:
 			if !isHexDigit(r) {
@@ -521,14 +524,55 @@ func (e *replyJSONStreamExtractor) Feed(chunk string) (string, error) {
 				continue
 			}
 
-			value, err := strconv.ParseInt(e.unicodeBuffer.String(), 16, 32)
+			decoded, err := parseJSONUnicodeEscape(e.unicodeBuffer.String())
 			if err != nil {
-				return "", fmt.Errorf("解析助手流式结果失败：%w", err)
+				return "", err
 			}
 
-			decoded := rune(value)
-			output.WriteRune(decoded)
-			e.replyBuffer.WriteRune(decoded)
+			switch {
+			case isHighSurrogate(decoded):
+				e.pendingHighSurrogate = decoded
+				e.unicodeBuffer.Reset()
+				e.state = replyJSONStreamStateInReplyUnicodeLowEscape
+			case isLowSurrogate(decoded):
+				return "", fmt.Errorf("解析助手流式结果失败：非法 Unicode 代理项组合")
+			default:
+				e.writeReplyRune(&output, decoded)
+				e.state = replyJSONStreamStateInReply
+			}
+		case replyJSONStreamStateInReplyUnicodeLowEscape:
+			if r != '\\' {
+				return "", fmt.Errorf("解析助手流式结果失败：非法 Unicode 代理项组合")
+			}
+			e.state = replyJSONStreamStateInReplyUnicodeLowMarker
+		case replyJSONStreamStateInReplyUnicodeLowMarker:
+			if r != 'u' {
+				return "", fmt.Errorf("解析助手流式结果失败：非法 Unicode 代理项组合")
+			}
+			e.unicodeBuffer.Reset()
+			e.state = replyJSONStreamStateInReplyUnicodeLow
+		case replyJSONStreamStateInReplyUnicodeLow:
+			if !isHexDigit(r) {
+				return "", fmt.Errorf("解析助手流式结果失败：非法 unicode 转义 %q", string(r))
+			}
+
+			e.unicodeBuffer.WriteRune(r)
+			if e.unicodeBuffer.Len() < 4 {
+				continue
+			}
+
+			low, err := parseJSONUnicodeEscape(e.unicodeBuffer.String())
+			if err != nil {
+				return "", err
+			}
+			if !isLowSurrogate(low) {
+				return "", fmt.Errorf("解析助手流式结果失败：非法 Unicode 代理项组合")
+			}
+
+			combined := utf16.DecodeRune(e.pendingHighSurrogate, low)
+			e.pendingHighSurrogate = 0
+			e.unicodeBuffer.Reset()
+			e.writeReplyRune(&output, combined)
 			e.state = replyJSONStreamStateInReply
 		}
 	}
@@ -538,6 +582,28 @@ func (e *replyJSONStreamExtractor) Feed(chunk string) (string, error) {
 
 func (e *replyJSONStreamExtractor) Text() string {
 	return e.replyBuffer.String()
+}
+
+func (e *replyJSONStreamExtractor) writeReplyRune(output *strings.Builder, r rune) {
+	output.WriteRune(r)
+	e.replyBuffer.WriteRune(r)
+}
+
+func parseJSONUnicodeEscape(buffer string) (rune, error) {
+	value, err := strconv.ParseInt(buffer, 16, 32)
+	if err != nil {
+		return 0, fmt.Errorf("解析助手流式结果失败：%w", err)
+	}
+
+	return rune(value), nil
+}
+
+func isHighSurrogate(r rune) bool {
+	return r >= 0xD800 && r <= 0xDBFF
+}
+
+func isLowSurrogate(r rune) bool {
+	return r >= 0xDC00 && r <= 0xDFFF
 }
 
 func decodeJSONStringEscape(r rune) (rune, error) {
