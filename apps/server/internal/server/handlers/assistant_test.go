@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"agent_project/apps/server/internal/assistant"
+	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/storage/postgres"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
+	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
@@ -470,52 +472,86 @@ func TestUploadAssistantFileHandler(t *testing.T) {
 	}
 }
 
-func TestUploadAssistantFileHandlerRejectsUnsupportedExtension(t *testing.T) {
+func TestUploadAssistantFileHandlerRejectsTikaDocumentInTextMode(t *testing.T) {
 	var uploadCalled bool
-
-	handler := NewAssistantHandler(fakeAssistantService{
+	policy := mustDocumentParser(t, documentparser.Options{Mode: documentparser.ModeText})
+	handler := NewAssistantHandlerWithUploadLimitAndPolicy(fakeAssistantService{
 		uploadFileResult: &assistant.UploadFileResult{},
 		uploadFileHook: func(context.Context, string, string, []byte) {
 			uploadCalled = true
 		},
-	})
+	}, defaultAssistantUploadMaxBytes, policy)
 
 	engine := server.New()
 	engine.POST("/api/assistant/sessions/:id/files", handler.UploadFile)
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	fileHeader := textproto.MIMEHeader{}
-	fileHeader.Set("Content-Disposition", `form-data; name="file"; filename="资料包.zip"`)
-	fileHeader.Set("Content-Type", "application/zip")
-	part, err := writer.CreatePart(fileHeader)
-	if err != nil {
-		t.Fatalf("create multipart part: %v", err)
-	}
-	if _, err := part.Write([]byte("zip-binary")); err != nil {
-		t.Fatalf("write multipart body: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close multipart writer: %v", err)
-	}
-
-	response := ut.PerformRequest(
-		engine.Engine,
-		"POST",
-		"/api/assistant/sessions/session-1/files",
-		&ut.Body{
-			Body: body,
-			Len:  body.Len(),
-		},
-		ut.Header{Key: "Content-Type", Value: writer.FormDataContentType()},
-	).Result()
+	response := performUploadRequest(t, engine, "合同.pdf", "application/pdf", []byte("pdf-binary"))
 
 	if response.StatusCode() != consts.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
 	}
-
 	if uploadCalled {
-		t.Fatal("expected unsupported file to be rejected before service upload")
+		t.Fatal("expected pdf to be rejected before service upload in text mode")
+	}
+	if !strings.Contains(string(response.Body()), "Tika") {
+		t.Fatalf("expected response to mention Tika, got %s", string(response.Body()))
+	}
+}
+
+func TestUploadAssistantFileHandlerAllowsDocumentInTikaMode(t *testing.T) {
+	var uploadedFileName string
+	policy := mustDocumentParser(t, documentparser.Options{
+		Mode:    documentparser.ModeTika,
+		TikaURL: "http://127.0.0.1:9998",
+	})
+	handler := NewAssistantHandlerWithUploadLimitAndPolicy(fakeAssistantService{
+		uploadFileResult: &assistant.UploadFileResult{Session: postgres.AssistantSession{ID: "session-1"}},
+		uploadFileHook: func(_ context.Context, _ string, fileName string, _ []byte) {
+			uploadedFileName = fileName
+		},
+	}, defaultAssistantUploadMaxBytes, policy)
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/files", handler.UploadFile)
+	response := performUploadRequest(t, engine, "合同.pdf", "application/pdf", []byte("pdf-binary"))
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", consts.StatusOK, response.StatusCode(), string(response.Body()))
+	}
+	if uploadedFileName != "合同.pdf" {
+		t.Fatalf("expected service upload to receive file name, got %q", uploadedFileName)
+	}
+}
+
+func TestUploadAssistantFileHandlerRejectsUnsupportedExtension(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options documentparser.Options
+	}{
+		{name: "text", options: documentparser.Options{Mode: documentparser.ModeText}},
+		{name: "tika", options: documentparser.Options{Mode: documentparser.ModeTika, TikaURL: "http://127.0.0.1:9998"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var uploadCalled bool
+
+			handler := NewAssistantHandlerWithUploadLimitAndPolicy(fakeAssistantService{
+				uploadFileResult: &assistant.UploadFileResult{},
+				uploadFileHook: func(context.Context, string, string, []byte) {
+					uploadCalled = true
+				},
+			}, defaultAssistantUploadMaxBytes, mustDocumentParser(t, tc.options))
+
+			engine := server.New()
+			engine.POST("/api/assistant/sessions/:id/files", handler.UploadFile)
+			response := performUploadRequest(t, engine, "资料包.zip", "application/zip", []byte("zip-binary"))
+
+			if response.StatusCode() != consts.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+			}
+
+			if uploadCalled {
+				t.Fatal("expected unsupported file to be rejected before service upload")
+			}
+		})
 	}
 }
 
@@ -675,9 +711,9 @@ func (f fakeAssistantService) AppendMessageStream(_ context.Context, _ string, _
 	return f.appendMessageStreamErr
 }
 
-func (f fakeAssistantService) UploadFile(context.Context, string, string, []byte) (*assistant.UploadFileResult, error) {
+func (f fakeAssistantService) UploadFile(ctx context.Context, sessionID string, fileName string, content []byte) (*assistant.UploadFileResult, error) {
 	if f.uploadFileHook != nil {
-		f.uploadFileHook(context.Background(), "", "", nil)
+		f.uploadFileHook(ctx, sessionID, fileName, content)
 	}
 	return f.uploadFileResult, f.uploadFileErr
 }
@@ -703,6 +739,48 @@ func mustMarshalHandlerJSON(t *testing.T, value any) []byte {
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+func mustDocumentParser(t *testing.T, options documentparser.Options) documentparser.Parser {
+	t.Helper()
+
+	parser, err := documentparser.New(options)
+	if err != nil {
+		t.Fatalf("new document parser: %v", err)
+	}
+
+	return parser
+}
+
+func performUploadRequest(t *testing.T, engine *server.Hertz, fileName string, contentType string, content []byte) *protocol.Response {
+	t.Helper()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	fileHeader := textproto.MIMEHeader{}
+	fileHeader.Set("Content-Disposition", `form-data; name="file"; filename="`+fileName+`"`)
+	fileHeader.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(fileHeader)
+	if err != nil {
+		t.Fatalf("create multipart part: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write multipart body: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	return ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/session-1/files",
+		&ut.Body{
+			Body: body,
+			Len:  body.Len(),
+		},
+		ut.Header{Key: "Content-Type", Value: writer.FormDataContentType()},
+	).Result()
 }
 
 type parsedSSEEvent struct {

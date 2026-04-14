@@ -28,12 +28,19 @@ type assistantService interface {
 	DeleteSession(ctx context.Context, sessionID string) (bool, error)
 }
 
+type assistantUploadPolicy interface {
+	SupportsFileName(fileName string) bool
+	SupportedExtensions() []string
+	UnsupportedFileMessage(fileName string) string
+}
+
 const defaultAssistantUploadMaxBytes int64 = 20 * 1024 * 1024
 
 // AssistantHandler 暴露助手会话列表、消息、文件和任务确认接口。
 type AssistantHandler struct {
 	service        assistantService
 	uploadMaxBytes int64
+	uploadPolicy   assistantUploadPolicy
 }
 
 type assistantMessageRequest struct {
@@ -118,14 +125,47 @@ func NewAssistantHandler(service assistantService) *AssistantHandler {
 
 // NewAssistantHandlerWithUploadLimit 创建带上传大小限制的助手 HTTP handler。
 func NewAssistantHandlerWithUploadLimit(service assistantService, maxBytes int64) *AssistantHandler {
+	return NewAssistantHandlerWithUploadLimitAndPolicy(service, maxBytes, nil)
+}
+
+// NewAssistantHandlerWithUploadLimitAndPolicy 创建带上传大小限制和格式策略的助手 HTTP handler。
+func NewAssistantHandlerWithUploadLimitAndPolicy(service assistantService, maxBytes int64, policy assistantUploadPolicy) *AssistantHandler {
 	if maxBytes <= 0 {
 		maxBytes = defaultAssistantUploadMaxBytes
+	}
+	if policy == nil {
+		policy = defaultAssistantUploadPolicy()
 	}
 
 	return &AssistantHandler{
 		service:        service,
 		uploadMaxBytes: maxBytes,
+		uploadPolicy:   policy,
 	}
+}
+
+func defaultAssistantUploadPolicy() assistantUploadPolicy {
+	policy, err := documentparser.New(documentparser.Options{Mode: documentparser.ModeText})
+	if err != nil {
+		return textOnlyAssistantUploadPolicy{}
+	}
+
+	return policy
+}
+
+type textOnlyAssistantUploadPolicy struct{}
+
+func (textOnlyAssistantUploadPolicy) SupportsFileName(fileName string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(fileName))
+	return strings.HasSuffix(normalized, ".md") || strings.HasSuffix(normalized, ".txt")
+}
+
+func (textOnlyAssistantUploadPolicy) SupportedExtensions() []string {
+	return []string{".md", ".txt"}
+}
+
+func (textOnlyAssistantUploadPolicy) UnsupportedFileMessage(string) string {
+	return "当前服务仅支持 md、txt；pdf/docx 等文件需要启用 Tika 解析。"
 }
 
 // ListSessions 返回左侧历史栏需要的会话摘要。
@@ -246,8 +286,8 @@ func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.Reque
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "必须上传文件"})
 		return
 	}
-	if !documentparser.IsSupportedFileName(file.Filename) {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "当前仅支持 md、txt、doc、docx、pdf、rtf、odt 文件"})
+	if !h.uploadPolicy.SupportsFileName(file.Filename) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": h.uploadPolicy.UnsupportedFileMessage(file.Filename)})
 		return
 	}
 

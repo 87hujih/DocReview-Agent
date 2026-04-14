@@ -136,12 +136,6 @@ func (p *documentParser) UnsupportedFileMessage(fileName string) string {
 	return fmt.Sprintf("不支持的文件格式：%s。当前支持：%s。", extension, formatExtensions(p.SupportedExtensions()))
 }
 
-// IsSupportedFileName 返回当前首期支持的文件名是否可被解析链路接受。
-func IsSupportedFileName(fileName string) bool {
-	extension := normalizeExtension(fileName)
-	return isTextExtension(extension) || isTikaExtension(extension)
-}
-
 func normalizeExtension(fileName string) string {
 	extension := strings.ToLower(strings.TrimSpace(filepath.Ext(fileName)))
 	if extension == "" {
