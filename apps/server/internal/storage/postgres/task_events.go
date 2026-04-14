@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -102,7 +101,7 @@ func (r *TaskEventRepo) ListByRunID(ctx context.Context, runID string) ([]TaskEv
 }
 
 func collectTaskEvents(rows pgx.Rows) ([]TaskEvent, error) {
-	var events []TaskEvent
+	events := make([]TaskEvent, 0)
 	for rows.Next() {
 		event, err := scanTaskEvent(rows)
 		if err != nil {
@@ -131,10 +130,6 @@ func scanTaskEvent(row pgx.Row) (TaskEvent, error) {
 		&event.CreatedAt,
 	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return TaskEvent{}, err
-		}
-
 		return TaskEvent{}, err
 	}
 

@@ -3,6 +3,7 @@ package job
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 
 	executoragent "agent_project/apps/server/internal/agent/executor"
@@ -15,7 +16,7 @@ var errTaskNotFound = errors.New("任务不存在")
 
 // Worker 负责消费执行作业并推动任务完成。
 type Worker struct {
-	jobCh    chan postgres.ExecutionJob
+	jobCh    chan struct{}
 	jobRepo  *postgres.JobRepo
 	executor *executoragent.Executor
 	taskRepo *postgres.TaskRepo
@@ -35,7 +36,7 @@ func New(
 	}
 
 	return &Worker{
-		jobCh:    make(chan postgres.ExecutionJob, bufSize),
+		jobCh:    make(chan struct{}, bufSize),
 		jobRepo:  jobRepo,
 		executor: executor,
 		taskRepo: taskRepo,
@@ -44,7 +45,7 @@ func New(
 }
 
 // JobCh 返回用于投递执行信号的发送端。
-func (w *Worker) JobCh() chan<- postgres.ExecutionJob {
+func (w *Worker) JobCh() chan<- struct{} {
 	return w.jobCh
 }
 
@@ -105,7 +106,20 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 	}
 
 	if err := w.jobRepo.UpdateStatus(ctx, job.ID, "done", nil, &newVersionID); err != nil {
-		log.Printf("错误：更新已完成作业状态失败：job=%s err=%v", job.ID, err)
+		// 执行成功但落库失败，避免 job 永久卡在 running 状态
+		errorMessage := fmt.Sprintf("更新作业完成状态失败（new_version_id=%s）：%v", newVersionID, err)
+		log.Printf("错误：%s job=%s", errorMessage, job.ID)
+		if updateErr := w.jobRepo.UpdateStatus(ctx, job.ID, "failed", &errorMessage, nil); updateErr != nil {
+			log.Printf("错误：回退作业到 failed 状态失败：job=%s err=%v", job.ID, updateErr)
+		}
+		if updateErr := w.transitionTask(ctx, job.TaskID, models.StatusFailed, &errorMessage); updateErr != nil {
+			log.Printf("错误：将任务切换为失败状态时出错：task=%s err=%v", job.TaskID, updateErr)
+		}
+		w.recordJobEvent(ctx, job, "error", "job.failed", "执行作业落库失败", map[string]any{
+			"approval_id":    job.ApprovalID,
+			"new_version_id": newVersionID,
+			"error_message":  errorMessage,
+		})
 		return
 	}
 	w.recordJobEvent(ctx, job, "info", "job.completed", "执行作业已完成", map[string]any{
@@ -126,11 +140,37 @@ func (w *Worker) transitionTask(ctx context.Context, taskID string, to string, e
 		return errTaskNotFound
 	}
 
+	from := task.Status
 	if err := models.Transition(task.Status, to); err != nil {
 		return err
 	}
 
-	return w.taskRepo.UpdateStatus(ctx, taskID, to, errorMessage)
+	if err := w.taskRepo.UpdateStatus(ctx, taskID, to, errorMessage); err != nil {
+		return err
+	}
+
+	// 补写状态变更事件，与 Orchestrator 保持一致
+	if w.eventSvc != nil {
+		payload := map[string]any{
+			"from_status": from,
+			"to_status":   to,
+		}
+		if errorMessage != nil {
+			payload["error_message"] = *errorMessage
+		}
+		if _, err := w.eventSvc.Record(ctx, taskevents.RecordInput{
+			TaskID:    taskID,
+			Source:    "job_worker",
+			Level:     "info",
+			EventType: "task.status_changed",
+			Message:   "任务状态已更新",
+			Payload:   payload,
+		}); err != nil {
+			log.Printf("警告：记录任务事件失败：task=%s event=task.status_changed err=%v", taskID, err)
+		}
+	}
+
+	return nil
 }
 
 func (w *Worker) recordJobEvent(

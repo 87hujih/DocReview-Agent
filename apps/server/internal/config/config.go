@@ -24,6 +24,14 @@ const (
 	defaultUploadMaxBytes     = 20 * 1024 * 1024
 	defaultLogLevel           = "info"
 	defaultLogFormat          = "json"
+
+	defaultLLMTimeoutMS        = 90000
+	defaultLLMRetryMax         = 2
+	defaultLLMRetryBackoffMS   = 1000
+	defaultTaskStepTimeoutMS   = 120000
+	defaultTaskContextMaxRunes = 24000
+	defaultWorkflowWorkers     = 2
+	defaultWorkflowQueueSize   = 100
 )
 
 // Config 保存从环境变量、.env 和默认 YAML 配置解析出的运行时参数。
@@ -46,6 +54,14 @@ type Config struct {
 	LogLevel     string
 	LogFormat    string
 	LogAddSource bool
+
+	LLMTimeoutMS        int
+	LLMRetryMax         int
+	LLMRetryBackoffMS   int
+	TaskStepTimeoutMS   int
+	TaskContextMaxRunes int
+	WorkflowWorkers     int
+	WorkflowQueueSize   int
 }
 
 // fileConfig 对应默认 YAML 配置文件的顶层结构。
@@ -106,6 +122,14 @@ func Load() Config {
 		LogLevel:           resolveString("LOG_LEVEL", dotenvValues, defaults.Log.Level, defaultLogLevel),
 		LogFormat:          resolveString("LOG_FORMAT", dotenvValues, defaults.Log.Format, defaultLogFormat),
 		LogAddSource:       resolveBool("LOG_ADD_SOURCE", dotenvValues, defaults.Log.AddSource, false),
+
+		LLMTimeoutMS:        resolveInt("LLM_TIMEOUT_MS", dotenvValues, 0, defaultLLMTimeoutMS),
+		LLMRetryMax:         resolveInt("LLM_RETRY_MAX", dotenvValues, 0, defaultLLMRetryMax),
+		LLMRetryBackoffMS:   resolveInt("LLM_RETRY_BACKOFF_MS", dotenvValues, 0, defaultLLMRetryBackoffMS),
+		TaskStepTimeoutMS:   resolveInt("TASK_STEP_TIMEOUT_MS", dotenvValues, 0, defaultTaskStepTimeoutMS),
+		TaskContextMaxRunes: resolveInt("TASK_CONTEXT_MAX_RUNES", dotenvValues, 0, defaultTaskContextMaxRunes),
+		WorkflowWorkers:     resolveInt("WORKFLOW_WORKERS", dotenvValues, 0, defaultWorkflowWorkers),
+		WorkflowQueueSize:   resolveInt("WORKFLOW_QUEUE_SIZE", dotenvValues, 0, defaultWorkflowQueueSize),
 	}
 }
 

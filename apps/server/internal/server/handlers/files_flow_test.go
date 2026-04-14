@@ -119,7 +119,7 @@ func TestUploadApproveExecuteAndExportFlow(t *testing.T) {
 	defer cancel()
 	worker.Start(workerCtx, 1)
 
-	approvalService := approval.NewService(approvalRepo, jobRepo, taskRepo, worker.JobCh(), taskevents.New(eventRepo))
+	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), taskevents.New(eventRepo))
 	if _, err := approvalService.Approve(ctx, approvalRecord.ID); err != nil {
 		t.Fatalf("approve task: %v", err)
 	}

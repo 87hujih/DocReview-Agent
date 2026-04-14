@@ -24,7 +24,7 @@ var (
 type Service struct {
 	taskRepo     *postgres.TaskRepo
 	resourceRepo *postgres.ResourceRepo
-	orchestrator *workflow.Orchestrator
+	runner       *workflow.WorkflowRunner
 	eventService *taskevents.Service
 }
 
@@ -32,13 +32,13 @@ type Service struct {
 func New(
 	taskRepo *postgres.TaskRepo,
 	resourceRepo *postgres.ResourceRepo,
-	orch *workflow.Orchestrator,
+	runner *workflow.WorkflowRunner,
 	eventService *taskevents.Service,
 ) *Service {
 	return &Service{
 		taskRepo:     taskRepo,
 		resourceRepo: resourceRepo,
-		orchestrator: orch,
+		runner:       runner,
 		eventService: eventService,
 	}
 }
@@ -83,8 +83,22 @@ func (s *Service) CreateTask(ctx context.Context, resourceID string, instruction
 		},
 	})
 
-	if s.orchestrator != nil {
-		go s.orchestrator.Orchestrate(context.Background(), task)
+	if s.runner != nil {
+		if err := s.runner.Enqueue(task.ID); err != nil {
+			if errors.Is(err, workflow.ErrQueueFull) {
+				errorMsg := "任务队列已满，无法调度执行"
+				_ = s.taskRepo.UpdateStatus(ctx, task.ID, "failed", &errorMsg)
+				s.recordEvent(ctx, taskevents.RecordInput{
+					TaskID:    task.ID,
+					Source:    "task_service",
+					Level:     "error",
+					EventType: "task.failed",
+					Message:   errorMsg,
+					Payload:   map[string]any{"reason": "queue_full"},
+				})
+			}
+			return nil, err
+		}
 	}
 
 	return task, nil

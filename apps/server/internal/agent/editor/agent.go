@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"agent_project/apps/server/internal/agent/llmclient"
 	"agent_project/apps/server/internal/knowledge/citation"
 
 	openaiacl "github.com/cloudwego/eino-ext/libs/acl/openai"
@@ -18,6 +20,7 @@ const systemPrompt = `你是一个文档修订编辑代理。你必须只输出 
 
 输出 JSON 结构：
 {
+  "no_change": false,
   "sections": [
     {
       "section_title": "章节标题",
@@ -30,18 +33,21 @@ const systemPrompt = `你是一个文档修订编辑代理。你必须只输出 
 }
 
 要求：
-1. 只返回需要修改的章节，未发现问题时返回 {"sections": []}。
-2. 每个 section 的 citation_ids 至少包含 1 个引用 ID。
-3. revised 必须是可直接替换到文档中的文本。
-4. reason 解释修改原因，不要做程序化校验说明。`
+1. 若文档无需任何修改，返回 {"no_change": true, "sections": []}。
+2. 否则只返回需要修改的章节，no_change 设为 false。
+3. 每个 section 的 citation_ids 至少包含 1 个引用 ID。
+4. revised 必须是可直接替换到文档中的文本，且与 original 不同。
+5. reason 解释修改原因，不要做程序化校验说明。`
 
-// Agent 封装 Editor 所需的 LLM 客户端。
+// Agent 封装 Editor 所需的 LLM 客户端和重试配置。
 type Agent struct {
-	client *openaiacl.Client
+	client   *openaiacl.Client
+	retryCfg llmclient.Config
 }
 
-// DiffPreview 是 Editor 输出的结构化预览。
+// DiffPreview 是编辑代理输出的结构化预览。
 type DiffPreview struct {
+	NoChange bool          `json:"no_change"`
 	Sections []DiffSection `json:"sections"`
 }
 
@@ -54,14 +60,18 @@ type DiffSection struct {
 	CitationIDs  []string `json:"citation_ids"`
 }
 
-// New 构造 Editor Agent。
-func New(ctx context.Context, baseURL string, apiKey string, model string) (*Agent, error) {
+// New 构造 Editor Agent。cfg 控制单次 HTTP 超时和重试行为。
+func New(ctx context.Context, baseURL string, apiKey string, model string, cfg llmclient.Config) (*Agent, error) {
+	timeoutMS := cfg.TimeoutMS
+	if timeoutMS <= 0 {
+		timeoutMS = 90000
+	}
 	temperature := float32(0)
 	config := &openaiacl.Config{
 		APIKey:      apiKey,
 		Model:       model,
 		Temperature: &temperature,
-		HTTPClient:  &http.Client{Timeout: 30 * time.Second},
+		HTTPClient:  &http.Client{Timeout: time.Duration(timeoutMS) * time.Millisecond},
 		ResponseFormat: &openaiacl.ChatCompletionResponseFormat{
 			Type: openaiacl.ChatCompletionResponseFormatTypeJSONObject,
 		},
@@ -75,7 +85,7 @@ func New(ctx context.Context, baseURL string, apiKey string, model string) (*Age
 		return nil, err
 	}
 
-	return &Agent{client: client}, nil
+	return &Agent{client: client, retryCfg: cfg}, nil
 }
 
 // Edit 输出结构化 diff preview。
@@ -85,7 +95,7 @@ func (a *Agent) Edit(ctx context.Context, resourceContent string, reviewSummary 
 		return nil, err
 	}
 
-	response, err := a.client.Generate(ctx, []*schema.Message{
+	messages := []*schema.Message{
 		{Role: schema.System, Content: systemPrompt},
 		{
 			Role: schema.User,
@@ -96,6 +106,15 @@ func (a *Agent) Edit(ctx context.Context, resourceContent string, reviewSummary 
 				string(citationsJSON),
 			),
 		},
+	}
+
+	var response *schema.Message
+	err = llmclient.CallWithRetry(ctx, a.retryCfg, func() error {
+		var genErr error
+		response, genErr = a.client.Generate(ctx, messages)
+		return genErr
+	}, func(attempt int, cause error, backoff time.Duration) {
+		log.Printf("editor: 第 %d 次重试，原因：%v，退避：%v", attempt, cause, backoff)
 	})
 	if err != nil {
 		return nil, err

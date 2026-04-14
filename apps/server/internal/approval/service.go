@@ -6,6 +6,9 @@ import (
 	"log"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
@@ -26,22 +29,25 @@ var (
 
 // Service 负责审批通过/拒绝时的业务协调。
 type Service struct {
+	pool         *pgxpool.Pool
 	approvalRepo *postgres.ApprovalRepo
 	jobRepo      *postgres.JobRepo
 	taskRepo     *postgres.TaskRepo
-	jobCh        chan<- postgres.ExecutionJob
+	jobCh        chan<- struct{}
 	eventService *taskevents.Service
 }
 
 // NewService 构造审批服务。
 func NewService(
+	pool *pgxpool.Pool,
 	approvalRepo *postgres.ApprovalRepo,
 	jobRepo *postgres.JobRepo,
 	taskRepo *postgres.TaskRepo,
-	jobCh chan<- postgres.ExecutionJob,
+	jobCh chan<- struct{},
 	eventService *taskevents.Service,
 ) *Service {
 	return &Service{
+		pool:         pool,
 		approvalRepo: approvalRepo,
 		jobRepo:      jobRepo,
 		taskRepo:     taskRepo,
@@ -88,19 +94,30 @@ func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.App
 		return nil, err
 	}
 
-	if err := s.approvalRepo.UpdateStatus(ctx, approvalID, "approved", nil); err != nil {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	if err := postgres.UpdateApprovalStatusTx(ctx, tx, approvalID, "approved", nil); err != nil {
 		return nil, err
 	}
 
-	job, err := s.jobRepo.Create(ctx, approvalRecord.TaskID, approvalID)
+	job, err := postgres.CreateJobTx(ctx, tx, approvalRecord.TaskID, approvalID)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.taskRepo.UpdateStatus(ctx, task.ID, models.StatusExecuting, nil); err != nil {
+	if err := postgres.UpdateTaskStatusTx(ctx, tx, task.ID, models.StatusExecuting, nil); err != nil {
 		return nil, err
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	// 事务提交后写事件，失败只记日志
 	s.recordEvent(ctx, taskevents.RecordInput{
 		TaskID:    task.ID,
 		RunID:     stringPointer(job.ID),
@@ -128,7 +145,7 @@ func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.App
 		},
 	})
 
-	s.enqueueJob(*job)
+	s.enqueueJob()
 
 	return s.approvalRepo.GetByID(ctx, approvalID)
 }
@@ -145,14 +162,25 @@ func (s *Service) Reject(ctx context.Context, approvalID string, reason string) 
 		return nil, err
 	}
 
-	if err := s.approvalRepo.UpdateStatus(ctx, approvalID, "rejected", &reason); err != nil {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	if err := postgres.UpdateApprovalStatusTx(ctx, tx, approvalID, "rejected", &reason); err != nil {
 		return nil, err
 	}
 
-	if err := s.taskRepo.UpdateStatus(ctx, task.ID, models.StatusFailed, &reason); err != nil {
+	if err := postgres.UpdateTaskStatusTx(ctx, tx, task.ID, models.StatusFailed, &reason); err != nil {
 		return nil, err
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	// 事务提交后写事件，失败只记日志
 	s.recordEvent(ctx, taskevents.RecordInput{
 		TaskID:    task.ID,
 		Source:    "approval_service",
@@ -196,15 +224,15 @@ func (s *Service) loadPendingApprovalTask(ctx context.Context, approvalID string
 	return approvalRecord, task, nil
 }
 
-func (s *Service) enqueueJob(job postgres.ExecutionJob) {
+func (s *Service) enqueueJob() {
 	if s.jobCh == nil {
 		return
 	}
 
 	select {
-	case s.jobCh <- job:
+	case s.jobCh <- struct{}{}:
 	default:
-		log.Printf("警告：执行任务通道已满，job=%s", job.ID)
+		log.Printf("警告：执行任务通道已满，信号已丢弃，pending job 将在下次触发时被领取")
 	}
 }
 

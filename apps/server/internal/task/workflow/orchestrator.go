@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"agent_project/apps/server/internal/agent/editor"
 	"agent_project/apps/server/internal/agent/planner"
@@ -19,14 +20,15 @@ const retrieverLimit = 5
 
 // Orchestrator 负责驱动任务的顶层业务编排。
 type Orchestrator struct {
-	taskRepo      *postgres.TaskRepo
-	resourceRepo  *postgres.ResourceRepo
-	approvalRepo  *postgres.ApprovalRepo
-	plannerAgent  plannerRunner
-	reviewerAgent reviewerRunner
-	editorAgent   editorRunner
-	retrieverSvc  resourceSearcher
-	eventService  *taskevents.Service
+	taskRepo        *postgres.TaskRepo
+	resourceRepo    *postgres.ResourceRepo
+	approvalRepo    *postgres.ApprovalRepo
+	plannerAgent    plannerRunner
+	reviewerAgent   reviewerRunner
+	editorAgent     editorRunner
+	retrieverSvc    resourceSearcher
+	eventService    *taskevents.Service
+	contextMaxRunes int
 }
 
 type plannerRunner interface {
@@ -45,7 +47,7 @@ type resourceSearcher interface {
 	SearchByResource(ctx context.Context, resourceID string, query string, limit int) ([]citation.Citation, error)
 }
 
-// New 构造任务编排器。
+// New 构造任务编排器。contextMaxRunes 限制传给审阅和编辑代理的上下文字符数（≤0 使用 24000 默认值）。
 func New(
 	taskRepo *postgres.TaskRepo,
 	resourceRepo *postgres.ResourceRepo,
@@ -55,16 +57,18 @@ func New(
 	editorAgent editorRunner,
 	retrieverSvc resourceSearcher,
 	eventService *taskevents.Service,
+	contextMaxRunes int,
 ) *Orchestrator {
 	return &Orchestrator{
-		taskRepo:      taskRepo,
-		resourceRepo:  resourceRepo,
-		approvalRepo:  approvalRepo,
-		plannerAgent:  plannerAgent,
-		reviewerAgent: reviewerAgent,
-		editorAgent:   editorAgent,
-		retrieverSvc:  retrieverSvc,
-		eventService:  eventService,
+		taskRepo:        taskRepo,
+		resourceRepo:    resourceRepo,
+		approvalRepo:    approvalRepo,
+		plannerAgent:    plannerAgent,
+		reviewerAgent:   reviewerAgent,
+		editorAgent:     editorAgent,
+		retrieverSvc:    retrieverSvc,
+		eventService:    eventService,
+		contextMaxRunes: contextMaxRunes,
 	}
 }
 
@@ -113,6 +117,27 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		o.failTask(ctx, task, plannerStep, err)
 		return
 	}
+
+	// 2.1: 将 planner 输出落库为 planner_result artifact
+	plannerResultContent, err := json.Marshal(map[string]any{
+		"intent":         planResult.Intent,
+		"search_queries": planResult.SearchQueries,
+		"focus_sections": planResult.FocusSections,
+		"created_at":     time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		o.failTask(ctx, task, plannerStep, err)
+		return
+	}
+	plannerArtifact, err := o.taskRepo.AddArtifact(ctx, task.ID, "planner_result", plannerResultContent)
+	if err != nil {
+		o.failTask(ctx, task, plannerStep, err)
+		return
+	}
+	o.recordArtifactCreated(ctx, task, plannerArtifact, map[string]any{
+		"focus_section_count": len(planResult.FocusSections),
+	})
+
 	if err := o.taskRepo.UpdateStep(ctx, plannerStep.ID, "completed", nil); err != nil {
 		o.failTask(ctx, task, plannerStep, err)
 		return
@@ -169,6 +194,23 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		return
 	}
 
+	// 2.2/2.3: 构建聚焦上下文，传给 reviewer 和 editor
+	cb := ContextBuilder{}
+	agentCtx := cb.Build(version.Content, planResult.FocusSections, citations, o.contextMaxRunes)
+	o.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "orchestrator",
+		Level:     "info",
+		EventType: "context_summary",
+		Message:   "已构建聚焦上下文",
+		Payload: map[string]any{
+			"used_sections": agentCtx.UsedSections,
+			"total_runes":   len([]rune(agentCtx.Content)),
+			"trimmed_runes": agentCtx.TrimmedRunes,
+			"trim_reason":   agentCtx.TrimReason,
+		},
+	})
+
 	reviewerStep, err := o.taskRepo.AddStep(ctx, task.ID, models.StepReviewer)
 	if err != nil {
 		o.failTask(ctx, task, nil, err)
@@ -176,7 +218,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 	}
 	o.recordStepEvent(ctx, task, reviewerStep, "info", "step.started", "审阅步骤开始")
 
-	reviewSummary, err := o.reviewerAgent.Review(ctx, version.Content, citations, planResult.Intent)
+	reviewSummary, err := o.reviewerAgent.Review(ctx, agentCtx.Content, citations, planResult.Intent)
 	if err != nil {
 		o.failTask(ctx, task, reviewerStep, err)
 		return
@@ -212,11 +254,34 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 	}
 	o.recordStepEvent(ctx, task, editorStep, "info", "step.started", "编辑步骤开始")
 
-	diffPreview, err := o.editorAgent.Edit(ctx, version.Content, reviewSummary, citations)
+	diffPreview, err := o.editorAgent.Edit(ctx, agentCtx.Content, reviewSummary, citations)
 	if err != nil {
 		o.failTask(ctx, task, editorStep, err)
 		return
 	}
+
+	// 2.5: no-change 分支：任务直接完成，不创建 approval
+	if diffPreview.NoChange {
+		noChangeSummary, _ := json.Marshal(map[string]string{"reason": "编辑代理判断文档无需修改"})
+		noChangeArtifact, err := o.taskRepo.AddArtifact(ctx, task.ID, "no_change_summary", noChangeSummary)
+		if err != nil {
+			o.failTask(ctx, task, editorStep, err)
+			return
+		}
+		o.recordArtifactCreated(ctx, task, noChangeArtifact, nil)
+		if err := o.taskRepo.UpdateStep(ctx, editorStep.ID, "completed", nil); err != nil {
+			o.failTask(ctx, task, editorStep, err)
+			return
+		}
+		editorStep.Status = "completed"
+		o.recordStepEvent(ctx, task, editorStep, "info", "step.completed", "编辑步骤完成（无需修改）")
+		if err := o.transitionTask(ctx, task, models.StatusCompleted, nil); err != nil {
+			o.failTask(ctx, task, nil, err)
+		}
+		return
+	}
+
+	// 2.4: 严格校验 diff 内容
 	if err := validateDiffPreview(diffPreview, citations); err != nil {
 		o.failTask(ctx, task, editorStep, err)
 		return
@@ -242,11 +307,25 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 	editorStep.Status = "completed"
 	o.recordStepEvent(ctx, task, editorStep, "info", "step.completed", "编辑步骤完成")
 
-	approvalRecord, err := o.approvalRepo.Create(ctx, task.ID)
+	approvalRecord, err := o.approvalRepo.CreateForTaskAwaitingApproval(ctx, task.ID)
 	if err != nil {
 		o.failTask(ctx, task, nil, err)
 		return
 	}
+	// 事务已在 CreateForTaskAwaitingApproval 中原子更新 DB，同步内存状态
+	from := task.Status
+	task.Status = models.StatusAwaitingApproval
+	o.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "orchestrator",
+		Level:     "info",
+		EventType: "task.status_changed",
+		Message:   "任务状态已更新",
+		Payload: map[string]any{
+			"from_status": from,
+			"to_status":   models.StatusAwaitingApproval,
+		},
+	})
 	o.recordEvent(ctx, taskevents.RecordInput{
 		TaskID:    task.ID,
 		Source:    "orchestrator",
@@ -258,11 +337,6 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 			"status":      approvalRecord.Status,
 		},
 	})
-
-	if err := o.transitionTask(ctx, task, models.StatusAwaitingApproval, nil); err != nil {
-		o.failTask(ctx, task, nil, err)
-		return
-	}
 }
 
 func (o *Orchestrator) transitionTask(ctx context.Context, task *postgres.Task, to string, errorMessage *string) error {
@@ -426,9 +500,27 @@ func validatePlanResult(result *planner.PlanResult) error {
 	return nil
 }
 
+// validateDiffPreview 对 DiffPreview 做严格结构性校验。
+// no-change 预览（NoChange==true）直接通过，不校验 sections。
 func validateDiffPreview(preview *editor.DiffPreview, citations []citation.Citation) error {
 	if preview == nil {
 		return fmt.Errorf("编辑代理返回了空 diff 预览")
+	}
+
+	// no-change 分支不需要 sections，跳过校验
+	if preview.NoChange {
+		return nil
+	}
+
+	if len(preview.Sections) == 0 {
+		return fmt.Errorf("diff 预览未包含任何修改章节")
+	}
+
+	const maxSections = 50
+	const maxFieldRunes = 10000
+
+	if len(preview.Sections) > maxSections {
+		return fmt.Errorf("diff 预览章节数量超过上限 %d（实际 %d）", maxSections, len(preview.Sections))
 	}
 
 	knownCitationIDs := make(map[string]struct{}, len(citations))
@@ -436,14 +528,37 @@ func validateDiffPreview(preview *editor.DiffPreview, citations []citation.Citat
 		knownCitationIDs[item.CitationID] = struct{}{}
 	}
 
-	for index, section := range preview.Sections {
-		if len(section.CitationIDs) == 0 {
-			return fmt.Errorf("diff 预览第 %d 个章节的 citation_ids 为空", index)
+	for i, section := range preview.Sections {
+		if strings.TrimSpace(section.SectionTitle) == "" {
+			return fmt.Errorf("diff 预览第 %d 个章节的 section_title 为空", i)
 		}
-
+		if strings.TrimSpace(section.Original) == "" {
+			return fmt.Errorf("diff 预览第 %d 个章节的 original 为空", i)
+		}
+		if strings.TrimSpace(section.Revised) == "" {
+			return fmt.Errorf("diff 预览第 %d 个章节的 revised 为空", i)
+		}
+		if strings.TrimSpace(section.Reason) == "" {
+			return fmt.Errorf("diff 预览第 %d 个章节的 reason 为空", i)
+		}
+		if section.Original == section.Revised {
+			return fmt.Errorf("diff 预览第 %d 个章节的 original 与 revised 相同", i)
+		}
+		if len([]rune(section.SectionTitle)) > maxFieldRunes {
+			return fmt.Errorf("diff 预览第 %d 个章节的 section_title 超过长度上限", i)
+		}
+		if len([]rune(section.Original)) > maxFieldRunes {
+			return fmt.Errorf("diff 预览第 %d 个章节的 original 超过长度上限", i)
+		}
+		if len([]rune(section.Revised)) > maxFieldRunes {
+			return fmt.Errorf("diff 预览第 %d 个章节的 revised 超过长度上限", i)
+		}
+		if len(section.CitationIDs) == 0 {
+			return fmt.Errorf("diff 预览第 %d 个章节的 citation_ids 为空", i)
+		}
 		for _, citationID := range section.CitationIDs {
 			if _, ok := knownCitationIDs[citationID]; !ok {
-				return fmt.Errorf("diff 预览第 %d 个章节引用了未知 citation_id %s", index, citationID)
+				return fmt.Errorf("diff 预览第 %d 个章节引用了未知 citation_id %s", i, citationID)
 			}
 		}
 	}

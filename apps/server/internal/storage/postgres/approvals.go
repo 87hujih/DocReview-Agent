@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -264,4 +265,109 @@ func scanExecutionJob(row pgx.Row) (ExecutionJob, error) {
 	}
 
 	return job, nil
+}
+
+// UpdateApprovalStatusTx 在事务内更新审批状态。
+func UpdateApprovalStatusTx(ctx context.Context, tx pgx.Tx, id string, status string, rejectReason *string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE approvals
+		SET status = $2,
+		    reject_reason = $3,
+		    decided_at = now()
+		WHERE id = $1
+	`, id, status, rejectReason)
+	return err
+}
+
+// CreateJobTx 在事务内创建执行作业。
+func CreateJobTx(ctx context.Context, tx pgx.Tx, taskID string, approvalID string) (*ExecutionJob, error) {
+	job, err := scanExecutionJob(tx.QueryRow(ctx, `
+		INSERT INTO execution_jobs (task_id, approval_id)
+		VALUES ($1, $2)
+		RETURNING id, task_id, approval_id, status, error_message, new_version_id, started_at, completed_at, created_at
+	`, taskID, approvalID))
+	if err != nil {
+		return nil, err
+	}
+
+	return &job, nil
+}
+
+// UpdateTaskStatusTx 在事务内更新任务状态。
+func UpdateTaskStatusTx(ctx context.Context, tx pgx.Tx, id string, status string, errorMessage *string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE tasks
+		SET status = $2, error_message = $3, updated_at = now()
+		WHERE id = $1
+	`, id, status, errorMessage)
+	return err
+}
+
+// ListPending 返回所有 pending 状态的执行作业，按创建时间正序。
+func (r *JobRepo) ListPending(ctx context.Context) ([]ExecutionJob, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, task_id, approval_id, status, error_message, new_version_id, started_at, completed_at, created_at
+		FROM execution_jobs
+		WHERE status = 'pending'
+		ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	jobs := make([]ExecutionJob, 0)
+	for rows.Next() {
+		job, err := scanExecutionJob(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, rows.Err()
+}
+
+// CreateForTaskAwaitingApproval 在同一事务内原子地创建审批记录并将任务状态从
+// drafting 切换为 awaiting_approval。若任务当前状态不是 drafting，则返回错误并
+// 回滚，不创建审批记录。
+func (r *ApprovalRepo) CreateForTaskAwaitingApproval(ctx context.Context, taskID string) (*Approval, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var currentStatus string
+	if err := tx.QueryRow(ctx, `
+		SELECT status FROM tasks WHERE id = $1 FOR UPDATE
+	`, taskID).Scan(&currentStatus); err != nil {
+		return nil, fmt.Errorf("读取任务状态失败：%w", err)
+	}
+
+	if currentStatus != "drafting" {
+		return nil, fmt.Errorf("任务状态不是 drafting（当前：%s），无法创建审批记录", currentStatus)
+	}
+
+	approval, err := scanApproval(tx.QueryRow(ctx, `
+		INSERT INTO approvals (task_id)
+		VALUES ($1)
+		RETURNING id, task_id, status, reject_reason, decided_at, created_at
+	`, taskID))
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE tasks SET status = 'awaiting_approval', updated_at = now() WHERE id = $1
+	`, taskID); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return &approval, nil
 }

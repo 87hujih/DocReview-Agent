@@ -119,6 +119,11 @@ func (h *TaskHandler) Create(requestCtx context.Context, ctx *app.RequestContext
 		return
 	}
 
+	if !isValidUUID(request.ResourceID) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "resource_id 格式无效"})
+		return
+	}
+
 	task, err := h.taskService.CreateTask(requestCtx, request.ResourceID, request.Instruction)
 	if err != nil {
 		switch {
@@ -159,7 +164,12 @@ func (h *TaskHandler) List(requestCtx context.Context, ctx *app.RequestContext) 
 
 // GetByID 返回单个任务及其步骤。
 func (h *TaskHandler) GetByID(requestCtx context.Context, ctx *app.RequestContext) {
-	task, steps, err := h.taskService.GetTask(requestCtx, ctx.Param("id"))
+	id := ctx.Param("id")
+	if !isValidUUID(id) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "无效的任务 ID"})
+		return
+	}
+	task, steps, err := h.taskService.GetTask(requestCtx, id)
 	if err != nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务失败"})
 		return
@@ -182,7 +192,12 @@ func (h *TaskHandler) GetByID(requestCtx context.Context, ctx *app.RequestContex
 
 // GetArtifacts 返回任务产物。
 func (h *TaskHandler) GetArtifacts(requestCtx context.Context, ctx *app.RequestContext) {
-	task, err := h.taskRepo.GetByID(requestCtx, ctx.Param("id"))
+	id := ctx.Param("id")
+	if !isValidUUID(id) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "无效的任务 ID"})
+		return
+	}
+	task, err := h.taskRepo.GetByID(requestCtx, id)
 	if err != nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务失败"})
 		return
@@ -215,7 +230,12 @@ func (h *TaskHandler) GetEvents(requestCtx context.Context, ctx *app.RequestCont
 		return
 	}
 
-	task, err := h.taskRepo.GetByID(requestCtx, ctx.Param("id"))
+	id := ctx.Param("id")
+	if !isValidUUID(id) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "无效的任务 ID"})
+		return
+	}
+	task, err := h.taskRepo.GetByID(requestCtx, id)
 	if err != nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务失败"})
 		return

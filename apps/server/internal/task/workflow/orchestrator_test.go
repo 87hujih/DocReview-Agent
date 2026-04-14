@@ -15,6 +15,7 @@ import (
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
+	"agent_project/apps/server/internal/task/models"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -53,6 +54,7 @@ func TestOrchestratorRecordsCoreTaskEvents(t *testing.T) {
 		fakeEditorAgent{},
 		fakeRetrieverService{},
 		eventService,
+		0, // use default contextMaxRunes
 	)
 
 	orchestrator.Orchestrate(ctx, task)
@@ -160,4 +162,103 @@ func workflowTestContext(t *testing.T) context.Context {
 
 func workflowUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+// --- validateDiffPreview 单元测试（2.4）---
+
+func TestValidateDiffPreviewRejectsNil(t *testing.T) {
+	if err := validateDiffPreview(nil, nil); err == nil {
+		t.Fatal("预览为 nil 时期望返回错误")
+	}
+}
+
+func TestValidateDiffPreviewRejectsEmptySections(t *testing.T) {
+	preview := &editor.DiffPreview{Sections: nil}
+	if err := validateDiffPreview(preview, nil); err == nil {
+		t.Fatal("sections 为空时期望返回错误")
+	}
+}
+
+func TestValidateDiffPreviewRejectsEmptySectionTitle(t *testing.T) {
+	citations := []citation.Citation{{CitationID: "cite_1"}}
+	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
+		{SectionTitle: "", Original: "a", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}},
+	}}
+	if err := validateDiffPreview(preview, citations); err == nil {
+		t.Fatal("section_title 为空时期望返回错误")
+	}
+}
+
+func TestValidateDiffPreviewRejectsEmptyOriginal(t *testing.T) {
+	citations := []citation.Citation{{CitationID: "cite_1"}}
+	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
+		{SectionTitle: "t", Original: "", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}},
+	}}
+	if err := validateDiffPreview(preview, citations); err == nil {
+		t.Fatal("original 为空时期望返回错误")
+	}
+}
+
+func TestValidateDiffPreviewRejectsIdenticalOriginalRevised(t *testing.T) {
+	citations := []citation.Citation{{CitationID: "cite_1"}}
+	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
+		{SectionTitle: "t", Original: "same", Revised: "same", Reason: "r", CitationIDs: []string{"cite_1"}},
+	}}
+	if err := validateDiffPreview(preview, citations); err == nil {
+		t.Fatal("original 与 revised 相同时期望返回错误")
+	}
+}
+
+func TestValidateDiffPreviewRejectsSectionsOverLimit(t *testing.T) {
+	citations := []citation.Citation{{CitationID: "cite_1"}}
+	sections := make([]editor.DiffSection, 51)
+	for i := range sections {
+		sections[i] = editor.DiffSection{SectionTitle: "t", Original: "a", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}}
+	}
+	preview := &editor.DiffPreview{Sections: sections}
+	if err := validateDiffPreview(preview, citations); err == nil {
+		t.Fatal("章节数超过 50 时期望返回错误")
+	}
+}
+
+func TestValidateDiffPreviewRejectsFieldOverRuneLimit(t *testing.T) {
+	citations := []citation.Citation{{CitationID: "cite_1"}}
+	longStr := strings.Repeat("x", 10001)
+	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
+		{SectionTitle: longStr, Original: "a", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}},
+	}}
+	if err := validateDiffPreview(preview, citations); err == nil {
+		t.Fatal("section_title 超过字符长度上限时期望返回错误")
+	}
+}
+
+func TestValidateDiffPreviewPassesNoChange(t *testing.T) {
+	preview := &editor.DiffPreview{NoChange: true}
+	if err := validateDiffPreview(preview, nil); err != nil {
+		t.Fatalf("no-change 预览应通过校验：%v", err)
+	}
+}
+
+func TestValidateDiffPreviewPassesValid(t *testing.T) {
+	citations := []citation.Citation{{CitationID: "cite_1"}}
+	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
+		{SectionTitle: "考勤", Original: "原文", Revised: "修订后", Reason: "补充定义", CitationIDs: []string{"cite_1"}},
+	}}
+	if err := validateDiffPreview(preview, citations); err != nil {
+		t.Fatalf("合法预览应通过校验：%v", err)
+	}
+}
+
+// --- 状态机转换测试（2.5）---
+
+func TestDraftingToCompletedAllowed(t *testing.T) {
+	if err := models.Transition(models.StatusDrafting, models.StatusCompleted); err != nil {
+		t.Fatalf("无需修改分支应允许 drafting -> completed：%v", err)
+	}
+}
+
+func TestDraftingToCompletedNotReachableFromAwaitingApproval(t *testing.T) {
+	if err := models.Transition(models.StatusAwaitingApproval, models.StatusCompleted); err == nil {
+		t.Fatal("awaiting_approval 不应直接转换为 completed")
+	}
 }

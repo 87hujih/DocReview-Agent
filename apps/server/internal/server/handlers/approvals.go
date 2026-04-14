@@ -86,12 +86,17 @@ func (h *ApprovalHandler) List(requestCtx context.Context, ctx *app.RequestConte
 
 // GetByID 返回单条审批记录。
 func (h *ApprovalHandler) GetByID(requestCtx context.Context, ctx *app.RequestContext) {
+	id := ctx.Param("id")
+	if !isValidUUID(id) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "无效的审批 ID"})
+		return
+	}
 	if h.approvalService == nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "审批服务未配置"})
 		return
 	}
 
-	approvalRecord, err := h.approvalService.GetApproval(requestCtx, ctx.Param("id"))
+	approvalRecord, err := h.approvalService.GetApproval(requestCtx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, approval.ErrApprovalNotFound):
@@ -109,12 +114,17 @@ func (h *ApprovalHandler) GetByID(requestCtx context.Context, ctx *app.RequestCo
 
 // GetJobByID 返回单条执行作业记录。
 func (h *ApprovalHandler) GetJobByID(requestCtx context.Context, ctx *app.RequestContext) {
+	id := ctx.Param("id")
+	if !isValidUUID(id) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "无效的执行作业 ID"})
+		return
+	}
 	if h.approvalService == nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "审批服务未配置"})
 		return
 	}
 
-	job, err := h.approvalService.GetJob(requestCtx, ctx.Param("id"))
+	job, err := h.approvalService.GetJob(requestCtx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, approval.ErrJobNotFound):
@@ -132,12 +142,17 @@ func (h *ApprovalHandler) GetJobByID(requestCtx context.Context, ctx *app.Reques
 
 // Approve 将指定审批切换为 approved。
 func (h *ApprovalHandler) Approve(requestCtx context.Context, ctx *app.RequestContext) {
+	id := ctx.Param("id")
+	if !isValidUUID(id) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "无效的审批 ID"})
+		return
+	}
 	if h.approvalService == nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "审批服务未配置"})
 		return
 	}
 
-	approvalRecord, err := h.approvalService.Approve(requestCtx, ctx.Param("id"))
+	approvalRecord, err := h.approvalService.Approve(requestCtx, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, approval.ErrApprovalNotFound):
@@ -168,12 +183,19 @@ func (h *ApprovalHandler) Reject(requestCtx context.Context, ctx *app.RequestCon
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "必须提供原因"})
 		return
 	}
+
+	id := ctx.Param("id")
+	if !isValidUUID(id) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "无效的审批 ID"})
+		return
+	}
+
 	if h.approvalService == nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "审批服务未配置"})
 		return
 	}
 
-	approvalRecord, err := h.approvalService.Reject(requestCtx, ctx.Param("id"), request.Reason)
+	approvalRecord, err := h.approvalService.Reject(requestCtx, id, request.Reason)
 	if err != nil {
 		switch {
 		case errors.Is(err, approval.ErrApprovalNotFound):

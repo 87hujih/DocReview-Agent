@@ -345,8 +345,79 @@ func TestGetTaskNotFound(t *testing.T) {
 	}
 }
 
-func TestHealthHandlerSetsRequestIDHeader(t *testing.T) {
+func TestGetTaskByInvalidUUID(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, nil)
 	engine := server.New()
+	engine.GET("/api/tasks/:id", handler.GetByID)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/tasks/not-a-uuid", nil).Result()
+
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d for invalid UUID, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+}
+
+func TestGetTaskArtifactsByInvalidUUID(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	engine := server.New()
+	engine.GET("/api/tasks/:id/artifacts", handler.GetArtifacts)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/tasks/not-a-uuid/artifacts", nil).Result()
+
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d for invalid UUID, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+}
+
+func TestGetTaskEventsByInvalidUUID(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
+	engine := server.New()
+	engine.GET("/api/tasks/:id/events", handler.GetEvents)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/tasks/not-a-uuid/events", nil).Result()
+
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d for invalid UUID, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+}
+
+func TestCreateTaskInvalidResourceIDFormat(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	engine := server.New()
+	engine.POST("/api/tasks", handler.Create)
+
+	body := `{"resource_id":"not-a-uuid","instruction":"整理内容"}`
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/tasks",
+		&ut.Body{Body: strings.NewReader(body), Len: len(body)},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d for invalid resource_id format, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+}
+
+func TestHealthHandlerSetsRequestIDHeader(t *testing.T) {	engine := server.New()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	engine.Use(servermiddleware.RequestContext("server", logger))
 	engine.GET("/healthz", Health)

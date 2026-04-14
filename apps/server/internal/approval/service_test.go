@@ -46,9 +46,9 @@ func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	jobCh := make(chan postgres.ExecutionJob, 1)
+	jobCh := make(chan struct{}, 1)
 	eventService := taskevents.New(eventRepo)
-	service := NewService(approvalRepo, jobRepo, taskRepo, jobCh, eventService)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, jobCh, eventService)
 
 	updatedApproval, err := service.Approve(ctx, approvalRecord.ID)
 	if err != nil {
@@ -61,19 +61,30 @@ func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 		t.Fatal("expected decided_at to be set")
 	}
 
+	// 验证 worker 信号已发出
 	select {
-	case job := <-jobCh:
-		if job.TaskID != task.ID {
-			t.Fatalf("expected job task id %q, got %q", task.ID, job.TaskID)
-		}
-		if job.ApprovalID != approvalRecord.ID {
-			t.Fatalf("expected job approval id %q, got %q", approvalRecord.ID, job.ApprovalID)
-		}
-		if job.Status != "pending" {
-			t.Fatalf("expected job status %q, got %q", "pending", job.Status)
-		}
+	case <-jobCh:
 	default:
-		t.Fatal("expected created job to be sent to channel")
+		t.Fatal("expected worker signal to be sent to channel")
+	}
+
+	// 从 DB 验证 job 是否正确创建
+	pendingJobs, err := jobRepo.ListPending(ctx)
+	if err != nil {
+		t.Fatalf("list pending jobs: %v", err)
+	}
+	if len(pendingJobs) != 1 {
+		t.Fatalf("expected 1 pending job, got %d", len(pendingJobs))
+	}
+	createdJob := pendingJobs[0]
+	if createdJob.TaskID != task.ID {
+		t.Fatalf("expected job task id %q, got %q", task.ID, createdJob.TaskID)
+	}
+	if createdJob.ApprovalID != approvalRecord.ID {
+		t.Fatalf("expected job approval id %q, got %q", approvalRecord.ID, createdJob.ApprovalID)
+	}
+	if createdJob.Status != "pending" {
+		t.Fatalf("expected job status %q, got %q", "pending", createdJob.Status)
 	}
 
 	updatedTask, err := taskRepo.GetByID(ctx, task.ID)
@@ -133,7 +144,7 @@ func TestRejectUpdatesApprovalAndTask(t *testing.T) {
 	}
 
 	eventService := taskevents.New(eventRepo)
-	service := NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 1), eventService)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService)
 	reason := "方案不完善"
 
 	updatedApproval, err := service.Reject(ctx, approvalRecord.ID, reason)
@@ -202,7 +213,7 @@ func TestApproveAlreadyDecidedReturnsError(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(approvalRepo, jobRepo, taskRepo, make(chan postgres.ExecutionJob, 2), nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil)
 	if _, err := service.Approve(ctx, approvalRecord.ID); err != nil {
 		t.Fatalf("first approve: %v", err)
 	}
@@ -237,7 +248,7 @@ func TestGetApprovalReturnsRecord(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(approvalRepo, jobRepo, taskRepo, nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, nil, nil)
 
 	found, err := service.GetApproval(ctx, approvalRecord.ID)
 	if err != nil {
@@ -277,7 +288,7 @@ func TestGetJobReturnsRecord(t *testing.T) {
 		t.Fatalf("create job: %v", err)
 	}
 
-	service := NewService(approvalRepo, jobRepo, taskRepo, nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, nil, nil)
 
 	found, err := service.GetJob(ctx, jobRecord.ID)
 	if err != nil {

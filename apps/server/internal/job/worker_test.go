@@ -86,7 +86,7 @@ func TestWorkerProcessesJob(t *testing.T) {
 	defer cancel()
 	worker.Start(workerCtx, 1)
 
-	worker.JobCh() <- *jobRecord
+	worker.JobCh() <- struct{}{}
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {

@@ -24,7 +24,7 @@ var validTransitions = map[string]map[string]bool{
 	StatusPending:          {StatusPlanning: true, StatusFailed: true},
 	StatusPlanning:         {StatusRetrieving: true, StatusFailed: true},
 	StatusRetrieving:       {StatusDrafting: true, StatusFailed: true},
-	StatusDrafting:         {StatusAwaitingApproval: true, StatusFailed: true},
+	StatusDrafting:         {StatusAwaitingApproval: true, StatusFailed: true, StatusCompleted: true}, // StatusCompleted 仅用于无需修改分支
 	StatusAwaitingApproval: {StatusExecuting: true, StatusFailed: true},
 	StatusExecuting:        {StatusCompleted: true, StatusFailed: true},
 }

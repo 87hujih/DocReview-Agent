@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"agent_project/apps/server/internal/agent/llmclient"
 
 	openaiacl "github.com/cloudwego/eino-ext/libs/acl/openai"
 	"github.com/cloudwego/eino/schema"
@@ -26,9 +29,10 @@ const systemPrompt = `你是一个文档修订任务的规划代理。你必须�
 2. focus_sections 可为空数组，但不能为 null。
 3. intent 必须简洁明确。`
 
-// Agent 封装 Planner 所需的 LLM 客户端。
+// Agent 封装 Planner 所需的 LLM 客户端和重试配置。
 type Agent struct {
-	client *openaiacl.Client
+	client   *openaiacl.Client
+	retryCfg llmclient.Config
 }
 
 // PlanResult 是 Planner 输出的结构化结果。
@@ -38,14 +42,18 @@ type PlanResult struct {
 	FocusSections []string `json:"focus_sections"`
 }
 
-// New 构造 Planner Agent。
-func New(ctx context.Context, baseURL string, apiKey string, model string) (*Agent, error) {
+// New 构造 Planner Agent。cfg 控制单次 HTTP 超时和重试行为。
+func New(ctx context.Context, baseURL string, apiKey string, model string, cfg llmclient.Config) (*Agent, error) {
+	timeoutMS := cfg.TimeoutMS
+	if timeoutMS <= 0 {
+		timeoutMS = 90000
+	}
 	temperature := float32(0)
 	config := &openaiacl.Config{
 		APIKey:      apiKey,
 		Model:       model,
 		Temperature: &temperature,
-		HTTPClient:  &http.Client{Timeout: 30 * time.Second},
+		HTTPClient:  &http.Client{Timeout: time.Duration(timeoutMS) * time.Millisecond},
 		ResponseFormat: &openaiacl.ChatCompletionResponseFormat{
 			Type: openaiacl.ChatCompletionResponseFormatTypeJSONObject,
 		},
@@ -59,12 +67,12 @@ func New(ctx context.Context, baseURL string, apiKey string, model string) (*Age
 		return nil, err
 	}
 
-	return &Agent{client: client}, nil
+	return &Agent{client: client, retryCfg: cfg}, nil
 }
 
 // Plan 根据任务指令和资源摘要生成检索计划。
 func (a *Agent) Plan(ctx context.Context, instruction string, resourceTitle string, resourceSummary string) (*PlanResult, error) {
-	response, err := a.client.Generate(ctx, []*schema.Message{
+	messages := []*schema.Message{
 		{Role: schema.System, Content: systemPrompt},
 		{
 			Role: schema.User,
@@ -75,6 +83,15 @@ func (a *Agent) Plan(ctx context.Context, instruction string, resourceTitle stri
 				resourceSummary,
 			),
 		},
+	}
+
+	var response *schema.Message
+	err := llmclient.CallWithRetry(ctx, a.retryCfg, func() error {
+		var genErr error
+		response, genErr = a.client.Generate(ctx, messages)
+		return genErr
+	}, func(attempt int, cause error, backoff time.Duration) {
+		log.Printf("planner: 第 %d 次重试，原因：%v，退避：%v", attempt, cause, backoff)
 	})
 	if err != nil {
 		return nil, err

@@ -138,8 +138,17 @@ func main() {
 	}
 
 	resourceHandler := handlers.NewResourceHandler(resourceRepo, retrieverService)
-	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService)
-	taskService := taskservice.New(taskRepo, resourceRepo, orchestrator, eventService)
+	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService, cfg.TaskContextMaxRunes)
+	runner := workflow.NewOrchestratorRunner(
+		cfg.WorkflowWorkers,
+		cfg.WorkflowQueueSize,
+		time.Duration(cfg.TaskStepTimeoutMS)*time.Millisecond,
+		orchestrator,
+		taskRepo,
+	)
+	runner.Start()
+	defer runner.Stop()
+	taskService := taskservice.New(taskRepo, resourceRepo, runner, eventService)
 	taskHandler := handlers.NewTaskHandler(taskService, taskRepo, eventRepo)
 	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
