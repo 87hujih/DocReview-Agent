@@ -102,6 +102,31 @@ func TestAssistantRepoSessionLifecycle(t *testing.T) {
 	}
 }
 
+func TestAssistantRepoDatabaseHostGateOnlyAllowsLoopback(t *testing.T) {
+	allowed := []string{
+		"postgres://user:pass@127.0.0.1:5432/app",
+		"postgres://user:pass@localhost:5432/app",
+		"postgres://user:pass@[::1]:5432/app",
+	}
+	for _, databaseURL := range allowed {
+		if !isLocalDatabaseHost(databaseURL) {
+			t.Fatalf("expected %s to be treated as local", databaseURL)
+		}
+	}
+
+	blocked := []string{
+		"postgres://user:pass@10.0.0.2:5432/app",
+		"postgres://user:pass@192.168.1.20:5432/app",
+		"postgres://user:pass@106.52.42.194:5432/app",
+		"postgres://user:pass@db.internal:5432/app",
+	}
+	for _, databaseURL := range blocked {
+		if isLocalDatabaseHost(databaseURL) {
+			t.Fatalf("expected %s to require explicit nonlocal opt-in", databaseURL)
+		}
+	}
+}
+
 func newAssistantTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -156,6 +181,6 @@ func isLocalDatabaseHost(databaseURL string) bool {
 	case "127.0.0.1", "localhost", "::1":
 		return true
 	default:
-		return strings.HasPrefix(host, "192.168.") || strings.HasPrefix(host, "10.")
+		return false
 	}
 }
