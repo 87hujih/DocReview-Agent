@@ -20,7 +20,7 @@ func TestStartConversationUsesResponderReply(t *testing.T) {
 			Reply: "当然可以，我们先把目标和限制条件说清楚。",
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, fakeResourceSearcher{})
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, nil)
 
 	result, err := service.StartConversation(context.Background(), "我想先聊聊这周要做什么")
 	if err != nil {
@@ -43,7 +43,7 @@ func TestStartConversationDoesNotSuggestTaskForCapabilityQuestion(t *testing.T) 
 		result: &ChatCompletionResult{
 			Reply: "我可以回答问题、整理信息，也可以在需要时给出任务建议。",
 		},
-	}, fakeResourceSearcher{})
+	}, nil)
 
 	result, err := service.StartConversation(context.Background(), "帮我简单介绍一下你能做什么，再顺带说下什么时候适合创建任务。")
 	if err != nil {
@@ -65,7 +65,7 @@ func TestAppendMessageCreatesTaskSuggestionFromResponderInstruction(t *testing.T
 			TaskInstruction: &instruction,
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, fakeResourceSearcher{})
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, nil)
 
 	result, err := service.AppendMessage(context.Background(), session.ID, "把第二章做成后续事项")
 	if err != nil {
@@ -113,16 +113,17 @@ func TestAppendMessagePassesLatestResourceContextAndCitationsToResponder(t *test
 			Reply: "我先根据你刚上传的资料梳理考勤条款。",
 		},
 	}
-	searcher := fakeResourceSearcher{
-		result: []postgres.ResourceChunk{
+	retriever := &fakeResourceCitationRetriever{
+		result: []citation.Citation{
 			{
+				CitationID:   "cite_1",
 				ResourceID:   resourceID,
 				SectionTitle: "第二章 考勤",
-				Content:      "员工迟到早退需要登记并按制度处理。",
+				Snippet:      "员工迟到早退需要登记并按制度处理。",
 			},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, searcher)
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, retriever)
 
 	if _, err := service.AppendMessage(context.Background(), session.ID, "考勤条款有什么风险"); err != nil {
 		t.Fatalf("append message: %v", err)
@@ -136,12 +137,72 @@ func TestAppendMessagePassesLatestResourceContextAndCitationsToResponder(t *test
 		t.Fatalf("expected responder to receive latest resource %q, got %#v", resourceID, responder.lastInput.Resource)
 	}
 
-	if len(responder.lastInput.Citations) != 1 {
-		t.Fatalf("expected 1 citation, got %d", len(responder.lastInput.Citations))
+	if retriever.calls != 1 || retriever.resourceID != resourceID || retriever.query != "考勤条款有什么风险" || retriever.limit != 4 {
+		t.Fatalf("unexpected retriever call: %#v", retriever)
 	}
 
-	if responder.lastInput.Citations[0].SectionTitle != "第二章 考勤" {
-		t.Fatalf("expected citation section title %q, got %q", "第二章 考勤", responder.lastInput.Citations[0].SectionTitle)
+	if len(responder.lastInput.Citations) != 1 || responder.lastInput.Citations[0].CitationID != "cite_1" {
+		t.Fatalf("expected retriever citation to be forwarded")
+	}
+}
+
+func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	resourceID := "resource-1"
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "学生手册.md",
+			ResourceID:    resourceID,
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	responder := &fakeChatResponder{stream: &fakeChatStream{chunks: []string{"我先看资料。"}}}
+	retriever := &fakeResourceCitationRetriever{
+		result: []citation.Citation{
+			{
+				CitationID:   "cite_1",
+				ResourceID:   resourceID,
+				SectionTitle: "第二章 考勤",
+				Snippet:      "考勤内容",
+			},
+		},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, retriever)
+
+	err := service.AppendMessageStream(context.Background(), session.ID, "继续看考勤", func(StreamEvent) error { return nil })
+	if err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+	if retriever.calls != 1 || retriever.resourceID != resourceID || retriever.query != "继续看考勤" || retriever.limit != 4 {
+		t.Fatalf("unexpected retriever call: %#v", retriever)
+	}
+	if len(responder.lastInput.Citations) != 1 || responder.lastInput.Citations[0].CitationID != "cite_1" {
+		t.Fatalf("expected stream responder to receive retriever citation")
+	}
+}
+
+func TestAppendMessageDoesNotCallRetrieverWithoutReadyResource(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("空白会话")
+	responder := &fakeChatResponder{result: &ChatCompletionResult{Reply: "先继续聊需求。"}}
+	retriever := &fakeResourceCitationRetriever{}
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, retriever)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "先看看目标"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if retriever.calls != 0 {
+		t.Fatalf("expected no retriever call without ready resource, got %d", retriever.calls)
 	}
 }
 
@@ -151,7 +212,7 @@ func TestStartConversationCreatesSessionAndTaskSuggestion(t *testing.T) {
 		result: &ChatCompletionResult{
 			Reply: "我先帮你梳理这份学生守则，再给你任务建议。",
 		},
-	}, fakeResourceSearcher{})
+	}, nil)
 
 	result, err := service.StartConversation(context.Background(), "请帮我修改这份学生守则，并整理成任务")
 	if err != nil {
@@ -213,7 +274,7 @@ func TestAppendMessageUsesLatestUploadedResourceForTaskSuggestion(t *testing.T) 
 		result: &ChatCompletionResult{
 			Reply: "我先基于当前资料看第二章，再帮你收敛成任务。",
 		},
-	}, fakeResourceSearcher{})
+	}, nil)
 	result, err := service.AppendMessage(context.Background(), session.ID, "请帮我检查并修订第二章")
 	if err != nil {
 		t.Fatalf("append message: %v", err)
@@ -240,7 +301,7 @@ func TestStartConversationStreamPersistsUserFirstAndAssistantAfterCompletion(t *
 			chunks: []string{"当然可以", "，我们先梳理目标。"},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, fakeResourceSearcher{})
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, nil)
 
 	var events []StreamEvent
 	err := service.StartConversationStream(context.Background(), "帮我梳理这周学习安排", func(event StreamEvent) error {
@@ -310,7 +371,7 @@ func TestAppendMessageStreamDoesNotPersistAssistantOnCancellation(t *testing.T) 
 			errs:   []error{nil, context.Canceled},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, fakeResourceSearcher{})
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, nil)
 
 	err := service.AppendMessageStream(context.Background(), session.ID, "继续看看考勤部分", func(StreamEvent) error {
 		return nil
@@ -338,7 +399,7 @@ func TestStartConversationStreamReturnsEmptyReplyError(t *testing.T) {
 	responder := &fakeChatResponder{
 		stream: &fakeChatStream{},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, fakeResourceSearcher{})
+	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, nil)
 
 	err := service.StartConversationStream(context.Background(), "帮我总结学生手册", func(StreamEvent) error {
 		return nil
@@ -379,7 +440,7 @@ func TestUploadFilePersistsSessionFileMessage(t *testing.T) {
 		},
 	}
 
-	service := NewService(repo, importer, fakeTaskCreator{}, &fakeChatResponder{}, fakeResourceSearcher{})
+	service := NewService(repo, importer, fakeTaskCreator{}, &fakeChatResponder{}, nil)
 	result, err := service.UploadFile(context.Background(), session.ID, "学生手册.md", []byte("# 学生手册\n内容"))
 	if err != nil {
 		t.Fatalf("upload file: %v", err)
@@ -438,7 +499,7 @@ func TestUploadFileStoresOriginalFileAndPersistsFileID(t *testing.T) {
 		importer,
 		fakeTaskCreator{},
 		&fakeChatResponder{},
-		fakeResourceSearcher{},
+		nil,
 		WithUploadedFileStorage(fileStore, uploadedFiles),
 	)
 	result, err := service.UploadFile(context.Background(), session.ID, "学生手册.md", []byte("# 学生手册\n内容"))
@@ -498,7 +559,7 @@ func TestConfirmTaskSuggestionCreatesTaskCreatedMessage(t *testing.T) {
 			Instruction: "请修订第二章",
 			Status:      "pending",
 		},
-	}, &fakeChatResponder{}, fakeResourceSearcher{})
+	}, &fakeChatResponder{}, nil)
 
 	result, err := service.ConfirmTaskSuggestion(context.Background(), suggestionMessage.ID)
 	if err != nil {
@@ -548,7 +609,7 @@ func TestConfirmTaskSuggestionAppendsFailureSystemMessageWhenTaskCreationFails(t
 
 	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{
 		err: errors.New("task create failed"),
-	}, &fakeChatResponder{}, fakeResourceSearcher{})
+	}, &fakeChatResponder{}, nil)
 
 	result, err := service.ConfirmTaskSuggestion(context.Background(), suggestionMessage.ID)
 	if err != nil {
@@ -841,17 +902,26 @@ func (s *fakeChatStream) Close() error {
 	return nil
 }
 
-type fakeResourceSearcher struct {
-	result []postgres.ResourceChunk
+type fakeResourceCitationRetriever struct {
+	result []citation.Citation
 	err    error
+
+	calls      int
+	resourceID string
+	query      string
+	limit      int
 }
 
-func (s fakeResourceSearcher) SearchChunksLexicalByResource(context.Context, string, int, string) ([]postgres.ResourceChunk, error) {
-	if s.err != nil {
-		return nil, s.err
+func (r *fakeResourceCitationRetriever) SearchByResource(_ context.Context, resourceID string, query string, limit int) ([]citation.Citation, error) {
+	r.calls++
+	r.resourceID = resourceID
+	r.query = query
+	r.limit = limit
+	if r.err != nil {
+		return nil, r.err
 	}
 
-	return s.result, nil
+	return r.result, nil
 }
 
 func decodeTaskSuggestionPayload(t *testing.T, payload []byte) TaskSuggestionPayload {

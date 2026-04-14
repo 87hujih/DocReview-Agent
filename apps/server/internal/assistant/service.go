@@ -45,8 +45,8 @@ type taskCreator interface {
 	CreateTask(ctx context.Context, resourceID string, instruction string) (*postgres.Task, error)
 }
 
-type resourceSearcher interface {
-	SearchChunksLexicalByResource(ctx context.Context, query string, limit int, resourceID string) ([]postgres.ResourceChunk, error)
+type resourceCitationRetriever interface {
+	SearchByResource(ctx context.Context, resourceID string, query string, limit int) ([]citation.Citation, error)
 }
 
 type uploadedFileStore interface {
@@ -65,7 +65,7 @@ type ServiceOption func(*Service)
 type Service struct {
 	importer      documentImporter
 	repo          sessionRepository
-	resources     resourceSearcher
+	retriever     resourceCitationRetriever
 	responder     chatResponder
 	tasks         taskCreator
 	fileStore     uploadedFileStore
@@ -78,13 +78,13 @@ func NewService(
 	importer documentImporter,
 	tasks taskCreator,
 	responder chatResponder,
-	resources resourceSearcher,
+	retriever resourceCitationRetriever,
 	options ...ServiceOption,
 ) *Service {
 	service := &Service{
 		importer:  importer,
 		repo:      repo,
-		resources: resources,
+		retriever: retriever,
 		responder: responder,
 		tasks:     tasks,
 	}
@@ -705,7 +705,7 @@ func (s *Service) loadResourceCitations(
 	resource *resourceContext,
 	query string,
 ) ([]citation.Citation, error) {
-	if s.resources == nil || resource == nil {
+	if s.retriever == nil || resource == nil {
 		return nil, nil
 	}
 
@@ -714,12 +714,7 @@ func (s *Service) loadResourceCitations(
 		return nil, nil
 	}
 
-	chunks, err := s.resources.SearchChunksLexicalByResource(ctx, trimmedQuery, 4, resource.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	return citation.BuildFromChunks(chunks), nil
+	return s.retriever.SearchByResource(ctx, resource.ID, trimmedQuery, 4)
 }
 
 func hasTaskIntent(content string) bool {
