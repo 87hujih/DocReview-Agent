@@ -221,10 +221,7 @@ func (h *ResourceHandler) Search(requestCtx context.Context, ctx *app.RequestCon
 		return
 	}
 
-	ctx.JSON(consts.StatusOK, searchResourcesResponse{
-		Query:     query,
-		Citations: citations,
-	})
+	ctx.JSON(consts.StatusOK, newSearchResourcesResponse(query, citations))
 }
 
 func parseResourceIDParam(ctx *app.RequestContext) (string, bool) {
@@ -235,6 +232,17 @@ func parseResourceIDParam(ctx *app.RequestContext) (string, bool) {
 	}
 
 	return resourceID, true
+}
+
+func newSearchResourcesResponse(query string, citations []citation.Citation) searchResourcesResponse {
+	if citations == nil {
+		citations = []citation.Citation{}
+	}
+
+	return searchResourcesResponse{
+		Query:     query,
+		Citations: citations,
+	}
 }
 
 // exportFileName 为下载响应生成稳定的 Markdown 文件名，避免路径分隔符进入响应头。

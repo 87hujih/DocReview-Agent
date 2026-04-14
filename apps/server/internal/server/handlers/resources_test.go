@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -299,6 +300,17 @@ func TestSearchResourceNoHits(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
 	}
 	if body := string(response.Body()); !strings.Contains(body, "\"citations\":[]") {
+		t.Fatalf("expected empty citations, got %q", body)
+	}
+}
+
+func TestNewSearchResourcesResponseEncodesNilCitationsAsEmptyArray(t *testing.T) {
+	payload, err := json.Marshal(newSearchResourcesResponse("考勤", nil))
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+
+	if body := string(payload); !strings.Contains(body, "\"citations\":[]") {
 		t.Fatalf("expected empty citations, got %q", body)
 	}
 }
