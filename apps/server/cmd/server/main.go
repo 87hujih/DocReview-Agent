@@ -127,7 +127,11 @@ func main() {
 		resourceRepo,
 		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
 	)
-	assistantHandler := handlers.NewAssistantHandlerWithUploadLimit(assistantService, int64(cfg.UploadMaxBytes))
+	assistantHandler := handlers.NewAssistantHandlerWithUploadLimitAndPolicy(
+		assistantService,
+		int64(cfg.UploadMaxBytes),
+		docParser,
+	)
 	fileHandler := handlers.NewFileHandler(uploadedFileRepo, uploadStore)
 	h := router.New(cfg, logger, router.Deps{
 		ResourceHandler:  resourceHandler,

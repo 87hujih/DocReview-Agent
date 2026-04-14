@@ -59,7 +59,7 @@ pwsh -File scripts/dev/start-local.ps1
 
 ### 文档上传与解析
 
-助手上传入口首期支持 `.md`、`.txt`、`.doc`、`.docx`、`.pdf`、`.rtf`、`.odt`。默认 `DOCUMENT_PARSER=text` 只直通 Markdown / 纯文本；如果需要解析 Word、PDF、RTF 或 ODT，请启动 Apache Tika Server，并在 `.env` 中配置：
+助手上传入口会按当前 `DOCUMENT_PARSER` 动态收紧支持格式：默认 `DOCUMENT_PARSER=text` 只接受 `.md` / `.txt`；配置 `DOCUMENT_PARSER=tika` 且提供 `TIKA_URL` 后，后端入口才接受 `.doc` / `.docx` / `.pdf` / `.rtf` / `.odt`。
 
 ```bash
 DOCUMENT_PARSER=tika
