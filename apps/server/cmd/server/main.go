@@ -9,6 +9,7 @@ import (
 
 	"agent_project/apps/server/internal/agent/editor"
 	"agent_project/apps/server/internal/agent/executor"
+	"agent_project/apps/server/internal/agent/llmclient"
 	"agent_project/apps/server/internal/agent/planner"
 	"agent_project/apps/server/internal/agent/reviewer"
 	"agent_project/apps/server/internal/approval"
@@ -79,17 +80,29 @@ func main() {
 
 	ingestService := ingest.NewService(resourceRepo, emb, ingest.WithParser(docParser), ingest.WithIndexer(versionIndexer))
 
-	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
+	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
+		TimeoutMS: cfg.LLMTimeoutMS,
+		RetryMax:  cfg.LLMRetryMax,
+		BackoffMS: cfg.LLMRetryBackoffMS,
+	})
 	if err != nil {
 		log.Fatalf("规划代理初始化失败：%v", err)
 	}
 
-	reviewerAgent, err := reviewer.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
+	reviewerAgent, err := reviewer.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
+		TimeoutMS: cfg.LLMTimeoutMS,
+		RetryMax:  cfg.LLMRetryMax,
+		BackoffMS: cfg.LLMRetryBackoffMS,
+	})
 	if err != nil {
 		log.Fatalf("评审代理初始化失败：%v", err)
 	}
 
-	editorAgent, err := editor.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
+	editorAgent, err := editor.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
+		TimeoutMS: cfg.LLMTimeoutMS,
+		RetryMax:  cfg.LLMRetryMax,
+		BackoffMS: cfg.LLMRetryBackoffMS,
+	})
 	if err != nil {
 		log.Fatalf("编辑代理初始化失败：%v", err)
 	}
@@ -108,11 +121,27 @@ func main() {
 	worker := job.New(jobRepo, exec, taskRepo, 100, eventService)
 	worker.Start(ctx, 3)
 
+	// 服务启动时补发所有未处理的 pending job 信号，防止重启后 job 永久搁置（B4）
+	pendingJobs, err := jobRepo.ListPending(ctx)
+	if err != nil {
+		log.Printf("警告：扫描 pending jobs 失败：%v", err)
+	} else {
+		for range pendingJobs {
+			select {
+			case worker.JobCh() <- struct{}{}:
+			default:
+			}
+		}
+		if len(pendingJobs) > 0 {
+			log.Printf("信息：服务启动，已为 %d 个 pending job 补发执行信号", len(pendingJobs))
+		}
+	}
+
 	resourceHandler := handlers.NewResourceHandler(resourceRepo, retrieverService)
 	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService)
 	taskService := taskservice.New(taskRepo, resourceRepo, orchestrator, eventService)
 	taskHandler := handlers.NewTaskHandler(taskService, taskRepo, eventRepo)
-	approvalService := approval.NewService(approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService)
+	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	assistantResponder, err := assistant.NewChatResponder(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
 	if err != nil {
