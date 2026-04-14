@@ -3,6 +3,7 @@ package filestore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -71,5 +72,88 @@ func TestLocalStoreOpenReadsStoredFile(t *testing.T) {
 func TestNewLocalStoreRejectsEmptyRoot(t *testing.T) {
 	if _, err := NewLocalStore(" "); err == nil {
 		t.Fatal("expected empty root to fail")
+	}
+}
+
+func TestLocalStoreOpenRejectsPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewLocalStore(root)
+	if err != nil {
+		t.Fatalf("new local store: %v", err)
+	}
+
+	badKeys := []string{
+		"../secret.txt",
+		`..\secret.txt`,
+		"/etc/passwd",
+		`C:\secret.txt`,
+		"",
+		".",
+		"..",
+	}
+	for _, key := range badKeys {
+		_, err := store.Open(context.Background(), key)
+		if err == nil {
+			t.Errorf("Open(%q) should have returned error, got nil", key)
+		}
+	}
+}
+
+func TestLocalStoreOpenCannotEscapeRoot(t *testing.T) {
+	root := t.TempDir()
+	// 在 root 的父目录写入一个文件，验证无法通过 ../ 读取
+	parent := filepath.Dir(root)
+	secretPath := filepath.Join(parent, "secret.txt")
+	if err := os.WriteFile(secretPath, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(secretPath) })
+
+	store, err := NewLocalStore(root)
+	if err != nil {
+		t.Fatalf("new local store: %v", err)
+	}
+
+	_, err = store.Open(context.Background(), "../secret.txt")
+	if err == nil {
+		t.Fatal("Open('../secret.txt') should have returned error, got nil")
+	}
+}
+
+func TestLocalStoreStatReturnsSizeAfterSave(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewLocalStore(root)
+	if err != nil {
+		t.Fatalf("new local store: %v", err)
+	}
+
+	content := []byte("stat test content")
+	stored, err := store.Save(context.Background(), "test.txt", content)
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	info, err := store.Stat(context.Background(), stored.StorageKey)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Size() != int64(len(content)) {
+		t.Fatalf("expected size %d, got %d", len(content), info.Size())
+	}
+}
+
+func TestLocalStoreStatRejectsPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewLocalStore(root)
+	if err != nil {
+		t.Fatalf("new local store: %v", err)
+	}
+
+	_, err = store.Stat(context.Background(), "../secret.txt")
+	if err == nil {
+		t.Fatal("Stat('../secret.txt') should have returned error")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		// ErrNotExist 是可以接受的（安全拦截可以返回这个错误）
 	}
 }

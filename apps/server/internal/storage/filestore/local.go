@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -63,10 +64,53 @@ func (s *LocalStore) Save(_ context.Context, _ string, content []byte) (*StoredF
 
 // Open 打开一个已保存的原文件。
 func (s *LocalStore) Open(_ context.Context, storageKey string) (io.ReadCloser, error) {
-	cleaned := path.Clean(strings.TrimSpace(storageKey))
-	if cleaned == "." || cleaned == "" || cleaned == ".." || strings.HasPrefix(cleaned, "../") || path.IsAbs(cleaned) {
-		return nil, os.ErrNotExist
+	absPath, err := s.safePath(storageKey)
+	if err != nil {
+		return nil, err
+	}
+	return os.Open(absPath)
+}
+
+// Stat 返回已保存原文件的元信息，用于设置 Content-Length 等响应头。
+func (s *LocalStore) Stat(_ context.Context, storageKey string) (os.FileInfo, error) {
+	absPath, err := s.safePath(storageKey)
+	if err != nil {
+		return nil, err
+	}
+	return os.Stat(absPath)
+}
+
+// safePath 校验 storageKey 合法性并返回 root 内的绝对路径。
+// 拒绝空 key、绝对路径、包含反斜杠的 key，以及通过路径规范化后逃逸 root 的 key。
+func (s *LocalStore) safePath(key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if key == "" || key == "." || key == ".." {
+		return "", fmt.Errorf("文件 key 非法: %q", key)
+	}
+	if filepath.IsAbs(key) {
+		return "", fmt.Errorf("文件 key 不能是绝对路径: %q", key)
+	}
+	// 拒绝包含反斜杠，防止 Windows 路径风格逃逸（如 ..\secret.txt）
+	if strings.ContainsRune(key, '\\') {
+		return "", fmt.Errorf("文件 key 包含非法字符: %q", key)
 	}
 
-	return os.Open(filepath.Join(s.root, filepath.FromSlash(cleaned)))
+	fullPath := filepath.Join(s.root, key)
+
+	absRoot, err := filepath.Abs(s.root)
+	if err != nil {
+		return "", fmt.Errorf("解析存储根目录失败: %w", err)
+	}
+	absPath, err := filepath.Abs(fullPath)
+	if err != nil {
+		return "", fmt.Errorf("解析文件路径失败: %w", err)
+	}
+
+	// 最终 containment 校验：确保解析后的路径在 root 目录内
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("文件 key 超出存储目录: %q", key)
+	}
+
+	return absPath, nil
 }
