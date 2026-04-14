@@ -29,6 +29,44 @@ func TestParsePassesThroughTextFiles(t *testing.T) {
 	}
 }
 
+func TestTextParserCapabilityOnlyAcceptsTextFiles(t *testing.T) {
+	parser, err := New(Options{Mode: ModeText})
+	if err != nil {
+		t.Fatalf("new parser: %v", err)
+	}
+
+	if !parser.SupportsFileName("学生守则.md") || !parser.SupportsFileName("说明.txt") {
+		t.Fatal("expected text mode to support md and txt")
+	}
+	if parser.SupportsFileName("合同.pdf") || parser.SupportsFileName("会议纪要.docx") {
+		t.Fatal("expected text mode to reject document formats that need Tika")
+	}
+
+	message := parser.UnsupportedFileMessage("合同.pdf")
+	if !strings.Contains(message, "仅支持 md、txt") || !strings.Contains(message, "Tika") {
+		t.Fatalf("expected Tika guidance message, got %q", message)
+	}
+}
+
+func TestTikaParserCapabilityAcceptsDocumentFiles(t *testing.T) {
+	parser, err := New(Options{
+		Mode:    ModeTika,
+		TikaURL: "http://127.0.0.1:9998",
+	})
+	if err != nil {
+		t.Fatalf("new parser: %v", err)
+	}
+
+	for _, fileName := range []string{"a.md", "a.txt", "a.doc", "a.docx", "a.pdf", "a.rtf", "a.odt"} {
+		if !parser.SupportsFileName(fileName) {
+			t.Fatalf("expected tika mode to support %s", fileName)
+		}
+	}
+	if parser.SupportsFileName("archive.zip") {
+		t.Fatal("expected tika mode to reject unknown extension")
+	}
+}
+
 func TestParseUsesTikaForDocumentFiles(t *testing.T) {
 	var receivedPath string
 	var receivedBody []byte

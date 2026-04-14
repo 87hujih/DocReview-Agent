@@ -22,6 +22,9 @@ const (
 var (
 	// ErrUnsupportedFileType 表示当前文件扩展名不在支持范围内。
 	ErrUnsupportedFileType = errors.New("不支持的文件格式")
+
+	textExtensions = []string{".md", ".txt"}
+	tikaExtensions = []string{".doc", ".docx", ".pdf", ".rtf", ".odt"}
 )
 
 // Input 描述一次文档解析请求。
@@ -38,6 +41,9 @@ type Result struct {
 // Parser 定义文档解析器的统一入口。
 type Parser interface {
 	Parse(ctx context.Context, input Input) (*Result, error)
+	SupportsFileName(fileName string) bool
+	SupportedExtensions() []string
+	UnsupportedFileMessage(fileName string) string
 }
 
 // Options 描述构造解析器所需的可选参数。
@@ -103,6 +109,33 @@ func (p *documentParser) Parse(ctx context.Context, input Input) (*Result, error
 	}
 }
 
+func (p *documentParser) SupportsFileName(fileName string) bool {
+	extension := normalizeExtension(fileName)
+	if isTextExtension(extension) {
+		return true
+	}
+
+	return p.tika != nil && isTikaExtension(extension)
+}
+
+func (p *documentParser) SupportedExtensions() []string {
+	extensions := append([]string(nil), textExtensions...)
+	if p.tika != nil {
+		extensions = append(extensions, tikaExtensions...)
+	}
+
+	return extensions
+}
+
+func (p *documentParser) UnsupportedFileMessage(fileName string) string {
+	extension := normalizeExtension(fileName)
+	if p.tika == nil && isTikaExtension(extension) {
+		return "当前服务仅支持 md、txt；pdf/docx 等文件需要启用 Tika 解析。"
+	}
+
+	return fmt.Sprintf("不支持的文件格式：%s。当前支持：%s。", extension, formatExtensions(p.SupportedExtensions()))
+}
+
 // IsSupportedFileName 返回当前首期支持的文件名是否可被解析链路接受。
 func IsSupportedFileName(fileName string) bool {
 	extension := normalizeExtension(fileName)
@@ -119,21 +152,30 @@ func normalizeExtension(fileName string) string {
 }
 
 func isTextExtension(extension string) bool {
-	switch extension {
-	case ".md", ".txt":
-		return true
-	default:
-		return false
-	}
+	return containsExtension(textExtensions, extension)
 }
 
 func isTikaExtension(extension string) bool {
-	switch extension {
-	case ".doc", ".docx", ".pdf", ".rtf", ".odt":
-		return true
-	default:
-		return false
+	return containsExtension(tikaExtensions, extension)
+}
+
+func containsExtension(extensions []string, extension string) bool {
+	for _, supported := range extensions {
+		if extension == supported {
+			return true
+		}
 	}
+
+	return false
+}
+
+func formatExtensions(extensions []string) string {
+	names := make([]string, 0, len(extensions))
+	for _, extension := range extensions {
+		names = append(names, strings.TrimPrefix(extension, "."))
+	}
+
+	return strings.Join(names, "、")
 }
 
 func chooseHTTPClient(client *http.Client, timeout time.Duration) *http.Client {

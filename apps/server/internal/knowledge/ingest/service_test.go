@@ -465,6 +465,18 @@ func (p fakeDocumentParser) Parse(context.Context, documentparser.Input) (*docum
 	return p.result, nil
 }
 
+func (p fakeDocumentParser) SupportsFileName(string) bool {
+	return true
+}
+
+func (p fakeDocumentParser) SupportedExtensions() []string {
+	return []string{".md"}
+}
+
+func (p fakeDocumentParser) UnsupportedFileMessage(string) string {
+	return "不支持的文件格式"
+}
+
 type fakeVersionIndexer struct {
 	buildCalls   int
 	reindexCalls int
