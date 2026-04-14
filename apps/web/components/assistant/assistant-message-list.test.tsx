@@ -4,6 +4,16 @@ import type { AssistantMessage } from "../../lib/assistant/types";
 import { AssistantMessageList } from "./assistant-message-list";
 
 describe("AssistantMessageList", () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv, NEXT_PUBLIC_API_URL: "http://127.0.0.1:18080" };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
   it("shows original file download link when session file has file_id", () => {
     render(
       <AssistantMessageList
@@ -31,7 +41,7 @@ describe("AssistantMessageList", () => {
 
     expect(screen.getByRole("link", { name: "下载原文件" })).toHaveAttribute(
       "href",
-      "/api/files/file-123/download"
+      "http://127.0.0.1:18080/api/files/file-123/download"
     );
   });
 
@@ -62,3 +72,4 @@ describe("AssistantMessageList", () => {
     expect(screen.queryByRole("link", { name: "下载原文件" })).not.toBeInTheDocument();
   });
 });
+

@@ -31,7 +31,10 @@ services:
     environment:
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
-      NEXT_PUBLIC_API_BASE_URL: "${NEXT_PUBLIC_API_BASE_URL}"
+      # NEXT_PUBLIC_API_URL 必须是浏览器可访问的公网后端地址
+      # 本地开发: http://127.0.0.1:18080
+      # 云服务器初期: http://<server-ip>:8080（不能写容器内 service name 或服务器本机的 127.0.0.1）
+      NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL}"
 
 networks:
   agent-net:
