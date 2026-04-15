@@ -2,10 +2,9 @@
 
 import { FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 
+import type { AssistantUploadCapabilities } from "../../lib/assistant/types";
 import styles from "./assistant-composer.module.css";
 
-const SUPPORTED_UPLOAD_ACCEPT = ".md,.txt,.doc,.docx,.pdf,.rtf,.odt";
-const SUPPORTED_UPLOAD_HINT = "支持 md、txt、doc、docx、pdf、rtf、odt";
 const MAX_TEXTAREA_HEIGHT = 250;
 const MIN_TEXTAREA_HEIGHT = 56;
 
@@ -14,13 +13,15 @@ type AssistantComposerProps = {
   isBusy?: boolean;
   onSubmitMessage: (message: string) => Promise<void> | void;
   onUploadFile: (file: File) => Promise<void> | void;
+  uploadCapabilities: AssistantUploadCapabilities;
 };
 
 export function AssistantComposer({
   canUpload,
   isBusy = false,
   onSubmitMessage,
-  onUploadFile
+  onUploadFile,
+  uploadCapabilities
 }: AssistantComposerProps) {
   const [input, setInput] = useState("");
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
@@ -104,7 +105,7 @@ export function AssistantComposer({
             </svg>
           </label>
           <input
-            accept={SUPPORTED_UPLOAD_ACCEPT}
+            accept={uploadCapabilities.accept}
             className={styles.fileInput}
             disabled={!canUpload || isBusy}
             id={fileInputId}
@@ -123,9 +124,9 @@ export function AssistantComposer({
           <span className={styles.fileName}>
             {canUpload
               ? selectedFileName
-                ? `${selectedFileName} · ${SUPPORTED_UPLOAD_HINT}`
-                : SUPPORTED_UPLOAD_HINT
-              : `请先发送第一条消息后再上传 · ${SUPPORTED_UPLOAD_HINT}`}
+                ? `${selectedFileName} · ${uploadCapabilities.hint}`
+                : uploadCapabilities.hint
+              : `请先发送第一条消息后再上传 · ${uploadCapabilities.hint}`}
           </span>
           <button
             aria-label="发送"

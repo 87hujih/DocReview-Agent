@@ -87,6 +87,16 @@ export type AssistantConversation = {
   session: AssistantSession;
 };
 
+export type AssistantUploadCapabilities = {
+  accept: string;
+  hint: string;
+  supported_extensions: string[];
+};
+
+export type AssistantCapabilities = {
+  upload: AssistantUploadCapabilities;
+};
+
 export type AssistantResourceSummary = {
   id: string;
   source_type: string;

@@ -6,6 +6,7 @@ import { AppChrome } from "../app-chrome";
 import {
   confirmAssistantTaskSuggestion,
   deleteAssistantSession,
+  getAssistantCapabilities,
   getAssistantSession,
   getAssistantSessions,
   streamAssistantConversation,
@@ -17,6 +18,7 @@ import {
 vi.mock("../../lib/api/assistant", () => ({
   confirmAssistantTaskSuggestion: vi.fn(),
   deleteAssistantSession: vi.fn(),
+  getAssistantCapabilities: vi.fn(),
   getAssistantSession: vi.fn(),
   getAssistantSessions: vi.fn(),
   streamAssistantConversation: vi.fn(),
@@ -30,6 +32,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 const mockedGetAssistantSessions = vi.mocked(getAssistantSessions);
+const mockedGetAssistantCapabilities = vi.mocked(getAssistantCapabilities);
 const mockedGetAssistantSession = vi.mocked(getAssistantSession);
 const mockedStreamAssistantConversation = vi.mocked(streamAssistantConversation);
 const mockedStreamAssistantMessage = vi.mocked(streamAssistantMessage);
@@ -49,6 +52,7 @@ function renderAssistantShell() {
 describe("AssistantShell", () => {
   beforeEach(() => {
     mockedGetAssistantSessions.mockReset();
+    mockedGetAssistantCapabilities.mockReset();
     mockedGetAssistantSession.mockReset();
     mockedStreamAssistantConversation.mockReset();
     mockedStreamAssistantMessage.mockReset();
@@ -56,6 +60,51 @@ describe("AssistantShell", () => {
     mockedUploadAssistantFile.mockReset();
     mockedConfirmAssistantTaskSuggestion.mockReset();
     mockedDeleteAssistantSession.mockReset();
+  });
+
+  it("loads assistant upload capabilities and passes them to the composer", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([]);
+    mockedGetAssistantCapabilities.mockResolvedValue({
+      upload: {
+        accept: ".md,.txt,.pdf",
+        hint: "支持 md、txt、pdf",
+        supported_extensions: [".md", ".txt", ".pdf"]
+      }
+    });
+
+    const { container } = renderAssistantShell();
+
+    await waitFor(() => {
+      expect(mockedGetAssistantSessions).toHaveBeenCalledTimes(1);
+      expect(mockedGetAssistantCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    const input = container.querySelector('input[type="file"]');
+    if (!input) {
+      throw new Error("expected file input to exist");
+    }
+
+    expect(input).toHaveAttribute("accept", ".md,.txt,.pdf");
+    expect(screen.getByText("请先发送第一条消息后再上传 · 支持 md、txt、pdf")).toBeInTheDocument();
+  });
+
+  it("falls back to conservative upload capabilities when the capability request fails", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([]);
+    mockedGetAssistantCapabilities.mockRejectedValue(new Error("capability failed"));
+
+    const { container } = renderAssistantShell();
+
+    await waitFor(() => {
+      expect(mockedGetAssistantCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    const input = container.querySelector('input[type="file"]');
+    if (!input) {
+      throw new Error("expected file input to exist");
+    }
+
+    expect(input).toHaveAttribute("accept", ".md,.txt");
+    expect(screen.getByText("请先发送第一条消息后再上传 · 支持 md、txt")).toBeInTheDocument();
   });
 
   it("loads session history but still starts from a blank draft conversation", async () => {
@@ -68,6 +117,13 @@ describe("AssistantShell", () => {
         updated_at: "2026-04-10T10:30:00Z"
       }
     ]);
+    mockedGetAssistantCapabilities.mockResolvedValue({
+      upload: {
+        accept: ".md,.txt",
+        hint: "支持 md、txt",
+        supported_extensions: [".md", ".txt"]
+      }
+    });
 
     renderAssistantShell();
 
@@ -92,6 +148,13 @@ describe("AssistantShell", () => {
         updated_at: "2026-04-10T10:30:00Z"
       }
     ]);
+    mockedGetAssistantCapabilities.mockResolvedValue({
+      upload: {
+        accept: ".md,.txt",
+        hint: "支持 md、txt",
+        supported_extensions: [".md", ".txt"]
+      }
+    });
 
     const { container } = renderAssistantShell();
 
@@ -112,6 +175,13 @@ describe("AssistantShell", () => {
 
   it("streams the first assistant reply inside the draft conversation and replaces the placeholder on completion", async () => {
     mockedGetAssistantSessions.mockResolvedValue([]);
+    mockedGetAssistantCapabilities.mockResolvedValue({
+      upload: {
+        accept: ".md,.txt",
+        hint: "支持 md、txt",
+        supported_extensions: [".md", ".txt"]
+      }
+    });
     let resolveStream: ((value: { status: "completed" }) => void) | null = null;
     let onEvent: ((event: any) => void) | null = null;
 
@@ -201,6 +271,13 @@ describe("AssistantShell", () => {
         updated_at: "2026-04-10T10:30:00Z"
       }
     ]);
+    mockedGetAssistantCapabilities.mockResolvedValue({
+      upload: {
+        accept: ".md,.txt",
+        hint: "支持 md、txt",
+        supported_extensions: [".md", ".txt"]
+      }
+    });
     mockedGetAssistantSession.mockResolvedValue({
       messages: [
         {
@@ -239,6 +316,13 @@ describe("AssistantShell", () => {
 
   it("stops generation and shows a stopped-turn message", async () => {
     mockedGetAssistantSessions.mockResolvedValue([]);
+    mockedGetAssistantCapabilities.mockResolvedValue({
+      upload: {
+        accept: ".md,.txt",
+        hint: "支持 md、txt",
+        supported_extensions: [".md", ".txt"]
+      }
+    });
     mockedStreamAssistantConversation.mockImplementation(
       async (_message, options = {}) =>
         new Promise((resolve) => {
@@ -282,6 +366,13 @@ describe("AssistantShell", () => {
 
   it("shows backend offline errors inside the message area instead of a generic banner", async () => {
     mockedGetAssistantSessions.mockResolvedValue([]);
+    mockedGetAssistantCapabilities.mockResolvedValue({
+      upload: {
+        accept: ".md,.txt",
+        hint: "支持 md、txt",
+        supported_extensions: [".md", ".txt"]
+      }
+    });
     mockedStreamAssistantConversation.mockRejectedValue({
       code: "backend_offline",
       message: "后端未连接，请确认本地 server 已启动。"
@@ -306,6 +397,13 @@ describe("AssistantShell", () => {
 
   it("keeps history errors at page level while turn errors stay inside the message area", async () => {
     mockedGetAssistantSessions.mockRejectedValue(new Error("历史接口失败"));
+    mockedGetAssistantCapabilities.mockResolvedValue({
+      upload: {
+        accept: ".md,.txt",
+        hint: "支持 md、txt",
+        supported_extensions: [".md", ".txt"]
+      }
+    });
     mockedStreamAssistantConversation.mockRejectedValue({
       code: "assistant_empty_reply",
       message: "本轮没有生成可展示内容。"

@@ -5,15 +5,18 @@ import { startTransition, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type {
+  AssistantCapabilities,
   AssistantMessage,
   AssistantRenderableMessage,
   AssistantSession,
+  AssistantUploadCapabilities,
   AssistantStreamEvent,
   AssistantTurnError
 } from "../../lib/assistant/types";
 import {
   confirmAssistantTaskSuggestion,
   deleteAssistantSession,
+  getAssistantCapabilities,
   getAssistantSession,
   getAssistantSessions,
   streamAssistantConversation,
@@ -31,11 +34,20 @@ import styles from "./assistant-shell.module.css";
 type HistoryStatus = "history_error" | "history_ready" | "loading_history";
 type TurnStatus = "confirming_task" | "idle" | "loading_conversation" | "stopping" | "streaming" | "uploading_file";
 
+const DEFAULT_UPLOAD_CAPABILITIES: AssistantUploadCapabilities = {
+  accept: ".md,.txt",
+  hint: "支持 md、txt",
+  supported_extensions: [".md", ".txt"]
+};
+
 export function AssistantShell() {
   const { railCollapsed, setRailCollapsed } = useAppChrome();
   const [sessions, setSessions] = useState<AssistantSession[]>([]);
   const [currentSession, setCurrentSession] = useState<AssistantSession | null>(null);
   const [messages, setMessages] = useState<AssistantRenderableMessage[]>([]);
+  const [uploadCapabilities, setUploadCapabilities] = useState<AssistantUploadCapabilities>(
+    DEFAULT_UPLOAD_CAPABILITIES
+  );
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading_history");
   const [turnStatus, setTurnStatus] = useState<TurnStatus>("idle");
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -51,25 +63,27 @@ export function AssistantShell() {
     let active = true;
 
     async function loadHistory() {
-      try {
-        const items = await getAssistantSessions();
-        if (!active) {
-          return;
-        }
+      const [sessionsResult, capabilitiesResult] = await Promise.allSettled([
+        getAssistantSessions(),
+        getAssistantCapabilities()
+      ]);
+      if (!active) {
+        return;
+      }
 
-        startTransition(() => {
-          setSessions(items);
+      startTransition(() => {
+        setUploadCapabilities(toUploadCapabilities(capabilitiesResult));
+
+        if (sessionsResult.status === "fulfilled") {
+          setSessions(sessionsResult.value);
           setHistoryError(null);
           setHistoryStatus("history_ready");
-        });
-      } catch (error) {
-        if (!active) {
           return;
         }
 
-        setHistoryError(getErrorMessage(error));
+        setHistoryError(getErrorMessage(sessionsResult.reason));
         setHistoryStatus("history_error");
-      }
+      });
     }
 
     void loadHistory();
@@ -398,6 +412,7 @@ export function AssistantShell() {
             isBusy={isBusy}
             onSubmitMessage={(nextMessage) => handleSubmitMessage(nextMessage)}
             onUploadFile={(file) => handleUploadFile(file)}
+            uploadCapabilities={uploadCapabilities}
           />
         </section>
       </section>
@@ -519,4 +534,14 @@ function upsertSession(current: AssistantSession[], session: AssistantSession): 
 
     return right.last_message_at.localeCompare(left.last_message_at);
   });
+}
+
+function toUploadCapabilities(
+  result: PromiseSettledResult<AssistantCapabilities>
+): AssistantUploadCapabilities {
+  if (result.status === "fulfilled") {
+    return result.value.upload;
+  }
+
+  return DEFAULT_UPLOAD_CAPABILITIES;
 }
