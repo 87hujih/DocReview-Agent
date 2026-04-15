@@ -111,10 +111,11 @@ func TestCreateTaskHandlerReturnsCreatedFailedTaskWhenSchedulingFails(t *testing
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	runner := workflow.NewOrchestratorRunner(0, 1, 0, nil, taskRepo)
 	runner.Stop()
 	taskSvc := taskservice.New(taskRepo, resourceRepo, runner, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.POST("/api/tasks", handler.Create)
 
