@@ -11,21 +11,25 @@ import {
   getAssistantSessions,
   streamAssistantConversation,
   streamAssistantMessage,
-  toAssistantTurnError,
   uploadAssistantFile
 } from "../../lib/api/assistant";
 
-vi.mock("../../lib/api/assistant", () => ({
-  confirmAssistantTaskSuggestion: vi.fn(),
-  deleteAssistantSession: vi.fn(),
-  getAssistantCapabilities: vi.fn(),
-  getAssistantSession: vi.fn(),
-  getAssistantSessions: vi.fn(),
-  streamAssistantConversation: vi.fn(),
-  streamAssistantMessage: vi.fn(),
-  toAssistantTurnError: vi.fn((error) => error),
-  uploadAssistantFile: vi.fn()
-}));
+vi.mock("../../lib/api/assistant", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/api/assistant")>(
+    "../../lib/api/assistant"
+  );
+  return {
+    ...actual,
+    confirmAssistantTaskSuggestion: vi.fn(),
+    deleteAssistantSession: vi.fn(),
+    getAssistantCapabilities: vi.fn(),
+    getAssistantSession: vi.fn(),
+    getAssistantSessions: vi.fn(),
+    streamAssistantConversation: vi.fn(),
+    streamAssistantMessage: vi.fn(),
+    uploadAssistantFile: vi.fn()
+  };
+});
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/"
@@ -36,7 +40,6 @@ const mockedGetAssistantCapabilities = vi.mocked(getAssistantCapabilities);
 const mockedGetAssistantSession = vi.mocked(getAssistantSession);
 const mockedStreamAssistantConversation = vi.mocked(streamAssistantConversation);
 const mockedStreamAssistantMessage = vi.mocked(streamAssistantMessage);
-const mockedToAssistantTurnError = vi.mocked(toAssistantTurnError);
 const mockedUploadAssistantFile = vi.mocked(uploadAssistantFile);
 const mockedConfirmAssistantTaskSuggestion = vi.mocked(confirmAssistantTaskSuggestion);
 const mockedDeleteAssistantSession = vi.mocked(deleteAssistantSession);
@@ -56,7 +59,6 @@ describe("AssistantShell", () => {
     mockedGetAssistantSession.mockReset();
     mockedStreamAssistantConversation.mockReset();
     mockedStreamAssistantMessage.mockReset();
-    mockedToAssistantTurnError.mockClear();
     mockedUploadAssistantFile.mockReset();
     mockedConfirmAssistantTaskSuggestion.mockReset();
     mockedDeleteAssistantSession.mockReset();
