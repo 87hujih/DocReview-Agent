@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 )
@@ -142,6 +143,129 @@ func TestTaskRepoCRUD(t *testing.T) {
 	}
 	if !jsonEqual(artifacts[1].Content, diffPreviewJSON) {
 		t.Fatalf("expected diff artifact content %s, got %s", diffPreviewJSON, artifacts[1].Content)
+	}
+}
+
+func TestTaskRepoListOrdersByCreatedAtThenIDDescWhenTimestampsTie(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "任务列表排序稳定性测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	fixedCreatedAt := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
+	firstTaskID := "00000000-0000-0000-0000-000000000001"
+	secondTaskID := "00000000-0000-0000-0000-000000000002"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO tasks (id, resource_id, instruction, status, created_at, updated_at)
+		VALUES ($1, $2, $3, 'pending', $4, $4), ($5, $2, $6, 'pending', $4, $4)
+	`, firstTaskID, resource.ID, "第一条任务", fixedCreatedAt, secondTaskID, "第二条任务"); err != nil {
+		t.Fatalf("insert tasks with fixed ids: %v", err)
+	}
+
+	listedTasks, err := taskRepo.List(ctx)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(listedTasks) < 2 {
+		t.Fatalf("expected at least 2 tasks, got %d", len(listedTasks))
+	}
+
+	wantOrder := []string{firstTaskID, secondTaskID}
+	slices.SortFunc(wantOrder, func(left string, right string) int {
+		switch {
+		case left > right:
+			return -1
+		case left < right:
+			return 1
+		default:
+			return 0
+		}
+	})
+
+	if listedTasks[0].ID != wantOrder[0] || listedTasks[1].ID != wantOrder[1] {
+		t.Fatalf("expected tasks ordered by id desc when created_at ties, got [%s %s], want [%s %s]", listedTasks[0].ID, listedTasks[1].ID, wantOrder[0], wantOrder[1])
+	}
+}
+
+func TestTaskRepoGetStepsAndArtifactsOrderByCreatedAtThenIDAscWhenTimestampsTie(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "任务步骤与产物排序稳定性测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	task, err := taskRepo.Create(ctx, resource.ID, "验证步骤与产物排序")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	firstStep, err := taskRepo.AddStep(ctx, task.ID, "planner")
+	if err != nil {
+		t.Fatalf("add first step: %v", err)
+	}
+	secondStep, err := taskRepo.AddStep(ctx, task.ID, "reviewer")
+	if err != nil {
+		t.Fatalf("add second step: %v", err)
+	}
+
+	firstArtifact, err := taskRepo.AddArtifact(ctx, task.ID, "review_summary", []byte(`{"summary":"first"}`))
+	if err != nil {
+		t.Fatalf("add first artifact: %v", err)
+	}
+	secondArtifact, err := taskRepo.AddArtifact(ctx, task.ID, "diff_preview", []byte(`{"summary":"second"}`))
+	if err != nil {
+		t.Fatalf("add second artifact: %v", err)
+	}
+
+	fixedCreatedAt := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `UPDATE task_steps SET created_at = $2 WHERE id = ANY($1)`, []string{firstStep.ID, secondStep.ID}, fixedCreatedAt); err != nil {
+		t.Fatalf("pin task_steps created_at: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE task_artifacts SET created_at = $2 WHERE id = ANY($1)`, []string{firstArtifact.ID, secondArtifact.ID}, fixedCreatedAt); err != nil {
+		t.Fatalf("pin task_artifacts created_at: %v", err)
+	}
+
+	steps, err := taskRepo.GetSteps(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(steps))
+	}
+
+	wantStepOrder := []string{firstStep.ID, secondStep.ID}
+	slices.Sort(wantStepOrder)
+	if steps[0].ID != wantStepOrder[0] || steps[1].ID != wantStepOrder[1] {
+		t.Fatalf("expected steps ordered by id asc when created_at ties, got [%s %s], want [%s %s]", steps[0].ID, steps[1].ID, wantStepOrder[0], wantStepOrder[1])
+	}
+
+	artifacts, err := taskRepo.GetArtifacts(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get artifacts: %v", err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("expected 2 artifacts, got %d", len(artifacts))
+	}
+
+	wantArtifactOrder := []string{firstArtifact.ID, secondArtifact.ID}
+	slices.Sort(wantArtifactOrder)
+	if artifacts[0].ID != wantArtifactOrder[0] || artifacts[1].ID != wantArtifactOrder[1] {
+		t.Fatalf("expected artifacts ordered by id asc when created_at ties, got [%s %s], want [%s %s]", artifacts[0].ID, artifacts[1].ID, wantArtifactOrder[0], wantArtifactOrder[1])
 	}
 }
 

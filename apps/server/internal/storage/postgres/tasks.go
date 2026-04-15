@@ -88,7 +88,7 @@ func (r *TaskRepo) List(ctx context.Context) ([]Task, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, resource_id, instruction, status, error_message, created_at, updated_at
 		FROM tasks
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 	`)
 	if err != nil {
 		return nil, err
@@ -153,7 +153,7 @@ func (r *TaskRepo) GetSteps(ctx context.Context, taskID string) ([]TaskStep, err
 		SELECT id, task_id, step_name, status, error_message, started_at, completed_at, created_at
 		FROM task_steps
 		WHERE task_id = $1
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
 	`, taskID)
 	if err != nil {
 		return nil, err
@@ -193,7 +193,7 @@ func (r *TaskRepo) GetArtifacts(ctx context.Context, taskID string) ([]TaskArtif
 		SELECT id, task_id, artifact_type, content, created_at
 		FROM task_artifacts
 		WHERE task_id = $1
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
 	`, taskID)
 	if err != nil {
 		return nil, err
