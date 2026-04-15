@@ -94,6 +94,16 @@ type assistantUploadResponse struct {
 	ErrorMessage *string                    `json:"error_message"`
 }
 
+type assistantCapabilitiesResponse struct {
+	Upload assistantUploadCapabilitiesResponse `json:"upload"`
+}
+
+type assistantUploadCapabilitiesResponse struct {
+	SupportedExtensions []string `json:"supported_extensions"`
+	Accept              string   `json:"accept"`
+	Hint                string   `json:"hint"`
+}
+
 type confirmTaskSuggestionResponse struct {
 	Session      assistantSessionResponse   `json:"session"`
 	Task         *assistantTaskResponse     `json:"task"`
@@ -197,6 +207,18 @@ func (h *AssistantHandler) GetConversation(requestCtx context.Context, ctx *app.
 	ctx.JSON(consts.StatusOK, assistantConversationResponse{
 		Session:  toAssistantSessionResponse(result.Session),
 		Messages: toAssistantMessageResponses(result.Messages),
+	})
+}
+
+// GetCapabilities 返回当前部署下助手可用的上传能力。
+func (h *AssistantHandler) GetCapabilities(_ context.Context, ctx *app.RequestContext) {
+	extensions := h.uploadPolicy.SupportedExtensions()
+	ctx.JSON(consts.StatusOK, assistantCapabilitiesResponse{
+		Upload: assistantUploadCapabilitiesResponse{
+			SupportedExtensions: extensions,
+			Accept:              strings.Join(extensions, ","),
+			Hint:                buildAssistantUploadHint(extensions),
+		},
 	})
 }
 
@@ -523,4 +545,17 @@ func writeAssistantSSEEvent(writer *io.PipeWriter, eventType string, payload any
 	}
 	_, err := io.WriteString(writer, "\n\n")
 	return err
+}
+
+func buildAssistantUploadHint(extensions []string) string {
+	if len(extensions) == 0 {
+		return "当前未开放文件上传"
+	}
+
+	labels := make([]string, 0, len(extensions))
+	for _, extension := range extensions {
+		labels = append(labels, strings.TrimPrefix(extension, "."))
+	}
+
+	return "支持 " + strings.Join(labels, "、")
 }

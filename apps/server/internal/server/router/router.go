@@ -83,6 +83,7 @@ func registerApprovalRoutes(engine *route.Engine, h *handlers.ApprovalHandler) {
 // registerAssistantRoutes 注册助手会话相关 API 路由。
 func registerAssistantRoutes(engine *route.Engine, h *handlers.AssistantHandler) {
 	api := engine.Group("/api/assistant")
+	api.GET("/capabilities", h.GetCapabilities)
 	api.GET("/sessions", h.ListSessions)
 	api.GET("/sessions/:id", h.GetConversation)
 	api.DELETE("/sessions/:id", h.DeleteSession)

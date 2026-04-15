@@ -61,6 +61,46 @@ func TestListAssistantSessionsHandler(t *testing.T) {
 	}
 }
 
+func TestGetAssistantCapabilitiesHandlerReturnsUploadExtensions(t *testing.T) {
+	handler := NewAssistantHandlerWithUploadLimitAndPolicy(
+		fakeAssistantService{},
+		defaultAssistantUploadMaxBytes,
+		textOnlyAssistantUploadPolicy{},
+	)
+
+	engine := server.New()
+	engine.GET("/api/assistant/capabilities", handler.GetCapabilities)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/assistant/capabilities", nil).Result()
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	var payload struct {
+		Upload struct {
+			Accept              string   `json:"accept"`
+			Hint                string   `json:"hint"`
+			SupportedExtensions []string `json:"supported_extensions"`
+		} `json:"upload"`
+	}
+	if err := json.Unmarshal(response.Body(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if payload.Upload.Accept != ".md,.txt" {
+		t.Fatalf("expected accept %q, got %q", ".md,.txt", payload.Upload.Accept)
+	}
+	if payload.Upload.Hint != "支持 md、txt" {
+		t.Fatalf("expected hint %q, got %q", "支持 md、txt", payload.Upload.Hint)
+	}
+	if len(payload.Upload.SupportedExtensions) != 2 {
+		t.Fatalf("expected 2 supported extensions, got %d", len(payload.Upload.SupportedExtensions))
+	}
+	if payload.Upload.SupportedExtensions[0] != ".md" || payload.Upload.SupportedExtensions[1] != ".txt" {
+		t.Fatalf("expected supported extensions [.md .txt], got %v", payload.Upload.SupportedExtensions)
+	}
+}
+
 func TestCreateConversationHandler(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		startConversationResult: &assistant.ConversationResult{

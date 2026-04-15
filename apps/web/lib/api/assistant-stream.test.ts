@@ -1,4 +1,4 @@
-import { streamAssistantConversation } from "./assistant-stream";
+import { streamAssistantConversation, toAssistantTurnError } from "./assistant-stream";
 
 describe("assistant-stream", () => {
   beforeEach(() => {
@@ -108,6 +108,49 @@ describe("assistant-stream", () => {
 
     await expect(streamAssistantConversation("帮我梳理学生手册第二章")).rejects.toMatchObject({
       code: "backend_offline"
+    });
+  });
+
+  it("keeps an already-normalized backend offline error unchanged", () => {
+    expect(
+      toAssistantTurnError({
+        code: "backend_offline",
+        message: "后端未连接，请确认本地 server 已启动。"
+      })
+    ).toEqual({
+      code: "backend_offline",
+      message: "后端未连接，请确认本地 server 已启动。"
+    });
+  });
+
+  it("keeps an already-normalized timeout error unchanged", () => {
+    expect(
+      toAssistantTurnError({
+        code: "request_timeout",
+        message: "请求超时，请稍后重试。"
+      })
+    ).toEqual({
+      code: "request_timeout",
+      message: "请求超时，请稍后重试。"
+    });
+  });
+
+  it("preserves backend offline semantics when the stream error is normalized twice", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("Failed to fetch"))
+    );
+
+    let thrown: unknown;
+    try {
+      await streamAssistantConversation("帮我梳理学生手册第二章");
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(toAssistantTurnError(thrown)).toEqual({
+      code: "backend_offline",
+      message: "后端未连接，请确认本地 server 已启动。"
     });
   });
 
