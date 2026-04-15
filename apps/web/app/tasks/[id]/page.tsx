@@ -112,11 +112,12 @@ export default function TaskDetailPage() {
   const reviewSummary = getReviewSummaryArtifact(artifacts);
   const diffPreview = getDiffPreviewArtifact(artifacts);
   const hasCompletedResult = task?.status === "completed" && task.resource_id.trim() !== "";
+  const showErrorOnly = !isLoading && !task && Boolean(errorMessage);
 
   return (
     <div className={styles.page}>
       <TerminalFrame
-        actions={<StatusChip status={task?.status || "pending"} />}
+        actions={showErrorOnly ? undefined : <StatusChip status={task?.status || "pending"} />}
         label="任务会话"
         title="任务详情"
       >
@@ -124,7 +125,7 @@ export default function TaskDetailPage() {
 
         {isLoading && !task ? (
           <p className={styles.placeholder}>正在加载任务会话</p>
-        ) : (
+        ) : !showErrorOnly ? (
           <div className={styles.meta}>
             <MetaRow label="任务状态" value={task ? task.status : "未知"} />
             <MetaRow label="id" value={task ? truncateId(task.id, 8, 4) : truncateId(taskId, 8, 4)} />
@@ -133,10 +134,10 @@ export default function TaskDetailPage() {
             <MetaRow label="更新时间" value={toIsoSeconds(task?.updated_at)} />
             <MetaRow label="修订指令" value={task?.instruction || "未提供"} />
           </div>
-        )}
+        ) : null}
       </TerminalFrame>
 
-      {hasCompletedResult ? (
+      {!showErrorOnly && hasCompletedResult ? (
         <TerminalFrame
           label="修订结果"
           title="结果出口"
@@ -153,11 +154,11 @@ export default function TaskDetailPage() {
         </TerminalFrame>
       ) : null}
 
-      <TaskTimeline events={events} steps={steps} />
+      {!showErrorOnly ? <TaskTimeline events={events} steps={steps} /> : null}
 
-      {citations.length > 0 ? <CitationList citations={citations} /> : null}
+      {!showErrorOnly && citations.length > 0 ? <CitationList citations={citations} /> : null}
 
-      {reviewSummary ? (
+      {!showErrorOnly && reviewSummary ? (
         <TerminalFrame
           label="审阅摘要"
           title="审阅器输出"
@@ -166,9 +167,9 @@ export default function TaskDetailPage() {
         </TerminalFrame>
       ) : null}
 
-      {diffPreview ? <DiffPreview sections={diffPreview.sections} /> : null}
+      {!showErrorOnly && diffPreview ? <DiffPreview sections={diffPreview.sections} /> : null}
 
-      {!isLoading && citations.length === 0 && !reviewSummary && !diffPreview ? (
+      {!showErrorOnly && !isLoading && citations.length === 0 && !reviewSummary && !diffPreview ? (
         <TerminalFrame
           label="产物"
           title="等待产物生成"

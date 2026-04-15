@@ -59,4 +59,20 @@ describe("TaskDetailPage", () => {
       "http://127.0.0.1:18080/api/resources/resource-1/export"
     );
   });
+
+  it("shows a pure error state when the initial task load fails", async () => {
+    mockedGetTask.mockRejectedValue(new Error("任务不存在"));
+    mockedGetTaskArtifacts.mockResolvedValue([]);
+    mockedGetTaskEvents.mockResolvedValue([]);
+
+    render(<TaskDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("错误 > 任务不存在")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("正在等待步骤事件")).not.toBeInTheDocument();
+    expect(screen.queryByText("等待产物生成")).not.toBeInTheDocument();
+    expect(screen.queryByText("未知")).not.toBeInTheDocument();
+  });
 });
