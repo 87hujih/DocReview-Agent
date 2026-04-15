@@ -18,35 +18,60 @@ import styles from "./page.module.css";
 export default function ApprovalsPage() {
   const [activeApprovalId, setActiveApprovalId] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadErrorMessage, setLoadErrorMessage] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const rejectInputRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
-  const showErrorOnly = !isLoading && approvals.length === 0 && Boolean(errorMessage);
+  const bannerMessage = actionMessage ?? loadErrorMessage;
+  const showErrorOnly = !isLoading && approvals.length === 0 && Boolean(loadErrorMessage);
   const frameTitle = isLoading
     ? "正在加载审批队列"
     : showErrorOnly
       ? "加载失败"
       : `队列深度 ${approvals.length}`;
 
-  async function loadApprovals() {
+  async function fetchPendingApprovals(): Promise<Approval[]> {
+    return getApprovals("pending");
+  }
+
+  async function loadInitialApprovals() {
     try {
-      const items = await getApprovals("pending");
+      const items = await fetchPendingApprovals();
       if (!mountedRef.current) return;
       setApprovals(items);
-      setErrorMessage(null);
+      setActionMessage(null);
+      setLoadErrorMessage(null);
     } catch (error) {
       if (!mountedRef.current) return;
-      setErrorMessage(getErrorMessage(error));
+      setLoadErrorMessage(getErrorMessage(error));
     } finally {
       if (mountedRef.current) setIsLoading(false);
     }
   }
 
+  function removeApprovalFromQueue(id: string) {
+    setApprovals((current) => current.filter((approval) => approval.id !== id));
+  }
+
+  async function syncQueueAfterDecision(id: string) {
+    removeApprovalFromQueue(id);
+
+    try {
+      const items = await fetchPendingApprovals();
+      if (!mountedRef.current) return;
+      setApprovals(items);
+      setActionMessage(null);
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setActionMessage(`审批已提交，但刷新队列失败：${getErrorMessage(error)}`);
+    }
+  }
+
   useEffect(() => {
-    void loadApprovals();
+    void loadInitialApprovals();
 
     return () => {
       mountedRef.current = false;
@@ -61,18 +86,20 @@ export default function ApprovalsPage() {
 
   async function handleApprove(id: string) {
     setActiveApprovalId(id);
+    setActionMessage(null);
 
     try {
       await approveApproval(id);
-      await loadApprovals();
+      await syncQueueAfterDecision(id);
     } catch (error) {
-      setErrorMessage(getErrorMessage(error));
+      setActionMessage(getErrorMessage(error));
     } finally {
       setActiveApprovalId(null);
     }
   }
 
   function handleRejectClick(id: string) {
+    setActionMessage(null);
     setRejectingId(id);
     setRejectReason("");
   }
@@ -85,19 +112,20 @@ export default function ApprovalsPage() {
   async function handleRejectConfirm(id: string) {
     const trimmed = rejectReason.trim();
     if (!trimmed) {
-      setErrorMessage("拒绝原因不能为空");
+      setActionMessage("拒绝原因不能为空");
       return;
     }
 
-    setRejectingId(null);
-    setRejectReason("");
     setActiveApprovalId(id);
+    setActionMessage(null);
 
     try {
       await rejectApproval(id, trimmed);
-      await loadApprovals();
+      setRejectingId(null);
+      setRejectReason("");
+      await syncQueueAfterDecision(id);
     } catch (error) {
-      setErrorMessage(getErrorMessage(error));
+      setActionMessage(getErrorMessage(error));
     } finally {
       setActiveApprovalId(null);
     }
@@ -111,7 +139,7 @@ export default function ApprovalsPage() {
         label="审批中心"
         title={frameTitle}
       >
-        {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
+        {bannerMessage ? <p className={styles.error}>错误 &gt; {bannerMessage}</p> : null}
 
         {isLoading ? (
           <p className={styles.placeholder}>正在加载审批队列</p>
