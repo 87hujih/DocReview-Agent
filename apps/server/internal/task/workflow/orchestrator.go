@@ -307,7 +307,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 	editorStep.Status = "completed"
 	o.recordStepEvent(ctx, task, editorStep, "info", "step.completed", "编辑步骤完成")
 
-	approvalRecord, err := o.approvalRepo.CreateForTaskAwaitingApproval(ctx, task.ID)
+	approvalRecord, err := o.approvalRepo.CreateForTaskAwaitingApproval(ctx, task.ID, version.ID)
 	if err != nil {
 		o.failTask(ctx, task, nil, err)
 		return
@@ -531,6 +531,9 @@ func validateDiffPreview(preview *editor.DiffPreview, citations []citation.Citat
 	for i, section := range preview.Sections {
 		if strings.TrimSpace(section.SectionTitle) == "" {
 			return fmt.Errorf("diff 预览第 %d 个章节的 section_title 为空", i)
+		}
+		if section.SectionOccurrence <= 0 {
+			return fmt.Errorf("diff 预览第 %d 个章节的 section_occurrence 非法", i)
 		}
 		if strings.TrimSpace(section.Original) == "" {
 			return fmt.Errorf("diff 预览第 %d 个章节的 original 为空", i)

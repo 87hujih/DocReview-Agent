@@ -47,15 +47,6 @@ func (s *Service) BuildVersionChunks(ctx context.Context, input Input) ([]postgr
 	}
 
 	chunks := chunker.ChunkMarkdown(content)
-	if len(chunks) == 0 {
-		chunks = []chunker.Chunk{
-			{
-				ChunkIndex:   0,
-				SectionTitle: strings.TrimSpace(input.Resource.Title),
-				Content:      content,
-			},
-		}
-	}
 
 	texts := make([]string, 0, len(chunks))
 	for _, chunk := range chunks {

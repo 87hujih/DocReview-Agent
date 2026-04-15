@@ -288,8 +288,15 @@ func TestApprovalRepoCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET status = 'drafting' WHERE id = $1`, task.ID); err != nil {
+		t.Fatalf("set task to drafting: %v", err)
+	}
 
-	approval, err := approvalRepo.Create(ctx, task.ID)
+	approval, err := approvalRepo.CreateForTaskAwaitingApproval(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -298,6 +305,9 @@ func TestApprovalRepoCreate(t *testing.T) {
 	}
 	if approval.Status != "pending" {
 		t.Fatalf("expected approval status %q, got %q", "pending", approval.Status)
+	}
+	if approval.BaseVersionID == nil || *approval.BaseVersionID != version.ID {
+		t.Fatalf("expected base version %q, got %#v", version.ID, approval.BaseVersionID)
 	}
 	if approval.RejectReason != nil {
 		t.Fatalf("expected nil reject reason, got %#v", approval.RejectReason)
@@ -326,8 +336,15 @@ func TestApprovalRepoReadListAndUpdateStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first task: %v", err)
 	}
+	firstVersion, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n第一份原始正文", "original")
+	if err != nil {
+		t.Fatalf("create first version: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET status = 'drafting' WHERE id = $1`, firstTask.ID); err != nil {
+		t.Fatalf("set first task to drafting: %v", err)
+	}
 
-	firstApproval, err := approvalRepo.Create(ctx, firstTask.ID)
+	firstApproval, err := approvalRepo.CreateForTaskAwaitingApproval(ctx, firstTask.ID, firstVersion.ID)
 	if err != nil {
 		t.Fatalf("create first approval: %v", err)
 	}
@@ -338,8 +355,15 @@ func TestApprovalRepoReadListAndUpdateStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second task: %v", err)
 	}
+	secondVersion, err := resourceRepo.CreateVersion(ctx, resource.ID, 2, "## 第一章\n第二份原始正文", "original")
+	if err != nil {
+		t.Fatalf("create second version: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET status = 'drafting' WHERE id = $1`, secondTask.ID); err != nil {
+		t.Fatalf("set second task to drafting: %v", err)
+	}
 
-	secondApproval, err := approvalRepo.Create(ctx, secondTask.ID)
+	secondApproval, err := approvalRepo.CreateForTaskAwaitingApproval(ctx, secondTask.ID, secondVersion.ID)
 	if err != nil {
 		t.Fatalf("create second approval: %v", err)
 	}
@@ -459,11 +483,11 @@ func TestJobRepoCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first task: %v", err)
 	}
-	firstApproval, err := approvalRepo.Create(ctx, firstTask.ID)
+	firstApproval, err := approvalRepo.Create(ctx, firstTask.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create first approval: %v", err)
 	}
-	firstJob, err := jobRepo.Create(ctx, firstTask.ID, firstApproval.ID)
+	firstJob, err := jobRepo.Create(ctx, firstTask.ID, firstApproval.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create first job: %v", err)
 	}
@@ -474,11 +498,11 @@ func TestJobRepoCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second task: %v", err)
 	}
-	secondApproval, err := approvalRepo.Create(ctx, secondTask.ID)
+	secondApproval, err := approvalRepo.Create(ctx, secondTask.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create second approval: %v", err)
 	}
-	secondJob, err := jobRepo.Create(ctx, secondTask.ID, secondApproval.ID)
+	secondJob, err := jobRepo.Create(ctx, secondTask.ID, secondApproval.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create second job: %v", err)
 	}

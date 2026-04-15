@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent_project/apps/server/internal/knowledge/sections"
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
@@ -78,11 +79,38 @@ func TestReindexVersionUsesSingleChunkFallback(t *testing.T) {
 	if len(repo.lastChunks) != 1 {
 		t.Fatalf("expected 1 fallback chunk, got %d", len(repo.lastChunks))
 	}
-	if repo.lastChunks[0].SectionTitle != "员工手册" {
-		t.Fatalf("expected fallback section title %q, got %q", "员工手册", repo.lastChunks[0].SectionTitle)
+	if repo.lastChunks[0].SectionTitle != sections.WholeDocumentTitle {
+		t.Fatalf("expected fallback section title %q, got %q", sections.WholeDocumentTitle, repo.lastChunks[0].SectionTitle)
 	}
 	if repo.lastChunks[0].Content != "这是没有二级标题的正文。" {
 		t.Fatalf("expected fallback content %q, got %q", "这是没有二级标题的正文。", repo.lastChunks[0].Content)
+	}
+}
+
+func TestBuildVersionChunksKeepsWholeDocumentFallback(t *testing.T) {
+	repo := &fakeIndexRepo{}
+	service := NewService(repo, fakeEmbedder{})
+
+	chunks, err := service.BuildVersionChunks(context.Background(), Input{
+		Resource: postgres.Resource{
+			ID:    "resource-5",
+			Title: "员工手册",
+		},
+		Version: postgres.ResourceVersion{
+			ID:         "version-5",
+			ResourceID: "resource-5",
+			Content:    "这是没有二级标题的正文。",
+		},
+	})
+	if err != nil {
+		t.Fatalf("build version chunks: %v", err)
+	}
+
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 fallback chunk, got %d", len(chunks))
+	}
+	if chunks[0].SectionTitle != sections.WholeDocumentTitle {
+		t.Fatalf("expected fallback section title %q, got %q", sections.WholeDocumentTitle, chunks[0].SectionTitle)
 	}
 }
 

@@ -98,11 +98,12 @@ func (fakeEditorAgent) Edit(context.Context, string, string, []citation.Citation
 	return &editor.DiffPreview{
 		Sections: []editor.DiffSection{
 			{
-				SectionTitle: "考勤",
-				Original:     "原始条款",
-				Revised:      "明确后的考勤条款",
-				Reason:       "减少歧义",
-				CitationIDs:  []string{"cite_1"},
+				SectionTitle:      "考勤",
+				SectionOccurrence: 1,
+				Original:          "原始条款",
+				Revised:           "明确后的考勤条款",
+				Reason:            "减少歧义",
+				CitationIDs:       []string{"cite_1"},
 			},
 		},
 	}, nil
@@ -147,6 +148,19 @@ func workflowCleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string
 	t.Helper()
 
 	ctx := workflowTestContext(t)
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM execution_jobs
+		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
+		   OR new_version_id IN (SELECT id FROM resource_versions WHERE resource_id = $1)
+	`, resourceID); err != nil {
+		t.Fatalf("cleanup execution jobs for resource %q: %v", resourceID, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM approvals
+		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
+	`, resourceID); err != nil {
+		t.Fatalf("cleanup approvals for resource %q: %v", resourceID, err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM resources WHERE id = $1`, resourceID); err != nil {
 		t.Fatalf("cleanup resource %q: %v", resourceID, err)
 	}
@@ -182,7 +196,7 @@ func TestValidateDiffPreviewRejectsEmptySections(t *testing.T) {
 func TestValidateDiffPreviewRejectsEmptySectionTitle(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
-		{SectionTitle: "", Original: "a", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}},
+		{SectionTitle: "", SectionOccurrence: 1, Original: "a", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}},
 	}}
 	if err := validateDiffPreview(preview, citations); err == nil {
 		t.Fatal("section_title 为空时期望返回错误")
@@ -192,7 +206,7 @@ func TestValidateDiffPreviewRejectsEmptySectionTitle(t *testing.T) {
 func TestValidateDiffPreviewRejectsEmptyOriginal(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
-		{SectionTitle: "t", Original: "", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}},
+		{SectionTitle: "t", SectionOccurrence: 1, Original: "", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}},
 	}}
 	if err := validateDiffPreview(preview, citations); err == nil {
 		t.Fatal("original 为空时期望返回错误")
@@ -202,7 +216,7 @@ func TestValidateDiffPreviewRejectsEmptyOriginal(t *testing.T) {
 func TestValidateDiffPreviewRejectsIdenticalOriginalRevised(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
-		{SectionTitle: "t", Original: "same", Revised: "same", Reason: "r", CitationIDs: []string{"cite_1"}},
+		{SectionTitle: "t", SectionOccurrence: 1, Original: "same", Revised: "same", Reason: "r", CitationIDs: []string{"cite_1"}},
 	}}
 	if err := validateDiffPreview(preview, citations); err == nil {
 		t.Fatal("original 与 revised 相同时期望返回错误")
@@ -213,7 +227,7 @@ func TestValidateDiffPreviewRejectsSectionsOverLimit(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	sections := make([]editor.DiffSection, 51)
 	for i := range sections {
-		sections[i] = editor.DiffSection{SectionTitle: "t", Original: "a", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}}
+		sections[i] = editor.DiffSection{SectionTitle: "t", SectionOccurrence: 1, Original: "a", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}}
 	}
 	preview := &editor.DiffPreview{Sections: sections}
 	if err := validateDiffPreview(preview, citations); err == nil {
@@ -225,7 +239,7 @@ func TestValidateDiffPreviewRejectsFieldOverRuneLimit(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	longStr := strings.Repeat("x", 10001)
 	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
-		{SectionTitle: longStr, Original: "a", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}},
+		{SectionTitle: longStr, SectionOccurrence: 1, Original: "a", Revised: "b", Reason: "r", CitationIDs: []string{"cite_1"}},
 	}}
 	if err := validateDiffPreview(preview, citations); err == nil {
 		t.Fatal("section_title 超过字符长度上限时期望返回错误")
@@ -239,10 +253,20 @@ func TestValidateDiffPreviewPassesNoChange(t *testing.T) {
 	}
 }
 
+func TestValidateDiffPreviewRejectsMissingSectionOccurrence(t *testing.T) {
+	citations := []citation.Citation{{CitationID: "cite_1"}}
+	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
+		{SectionTitle: "考勤", SectionOccurrence: 0, Original: "原文", Revised: "修订后", Reason: "补充定义", CitationIDs: []string{"cite_1"}},
+	}}
+	if err := validateDiffPreview(preview, citations); err == nil {
+		t.Fatal("section_occurrence 缺失时期望返回错误")
+	}
+}
+
 func TestValidateDiffPreviewPassesValid(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
-		{SectionTitle: "考勤", Original: "原文", Revised: "修订后", Reason: "补充定义", CitationIDs: []string{"cite_1"}},
+		{SectionTitle: "考勤", SectionOccurrence: 1, Original: "原文", Revised: "修订后", Reason: "补充定义", CitationIDs: []string{"cite_1"}},
 	}}
 	if err := validateDiffPreview(preview, citations); err != nil {
 		t.Fatalf("合法预览应通过校验：%v", err)

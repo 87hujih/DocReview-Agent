@@ -10,6 +10,7 @@ import (
 
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/knowledge/indexer"
+	"agent_project/apps/server/internal/knowledge/sections"
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
@@ -89,8 +90,8 @@ func TestImportDocumentUsesParsedTextWhenParserConfigured(t *testing.T) {
 		t.Fatal("expected parsed content to create chunks")
 	}
 
-	if repo.createdChunks[0].SectionTitle != "解析后的标题" {
-		t.Fatalf("expected chunk section title %q, got %q", "解析后的标题", repo.createdChunks[0].SectionTitle)
+	if repo.createdChunks[0].SectionTitle != sections.WholeDocumentTitle {
+		t.Fatalf("expected chunk section title %q, got %q", sections.WholeDocumentTitle, repo.createdChunks[0].SectionTitle)
 	}
 
 	if repo.createSourceRef == nil || *repo.createSourceRef != "学生守则.pdf" {

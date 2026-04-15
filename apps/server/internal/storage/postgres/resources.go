@@ -169,6 +169,24 @@ func (r *ResourceRepo) GetCurrentVersion(ctx context.Context, resourceID string)
 	return &version, nil
 }
 
+// GetVersionByID 按主键读取单个资源版本，不存在时返回 nil。
+func (r *ResourceRepo) GetVersionByID(ctx context.Context, versionID string) (*ResourceVersion, error) {
+	version, err := scanResourceVersion(r.pool.QueryRow(ctx, `
+		SELECT id, resource_id, version_number, content, source, created_at
+		FROM resource_versions
+		WHERE id = $1
+	`, versionID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &version, nil
+}
+
 // CountChunksByVersion 返回指定版本当前已有的 chunk 数。
 func (r *ResourceRepo) CountChunksByVersion(ctx context.Context, versionID string) (int, error) {
 	var count int

@@ -87,7 +87,7 @@ func (w *Worker) processPendingJobs(ctx context.Context) {
 }
 
 func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
-	newVersionID, err := w.executor.Execute(ctx, job)
+	prepared, err := w.executor.Prepare(ctx, job)
 	if err != nil {
 		errorMessage := err.Error()
 		if finalizeErr := w.finalizeJobFailure(ctx, job, errorMessage, "执行作业执行失败"); finalizeErr != nil {
@@ -96,13 +96,18 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 		return
 	}
 
-	if err := w.finalizeJobSuccess(ctx, job, newVersionID); err != nil {
-		// 执行成功但终态收尾失败，继续尝试原子切换到 failed，避免 job/task 长期卡在运行中。
-		errorMessage := fmt.Sprintf("更新作业完成状态失败（new_version_id=%s）：%v", newVersionID, err)
+	result, err := w.commitPreparedJob(ctx, job, prepared)
+	if err != nil {
+		errorMessage := fmt.Sprintf("提交 prepared execution 失败：%v", err)
 		log.Printf("错误：%s job=%s", errorMessage, job.ID)
 		if finalizeErr := w.finalizeJobFailure(ctx, job, errorMessage, "执行作业落库失败"); finalizeErr != nil {
 			log.Printf("错误：回退作业到 failed 状态失败：job=%s err=%v", job.ID, finalizeErr)
 		}
+		return
+	}
+
+	if result.JobStatus == "failed" {
+		return
 	}
 }
 
@@ -139,6 +144,84 @@ func (w *Worker) finalizeJobSuccess(ctx context.Context, job *postgres.Execution
 			Payload: map[string]any{
 				"from_status": fromTaskStatus,
 				"to_status":   task.Status,
+			},
+		})
+	})
+}
+
+func (w *Worker) commitPreparedJob(
+	ctx context.Context,
+	job *postgres.ExecutionJob,
+	prepared *executoragent.PreparedExecution,
+) (*postgres.CommitPreparedExecutionResult, error) {
+	return w.jobRepo.CommitPreparedExecution(ctx, postgres.CommitPreparedExecutionParams{
+		JobID:         job.ID,
+		BaseVersionID: prepared.BaseVersion.ID,
+		NewContent:    prepared.NewContent,
+		Chunks:        prepared.PreparedChunks,
+	}, func(
+		ctx context.Context,
+		tx pgx.Tx,
+		task *postgres.Task,
+		job *postgres.ExecutionJob,
+		fromTaskStatus string,
+	) error {
+		if job.Status == "done" {
+			if err := w.recordEventTx(ctx, tx, taskevents.RecordInput{
+				TaskID:    task.ID,
+				RunID:     stringPointer(job.ID),
+				Source:    "job_worker",
+				Level:     "info",
+				EventType: "job.completed",
+				Message:   "执行作业已完成",
+				Payload: map[string]any{
+					"approval_id":    job.ApprovalID,
+					"new_version_id": dereferenceString(job.NewVersionID),
+				},
+			}); err != nil {
+				return err
+			}
+
+			return w.recordEventTx(ctx, tx, taskevents.RecordInput{
+				TaskID:    task.ID,
+				RunID:     stringPointer(job.ID),
+				Source:    "job_worker",
+				Level:     "info",
+				EventType: "task.status_changed",
+				Message:   "任务状态已更新",
+				Payload: map[string]any{
+					"from_status": fromTaskStatus,
+					"to_status":   task.Status,
+				},
+			})
+		}
+
+		if err := w.recordEventTx(ctx, tx, taskevents.RecordInput{
+			TaskID:    task.ID,
+			RunID:     stringPointer(job.ID),
+			Source:    "job_worker",
+			Level:     "error",
+			EventType: "job.failed",
+			Message:   "执行作业执行失败",
+			Payload: map[string]any{
+				"approval_id":   job.ApprovalID,
+				"error_message": dereferenceString(job.ErrorMessage),
+			},
+		}); err != nil {
+			return err
+		}
+
+		return w.recordEventTx(ctx, tx, taskevents.RecordInput{
+			TaskID:    task.ID,
+			RunID:     stringPointer(job.ID),
+			Source:    "job_worker",
+			Level:     "error",
+			EventType: "task.status_changed",
+			Message:   "任务状态已更新",
+			Payload: map[string]any{
+				"from_status":   fromTaskStatus,
+				"to_status":     task.Status,
+				"error_message": dereferenceString(job.ErrorMessage),
 			},
 		})
 	})
@@ -220,4 +303,12 @@ func (w *Worker) recordJobEvent(
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+func dereferenceString(value *string) string {
+	if value == nil {
+		return ""
+	}
+
+	return *value
 }

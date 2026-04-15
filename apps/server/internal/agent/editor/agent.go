@@ -24,6 +24,7 @@ const systemPrompt = `你是一个文档修订编辑代理。你必须只输出 
   "sections": [
     {
       "section_title": "章节标题",
+      "section_occurrence": 1,
       "original": "原文片段",
       "revised": "修订后片段",
       "reason": "修改原因",
@@ -35,9 +36,10 @@ const systemPrompt = `你是一个文档修订编辑代理。你必须只输出 
 要求：
 1. 若文档无需任何修改，返回 {"no_change": true, "sections": []}。
 2. 否则只返回需要修改的章节，no_change 设为 false。
-3. 每个 section 的 citation_ids 至少包含 1 个引用 ID。
-4. revised 必须是可直接替换到文档中的文本，且与 original 不同。
-5. reason 解释修改原因，不要做程序化校验说明。`
+3. 每个 section 必须输出 section_occurrence，表示同名章节第几次出现；若全文没有任何 ## 二级标题，则 section_title 固定写“全文”，section_occurrence 固定写 1。
+4. 每个 section 的 citation_ids 至少包含 1 个引用 ID。
+5. revised 必须是可直接替换到文档中的文本，且与 original 不同。
+6. reason 解释修改原因，不要做程序化校验说明。`
 
 // Agent 封装 Editor 所需的 LLM 客户端和重试配置。
 type Agent struct {
@@ -53,11 +55,12 @@ type DiffPreview struct {
 
 // DiffSection 表示一个待修订章节。
 type DiffSection struct {
-	SectionTitle string   `json:"section_title"`
-	Original     string   `json:"original"`
-	Revised      string   `json:"revised"`
-	Reason       string   `json:"reason"`
-	CitationIDs  []string `json:"citation_ids"`
+	SectionTitle      string   `json:"section_title"`
+	SectionOccurrence int      `json:"section_occurrence"`
+	Original          string   `json:"original"`
+	Revised           string   `json:"revised"`
+	Reason            string   `json:"reason"`
+	CitationIDs       []string `json:"citation_ids"`
 }
 
 // New 构造 Editor Agent。cfg 控制单次 HTTP 超时和重试行为。
