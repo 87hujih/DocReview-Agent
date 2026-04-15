@@ -1,4 +1,5 @@
 import { apiFetch } from "./client";
+import { buildPublicApiUrl } from "./public-url";
 
 export interface Resource {
   id: string;
@@ -36,7 +37,7 @@ export function getResource(id: string): Promise<ResourceDetailsResponse> {
 }
 
 export function getResourceExportURL(id: string): string {
-  return `/api/resources/${encodeURIComponent(id)}/export`;
+  return buildPublicApiUrl(`/api/resources/${encodeURIComponent(id)}/export`);
 }
 
 export function searchResource(id: string, query: string): Promise<Citation[]> {

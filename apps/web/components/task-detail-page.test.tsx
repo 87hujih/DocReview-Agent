@@ -56,7 +56,7 @@ describe("TaskDetailPage", () => {
     );
     expect(screen.getByRole("link", { name: "下载修订结果" })).toHaveAttribute(
       "href",
-      "/api/resources/resource-1/export"
+      "http://127.0.0.1:18080/api/resources/resource-1/export"
     );
   });
 });
