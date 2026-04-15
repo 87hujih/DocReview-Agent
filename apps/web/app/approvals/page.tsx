@@ -37,21 +37,6 @@ export default function ApprovalsPage() {
     return getApprovals("pending");
   }
 
-  async function loadInitialApprovals() {
-    try {
-      const items = await fetchPendingApprovals();
-      if (!mountedRef.current) return;
-      setApprovals(items);
-      setActionMessage(null);
-      setLoadErrorMessage(null);
-    } catch (error) {
-      if (!mountedRef.current) return;
-      setLoadErrorMessage(getErrorMessage(error));
-    } finally {
-      if (mountedRef.current) setIsLoading(false);
-    }
-  }
-
   function removeApprovalFromQueue(id: string) {
     setApprovals((current) => current.filter((approval) => approval.id !== id));
   }
@@ -71,6 +56,21 @@ export default function ApprovalsPage() {
   }
 
   useEffect(() => {
+    async function loadInitialApprovals() {
+      try {
+        const items = await fetchPendingApprovals();
+        if (!mountedRef.current) return;
+        setApprovals(items);
+        setActionMessage(null);
+        setLoadErrorMessage(null);
+      } catch (error) {
+        if (!mountedRef.current) return;
+        setLoadErrorMessage(getErrorMessage(error));
+      } finally {
+        if (mountedRef.current) setIsLoading(false);
+      }
+    }
+
     void loadInitialApprovals();
 
     return () => {
