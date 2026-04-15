@@ -1,5 +1,6 @@
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:18080";
 const DEFAULT_TIMEOUT_MS = 20_000;
+
+import { getPublicApiBaseURL } from "./public-url";
 
 export type ApiClientErrorCode = "backend_offline" | "request_timeout" | "service_error";
 
@@ -80,7 +81,7 @@ function tryParseJSON(value: string): unknown {
 }
 
 function buildApiUrl(path: string): string {
-  return `${BASE_URL}${path}`;
+  return `${getPublicApiBaseURL()}${path}`;
 }
 
 function mergeAbortSignals(...signals: Array<AbortSignal | null | undefined>): AbortSignal | undefined {

@@ -3,6 +3,17 @@ import { render, screen } from "@testing-library/react";
 import { ResourceVersionViewer } from "./resource-version-viewer";
 
 describe("ResourceVersionViewer", () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    process.env.NEXT_PUBLIC_API_URL = "http://127.0.0.1:18080";
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
   it("renders the current resource version and exposes a markdown export link", () => {
     render(
       <ResourceVersionViewer
@@ -31,7 +42,7 @@ describe("ResourceVersionViewer", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "下载修订结果" })).toHaveAttribute(
       "href",
-      "/api/resources/resource-1/export"
+      "http://127.0.0.1:18080/api/resources/resource-1/export"
     );
   });
 });

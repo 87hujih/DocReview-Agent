@@ -23,10 +23,18 @@ const mockedGetTaskArtifacts = vi.mocked(getTaskArtifacts);
 const mockedGetTaskEvents = vi.mocked(getTaskEvents);
 
 describe("TaskDetailPage", () => {
+  const originalEnv = process.env;
+
   beforeEach(() => {
+    process.env = { ...originalEnv };
+    process.env.NEXT_PUBLIC_API_URL = "http://127.0.0.1:18080";
     mockedGetTask.mockReset();
     mockedGetTaskArtifacts.mockReset();
     mockedGetTaskEvents.mockReset();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
   });
 
   it("shows result view and export links when the task is completed", async () => {
@@ -56,7 +64,7 @@ describe("TaskDetailPage", () => {
     );
     expect(screen.getByRole("link", { name: "下载修订结果" })).toHaveAttribute(
       "href",
-      "/api/resources/resource-1/export"
+      "http://127.0.0.1:18080/api/resources/resource-1/export"
     );
   });
 });

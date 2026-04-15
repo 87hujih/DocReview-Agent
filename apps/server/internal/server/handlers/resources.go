@@ -68,6 +68,11 @@ func NewResourceHandler(repo *postgres.ResourceRepo, ret resourceSearchService) 
 
 // List 返回资源浏览页需要的资源摘要列表。
 func (h *ResourceHandler) List(requestCtx context.Context, ctx *app.RequestContext) {
+	if h.resourceRepo == nil {
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "资源存储未配置"})
+		return
+	}
+
 	resources, err := h.resourceRepo.List(requestCtx)
 	if err != nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询资源列表失败"})
