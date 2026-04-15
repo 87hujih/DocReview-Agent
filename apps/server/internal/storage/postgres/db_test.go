@@ -80,6 +80,46 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	}
 }
 
+func TestMigrationCreatesTaskQueryIndexes(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT indexname
+		FROM pg_indexes
+		WHERE schemaname = 'public'
+		  AND indexname = ANY($1)
+	`, []string{
+		"idx_tasks_created_at_id",
+		"idx_task_steps_task_created_id",
+		"idx_task_artifacts_task_created_id",
+	})
+	if err != nil {
+		t.Fatalf("query indexes: %v", err)
+	}
+	defer rows.Close()
+
+	indexNames, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collect indexes: %v", err)
+	}
+
+	expectedIndexes := []string{
+		"idx_tasks_created_at_id",
+		"idx_task_steps_task_created_id",
+		"idx_task_artifacts_task_created_id",
+	}
+	for _, expectedIndex := range expectedIndexes {
+		if !slices.Contains(indexNames, expectedIndex) {
+			t.Fatalf("expected index %q to exist, got %v", expectedIndex, indexNames)
+		}
+	}
+}
+
 // TestRunMigrationsWaitsForAdvisoryLock 验证迁移会等待数据库级 advisory lock，避免并发执行。
 func TestRunMigrationsWaitsForAdvisoryLock(t *testing.T) {
 	pool := newRawTestPool(t)

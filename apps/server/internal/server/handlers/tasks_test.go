@@ -21,8 +21,9 @@ func TestCreateTaskHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.POST("/api/tasks", handler.Create)
 
@@ -60,12 +61,23 @@ func TestCreateTaskHandler(t *testing.T) {
 	}
 }
 
+func TestNewTaskHandlerRequiresEventRepo(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic when event repo is nil")
+		}
+	}()
+
+	_ = NewTaskHandler(nil, nil, nil)
+}
+
 func TestCreateTaskHandlerMissingVersion(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.POST("/api/tasks", handler.Create)
 
@@ -98,8 +110,9 @@ func TestListTasksHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks", handler.List)
 
@@ -127,8 +140,9 @@ func TestGetTaskByIDHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id", handler.GetByID)
 
@@ -162,8 +176,9 @@ func TestGetTaskByIDHandlerIncludesErrorMessages(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id", handler.GetByID)
 
@@ -213,8 +228,9 @@ func TestGetTaskArtifactsHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id/artifacts", handler.GetArtifacts)
 
@@ -333,8 +349,9 @@ func TestGetTaskNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id", handler.GetByID)
 
@@ -349,8 +366,9 @@ func TestGetTaskByInvalidUUID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id", handler.GetByID)
 
@@ -365,8 +383,9 @@ func TestGetTaskArtifactsByInvalidUUID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id/artifacts", handler.GetArtifacts)
 
@@ -398,8 +417,9 @@ func TestCreateTaskInvalidResourceIDFormat(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.POST("/api/tasks", handler.Create)
 

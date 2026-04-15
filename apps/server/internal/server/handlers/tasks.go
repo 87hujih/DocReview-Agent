@@ -97,6 +97,10 @@ type getTaskEventsResponse struct {
 
 // NewTaskHandler 创建任务 handler。
 func NewTaskHandler(svc *taskservice.Service, repo *postgres.TaskRepo, eventRepo *postgres.TaskEventRepo) *TaskHandler {
+	if eventRepo == nil {
+		panic("task event repo is required")
+	}
+
 	return &TaskHandler{
 		taskService: svc,
 		taskRepo:    repo,
@@ -225,11 +229,6 @@ func (h *TaskHandler) GetArtifacts(requestCtx context.Context, ctx *app.RequestC
 
 // GetEvents 返回任务执行过程中的结构化事件流。
 func (h *TaskHandler) GetEvents(requestCtx context.Context, ctx *app.RequestContext) {
-	if h.eventRepo == nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "任务事件服务未配置"})
-		return
-	}
-
 	id := ctx.Param("id")
 	if !isValidUUID(id) {
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "无效的任务 ID"})
