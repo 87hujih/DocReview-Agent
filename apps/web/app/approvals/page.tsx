@@ -56,6 +56,8 @@ export default function ApprovalsPage() {
   }
 
   useEffect(() => {
+    mountedRef.current = true;
+
     async function loadInitialApprovals() {
       try {
         const items = await fetchPendingApprovals();

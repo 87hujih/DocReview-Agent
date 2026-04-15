@@ -62,6 +62,19 @@ describe("ApprovalsPage", () => {
     expect(screen.queryByText(/^队列深度 0$/)).not.toBeInTheDocument();
   });
 
+  it("loads approvals correctly under react strict mode", async () => {
+    mockedGetApprovals.mockResolvedValueOnce([makeApproval()]);
+
+    render(
+      <React.StrictMode>
+        <ApprovalsPage />
+      </React.StrictMode>
+    );
+
+    expect(await screen.findByText("批准")).toBeInTheDocument();
+    expect(screen.queryByText("正在加载审批队列")).not.toBeInTheDocument();
+  });
+
   it("keeps approval cards content-sized when the pending queue gets shorter", () => {
     const pageCss = readFileSync(join(process.cwd(), "app", "approvals", "page.module.css"), "utf8");
     const listBodyRule = cssRule(pageCss, ".listBody");
