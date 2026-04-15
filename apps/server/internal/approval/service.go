@@ -19,6 +19,8 @@ var (
 	ErrApprovalNotFound = errors.New("审批不存在")
 	// ErrApprovalAlreadyDecided 表示审批已做出决策，不能重复操作。
 	ErrApprovalAlreadyDecided = errors.New("审批已处理")
+	// ErrApprovalMissingBaseVersion 表示待审批记录缺少审批时看到的版本快照。
+	ErrApprovalMissingBaseVersion = errors.New("legacy approval 缺少 base_version_id")
 	// ErrReasonRequired 表示拒绝审批时必须提供原因。
 	ErrReasonRequired = errors.New("必须提供原因")
 	// ErrTaskNotFound 表示审批对应的任务不存在。
@@ -99,12 +101,19 @@ func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.App
 	if err != nil {
 		return nil, err
 	}
-
-	if err := postgres.UpdateApprovalStatusTx(ctx, tx, approvalID, "approved", nil); err != nil {
-		return nil, err
+	if approvalRecord.BaseVersionID == nil || strings.TrimSpace(*approvalRecord.BaseVersionID) == "" {
+		return nil, ErrApprovalMissingBaseVersion
 	}
 
-	job, err := postgres.CreateJobTx(ctx, tx, approvalRecord.TaskID, approvalID)
+	updatedApproval, err := postgres.UpdateApprovalStatusTxReturning(ctx, tx, approvalID, "approved", nil)
+	if err != nil {
+		return nil, err
+	}
+	if updatedApproval == nil {
+		return nil, ErrApprovalNotFound
+	}
+
+	job, err := postgres.CreateJobTx(ctx, tx, approvalRecord.TaskID, approvalID, *approvalRecord.BaseVersionID)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +175,7 @@ func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.App
 
 	s.enqueueJob()
 
-	return s.approvalRepo.GetByID(ctx, approvalID)
+	return updatedApproval, nil
 }
 
 // Reject 将审批切换为 rejected，并把任务标记为 failed。
@@ -187,8 +196,12 @@ func (s *Service) Reject(ctx context.Context, approvalID string, reason string) 
 		return nil, err
 	}
 
-	if err := postgres.UpdateApprovalStatusTx(ctx, tx, approvalID, "rejected", &reason); err != nil {
+	updatedApproval, err := postgres.UpdateApprovalStatusTxReturning(ctx, tx, approvalID, "rejected", &reason)
+	if err != nil {
 		return nil, err
+	}
+	if updatedApproval == nil {
+		return nil, ErrApprovalNotFound
 	}
 
 	if err := postgres.UpdateTaskStatusTx(ctx, tx, task.ID, models.StatusFailed, &reason); err != nil {
@@ -231,7 +244,7 @@ func (s *Service) Reject(ctx context.Context, approvalID string, reason string) 
 		return nil, err
 	}
 
-	return s.approvalRepo.GetByID(ctx, approvalRecord.ID)
+	return updatedApproval, nil
 }
 
 func (s *Service) loadPendingApprovalTask(ctx context.Context, approvalID string, targetStatus string) (*postgres.Approval, *postgres.Task, error) {

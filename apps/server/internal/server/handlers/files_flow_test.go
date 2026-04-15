@@ -20,6 +20,7 @@ import (
 	"agent_project/apps/server/internal/knowledge/ingest"
 	"agent_project/apps/server/internal/storage/filestore"
 	"agent_project/apps/server/internal/storage/postgres"
+	"agent_project/apps/server/internal/testsupport/postgrescleanup"
 	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
 	taskservice "agent_project/apps/server/internal/task/service"
@@ -104,7 +105,14 @@ func TestUploadApproveExecuteAndExportFlow(t *testing.T) {
 	if _, err := taskRepo.AddArtifact(ctx, task.ID, "diff_preview", []byte(`{"sections":[{"section_title":"第一章","original":"原始第一章内容","revised":"最终修订内容","reason":"验证端到端闭环","citation_ids":["cite_1"]}]}`)); err != nil {
 		t.Fatalf("add diff preview artifact: %v", err)
 	}
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	currentVersion, err := resourceRepo.GetCurrentVersion(ctx, resourceID)
+	if err != nil {
+		t.Fatalf("get current version: %v", err)
+	}
+	if currentVersion == nil {
+		t.Fatal("expected uploaded resource to have current version")
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, currentVersion.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -269,23 +277,20 @@ func cleanupFlowData(t *testing.T, pool *pgxpool.Pool, resourceID string, sessio
 	t.Helper()
 
 	ctx := flowTestContext(t)
+	if resourceID != "" {
+		if err := postgrescleanup.CleanupResourceTree(ctx, pool, resourceID); err != nil {
+			t.Fatalf("cleanup resource tree %q: %v", resourceID, err)
+		}
+	}
+	if sessionID != "" {
+		if _, err := pool.Exec(ctx, `DELETE FROM assistant_sessions WHERE id = $1`, sessionID); err != nil {
+			t.Fatalf("cleanup assistant session %q: %v", sessionID, err)
+		}
+	}
 	if fileID != "" {
 		if _, err := pool.Exec(ctx, `DELETE FROM uploaded_files WHERE id = $1`, fileID); err != nil {
 			t.Fatalf("cleanup uploaded file %q: %v", fileID, err)
 		}
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM assistant_sessions WHERE id = $1`, sessionID); err != nil {
-		t.Fatalf("cleanup assistant session %q: %v", sessionID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM execution_jobs
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-		   OR new_version_id IN (SELECT id FROM resource_versions WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup execution jobs for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM resources WHERE id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup resource %q: %v", resourceID, err)
 	}
 }
 

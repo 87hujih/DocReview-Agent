@@ -37,7 +37,11 @@ func TestListApprovalsHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := approvalRepo.Create(ctx, task.ID); err != nil {
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	if _, err := approvalRepo.Create(ctx, task.ID, version.ID); err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
 
@@ -76,7 +80,11 @@ func TestGetApprovalHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -135,11 +143,15 @@ func TestGetJobHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
-	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID)
+	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}
@@ -201,8 +213,11 @@ func TestApproveApprovalHandler(t *testing.T) {
 	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
 		t.Fatalf("update task to awaiting approval: %v", err)
 	}
-
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -245,8 +260,11 @@ func TestRejectApprovalHandler(t *testing.T) {
 	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
 		t.Fatalf("update task to awaiting approval: %v", err)
 	}
-
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -351,7 +369,8 @@ func TestGetJobByInvalidUUID(t *testing.T) {
 	}
 }
 
-func TestApproveApprovalNotFound(t *testing.T) {	pool := newHandlerTestPool(t)
+func TestApproveApprovalNotFound(t *testing.T) {
+	pool := newHandlerTestPool(t)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)

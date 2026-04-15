@@ -11,6 +11,7 @@ import (
 	"time"
 
 	appconfig "agent_project/apps/server/internal/config"
+	"agent_project/apps/server/internal/testsupport/postgrescleanup"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -116,6 +117,65 @@ func TestMigrationCreatesTaskQueryIndexes(t *testing.T) {
 	for _, expectedIndex := range expectedIndexes {
 		if !slices.Contains(indexNames, expectedIndex) {
 			t.Fatalf("expected index %q to exist, got %v", expectedIndex, indexNames)
+		}
+	}
+}
+
+func TestMigrationAddsExecutionChainBaseVersionColumns(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT table_name, column_name, is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND (
+			(table_name = 'approvals' AND column_name = 'base_version_id')
+			OR
+			(table_name = 'execution_jobs' AND column_name = 'base_version_id')
+		  )
+		ORDER BY table_name, column_name
+	`)
+	if err != nil {
+		t.Fatalf("query base version columns: %v", err)
+	}
+	defer rows.Close()
+
+	type columnInfo struct {
+		TableName  string
+		ColumnName string
+		IsNullable string
+	}
+
+	columns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (columnInfo, error) {
+		var info columnInfo
+		err := row.Scan(&info.TableName, &info.ColumnName, &info.IsNullable)
+		return info, err
+	})
+	if err != nil {
+		t.Fatalf("collect base version columns: %v", err)
+	}
+
+	expected := map[string]string{
+		"approvals.base_version_id":      "YES",
+		"execution_jobs.base_version_id": "YES",
+	}
+	if len(columns) != len(expected) {
+		t.Fatalf("expected %d base version columns, got %d (%v)", len(expected), len(columns), columns)
+	}
+
+	for _, column := range columns {
+		key := column.TableName + "." + column.ColumnName
+		expectedNullable, ok := expected[key]
+		if !ok {
+			t.Fatalf("unexpected column info returned: %#v", column)
+		}
+		if column.IsNullable != expectedNullable {
+			t.Fatalf("expected %s nullable=%s, got %s", key, expectedNullable, column.IsNullable)
 		}
 	}
 }
@@ -306,6 +366,36 @@ func TestResourceCRUD(t *testing.T) {
 
 	if !containsResource(resources, resource.ID) {
 		t.Fatalf("expected resources list to contain %q", resource.ID)
+	}
+}
+
+func TestResourceRepoGetVersionByID(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := repo.Create(ctx, "版本读取测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	version, err := repo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	got, err := repo.GetVersionByID(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("get version by id: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected version, got nil")
+	}
+	if got.ID != version.ID {
+		t.Fatalf("expected version id %q, got %q", version.ID, got.ID)
 	}
 }
 
@@ -637,6 +727,72 @@ func TestSearchChunksLexicalByVersionExcludesOlderVersion(t *testing.T) {
 	}
 }
 
+func TestCleanupResourceTreeIsIdempotent(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	jobRepo := NewJobRepo(pool)
+	eventRepo := NewTaskEventRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "资源树清理测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+
+	task, err := taskRepo.Create(ctx, resource.ID, "验证共享 cleanup helper")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := taskRepo.AddStep(ctx, task.ID, "planner"); err != nil {
+		t.Fatalf("add step: %v", err)
+	}
+	if _, err := taskRepo.AddArtifact(ctx, task.ID, "diff_preview", []byte(`{"sections":[]}`)); err != nil {
+		t.Fatalf("add artifact: %v", err)
+	}
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	job, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, err := eventRepo.Add(ctx, TaskEventCreateParams{
+		TaskID:    task.ID,
+		RunID:     &job.ID,
+		Source:    "cleanup_test",
+		Level:     "info",
+		EventType: "cleanup.seed",
+		Message:   "seed cleanup data",
+		Payload:   []byte(`{"resource_id":"` + resource.ID + `"}`),
+	}); err != nil {
+		t.Fatalf("add task event: %v", err)
+	}
+
+	if err := postgrescleanup.CleanupResourceTree(ctx, pool, resource.ID); err != nil {
+		t.Fatalf("first cleanup: %v", err)
+	}
+
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM resources WHERE id = $1`, resource.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM tasks WHERE id = $1`, task.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM approvals WHERE id = $1`, approvalRecord.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM execution_jobs WHERE id = $1`, job.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM task_steps WHERE task_id = $1`, task.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM task_artifacts WHERE task_id = $1`, task.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM task_events WHERE task_id = $1`, task.ID)
+
+	if err := postgrescleanup.CleanupResourceTree(ctx, pool, resource.ID); err != nil {
+		t.Fatalf("second cleanup: %v", err)
+	}
+}
+
 // newTestPool 为 PostgreSQL 存储测试创建可复用连接池并执行迁移。
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -692,43 +848,20 @@ func cleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
 	ctx := testContext(t)
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM execution_jobs
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-		   OR new_version_id IN (SELECT id FROM resource_versions WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup execution jobs for resource %q: %v", resourceID, err)
+	if err := postgrescleanup.CleanupResourceTree(ctx, pool, resourceID); err != nil {
+		t.Fatalf("cleanup resource tree for resource %q: %v", resourceID, err)
 	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM approvals
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup approvals for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_events
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task events for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_artifacts
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task artifacts for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_steps
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task steps for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM tasks WHERE resource_id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup tasks for resource %q: %v", resourceID, err)
-	}
+}
 
-	if _, err := pool.Exec(ctx, `DELETE FROM resources WHERE id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup resource %q: %v", resourceID, err)
+func assertRowMissing(t *testing.T, ctx context.Context, pool *pgxpool.Pool, query string, id string) {
+	t.Helper()
+
+	var count int
+	if err := pool.QueryRow(ctx, query, id).Scan(&count); err != nil {
+		t.Fatalf("query cleanup result: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected query %q to return 0 rows for %q, got %d", query, id, count)
 	}
 }
 
