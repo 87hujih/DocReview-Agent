@@ -83,6 +83,122 @@ func TestGetResourceByIDHandler(t *testing.T) {
 	}
 }
 
+func TestGetResourceTaskContextWithCurrentVersionReturnsEnabledCapabilities(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, nil)
+	engine := server.New()
+	engine.GET("/api/resources/:id/task-context", handler.GetTaskContext)
+
+	ctx := testContext(t)
+	resource, err := repo.Create(ctx, "任务上下文测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	version, err := repo.CreateVersion(ctx, resource.ID, 1, "正文内容", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/"+resource.ID+"/task-context", nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	var payload struct {
+		Resource struct {
+			ID         string `json:"id"`
+			Title      string `json:"title"`
+			SourceType string `json:"source_type"`
+			CreatedAt  string `json:"created_at"`
+		} `json:"resource"`
+		CurrentVersion *struct {
+			ID            string `json:"id"`
+			VersionNumber int    `json:"version_number"`
+			Source        string `json:"source"`
+			CreatedAt     string `json:"created_at"`
+			Content       string `json:"content"`
+		} `json:"current_version"`
+		Capabilities struct {
+			CanCreateTask      bool    `json:"can_create_task"`
+			CanSearchCitations bool    `json:"can_search_citations"`
+			BlockingReason     *string `json:"blocking_reason"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(response.Body(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if payload.Resource.ID != resource.ID {
+		t.Fatalf("expected resource id %q, got %q", resource.ID, payload.Resource.ID)
+	}
+	if payload.CurrentVersion == nil {
+		t.Fatal("expected current version to be present")
+	}
+	if payload.CurrentVersion.ID != version.ID {
+		t.Fatalf("expected current version id %q, got %q", version.ID, payload.CurrentVersion.ID)
+	}
+	if payload.CurrentVersion.Content != "" {
+		t.Fatalf("expected task context not to include content, got %q", payload.CurrentVersion.Content)
+	}
+	if !payload.Capabilities.CanCreateTask || !payload.Capabilities.CanSearchCitations {
+		t.Fatalf("expected capabilities to be enabled, got %#v", payload.Capabilities)
+	}
+	if payload.Capabilities.BlockingReason != nil {
+		t.Fatalf("expected blocking reason to be nil, got %#v", payload.Capabilities.BlockingReason)
+	}
+}
+
+func TestGetResourceTaskContextWithoutCurrentVersionReturnsBlockingCapabilities(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, nil)
+	engine := server.New()
+	engine.GET("/api/resources/:id/task-context", handler.GetTaskContext)
+
+	ctx := testContext(t)
+	resource, err := repo.Create(ctx, "缺少版本任务上下文测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/"+resource.ID+"/task-context", nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	var payload struct {
+		CurrentVersion any `json:"current_version"`
+		Capabilities   struct {
+			CanCreateTask      bool    `json:"can_create_task"`
+			CanSearchCitations bool    `json:"can_search_citations"`
+			BlockingReason     *string `json:"blocking_reason"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(response.Body(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if payload.CurrentVersion != nil {
+		t.Fatalf("expected current version to be nil, got %#v", payload.CurrentVersion)
+	}
+	if payload.Capabilities.CanCreateTask || payload.Capabilities.CanSearchCitations {
+		t.Fatalf("expected blocking capabilities, got %#v", payload.Capabilities)
+	}
+	if payload.Capabilities.BlockingReason == nil || *payload.Capabilities.BlockingReason != "missing_current_version" {
+		t.Fatalf("expected blocking reason %q, got %#v", "missing_current_version", payload.Capabilities.BlockingReason)
+	}
+}
+
 // TestGetResourceNotFound 验证查询不存在的资源会返回 404。
 func TestGetResourceNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
