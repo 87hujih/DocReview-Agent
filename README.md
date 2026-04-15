@@ -44,6 +44,7 @@ pwsh -File scripts/dev/start-local.ps1
 # http://127.0.0.1:3000
 ```
 
+<<<<<<< feat/task-event-chain-consistency
 > 如果使用远程或已有的 PostgreSQL 实例，跳过步骤 3，直接在 `.env` 中配置 `DATABASE_URL` 即可。数据库需要预装 `pgvector` 和 `pg_trgm` 扩展，迁移脚本会自动创建。
 >
 > 当前前端首页已经切到“助手”入口：用户先在 `/` 自由聊天，再通过会话里的任务确认卡片创建任务。聊天内容已经接到真实模型回复；文件上传会真实进入后端会话并自动入资源库。当前仍是单人本地使用形态，暂未引入登录和多用户隔离。
@@ -159,3 +160,93 @@ Agent_Project/
 ## 许可证
 
 MIT
+=======
+- 前端：`Next.js`、`React`、`TypeScript`
+- 后端：`Go`、`Eino`、`Hertz`
+- 数据库：`PostgreSQL`
+- 向量能力：`pgvector`
+- 部署：`Docker Compose`
+
+## 核心对象
+
+第一版围绕以下对象组织：
+
+- `Resource`
+- `ResourceVersion`
+- `Task`
+- `TaskStep`
+- `TaskArtifact`
+- `Approval`
+- `ExecutionJob`
+
+其中 `Task` 是主对象，聊天不是主对象。
+
+## 页面形态
+
+MVP 最终应至少包含以下页面：
+
+- `首页工作台`
+- `资源页`
+- `任务创建页`
+- `任务详情页`
+- `审批页`
+
+聊天页如果保留，也只作为辅助入口，不作为产品主入口。
+
+## 后端能力边界
+
+后端当前应优先完成：
+
+- 资源导入与读取
+- 文档切片、检索与 citation
+- `Planner -> Retriever -> Reviewer -> Editor` 最小 Agent 工作流
+- 审批状态流转
+- 异步执行与新版本落库
+
+## 演示流程
+
+适合面试或作品展示的演示顺序：
+
+1. 打开资源页，查看系统内 demo 文档
+2. 选择一份文档发起“审阅与修订”任务
+3. 在任务详情页查看 citation、审阅摘要和 diff 预览
+4. 在审批页批准提案
+5. 返回任务详情页查看异步执行完成和新版本生成结果
+
+## 适合写进简历的亮点
+
+- 基于 `RAG + citation` 实现文档检索与证据引用
+- 设计了任务驱动的 Agent 工作流，而不是单纯聊天交互
+- 实现了 `修订提案 -> 审批 -> 异步执行` 的业务闭环
+- 使用结构化产物和 diff 预览提升结果可解释性
+- 支持任务状态追踪、执行结果沉淀和版本回看
+
+## 相关文档
+
+- CI/CD 部署配置详见 `deploy/` 目录和 `.github/workflows/`
+- Docker Compose 配置详见 `docker-compose.yml`
+
+## 当前说明
+
+根目录 `README.md` 保留为原始主说明文档。  
+本文件只服务当前 MVP 收敛与简历表达，不覆盖原文档。
+
+## CI/CD
+
+当前仓库已规划为：
+
+- `CI`: `pull_request` 与 `push main` 触发
+- `CD`: `v*` tag 触发正式发布
+- 镜像仓库：`GHCR`
+- 部署方式：`SSH + Docker Compose`
+
+镜像命名约定：
+
+- `ghcr.io/87hujih/docreview-agent-server:<tag>`
+- `ghcr.io/87hujih/docreview-agent-web:<tag>`
+
+远程访问方式：
+
+- 前端：`http://<server-ip>:3000`
+- 后端：`http://<server-ip>:8080`
+>>>>>>> feat/github-actions-cicd
