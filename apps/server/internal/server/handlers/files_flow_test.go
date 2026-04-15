@@ -20,10 +20,11 @@ import (
 	"agent_project/apps/server/internal/knowledge/ingest"
 	"agent_project/apps/server/internal/storage/filestore"
 	"agent_project/apps/server/internal/storage/postgres"
-	"agent_project/apps/server/internal/testsupport/postgrescleanup"
 	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
 	taskservice "agent_project/apps/server/internal/task/service"
+	"agent_project/apps/server/internal/testsupport/postgrescleanup"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
@@ -303,17 +304,7 @@ func newFlowTestPool(t *testing.T) *pgxpool.Pool {
 	}
 
 	ctx := flowTestContext(t)
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("database not available: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "server_files_flow", postgres.NewPool, postgres.RunMigrations)
 }
 
 func flowTestContext(t *testing.T) context.Context {

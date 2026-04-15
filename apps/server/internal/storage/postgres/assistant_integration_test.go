@@ -8,6 +8,7 @@ import (
 	"time"
 
 	appconfig "agent_project/apps/server/internal/config"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -107,15 +108,5 @@ func newAssistantIntegrationPool(t *testing.T) *pgxpool.Pool {
 	}
 
 	ctx := assistantTestContext(t)
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Fatalf("new pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "storage_postgres_assistant_integration", NewPool, RunMigrations)
 }

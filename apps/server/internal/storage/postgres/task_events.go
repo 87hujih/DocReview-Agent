@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -40,6 +41,28 @@ type TaskEventRepo struct {
 	pool *pgxpool.Pool
 }
 
+// monotonicTimestampClock 保证同一进程内生成的事件时间戳至少按微秒单调递增，避免数据库截断精度后顺序漂移。
+type monotonicTimestampClock struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+func (c *monotonicTimestampClock) Next(now time.Time) time.Time {
+	normalized := now.UTC().Truncate(time.Microsecond)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.last.IsZero() && !normalized.After(c.last) {
+		normalized = c.last.Add(time.Microsecond)
+	}
+
+	c.last = normalized
+	return normalized
+}
+
+var defaultTaskEventCreatedAtClock monotonicTimestampClock
+
 // NewTaskEventRepo 使用连接池创建任务事件仓储。
 func NewTaskEventRepo(pool *pgxpool.Pool) *TaskEventRepo {
 	return &TaskEventRepo{pool: pool}
@@ -72,7 +95,9 @@ func taskEventInsertArgs(params TaskEventCreateParams) []any {
 	}
 	createdAt := params.CreatedAt
 	if createdAt.IsZero() {
-		createdAt = time.Now().UTC()
+		createdAt = defaultTaskEventCreatedAtClock.Next(time.Now().UTC())
+	} else {
+		createdAt = createdAt.UTC().Truncate(time.Microsecond)
 	}
 
 	return []any{

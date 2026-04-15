@@ -12,6 +12,7 @@ import (
 
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/testsupport/postgrescleanup"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,7 +31,7 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	rows, err := pool.Query(ctx, `
 		SELECT table_name
 		FROM information_schema.tables
-		WHERE table_schema = 'public'
+		WHERE table_schema = current_schema()
 	`)
 	if err != nil {
 		t.Fatalf("query tables: %v", err)
@@ -92,7 +93,7 @@ func TestMigrationCreatesTaskQueryIndexes(t *testing.T) {
 	rows, err := pool.Query(ctx, `
 		SELECT indexname
 		FROM pg_indexes
-		WHERE schemaname = 'public'
+		WHERE schemaname = current_schema()
 		  AND indexname = ANY($1)
 	`, []string{
 		"idx_tasks_created_at_id",
@@ -132,7 +133,7 @@ func TestMigrationAddsExecutionChainBaseVersionColumns(t *testing.T) {
 	rows, err := pool.Query(ctx, `
 		SELECT table_name, column_name, is_nullable
 		FROM information_schema.columns
-		WHERE table_schema = 'public'
+		WHERE table_schema = current_schema()
 		  AND (
 			(table_name = 'approvals' AND column_name = 'base_version_id')
 			OR
@@ -803,18 +804,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 
 	ctx := testContext(t)
 	databaseURL := testDatabaseURL()
-
-	pool, err := NewPool(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("new pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, databaseURL, "storage_postgres", NewPool, RunMigrations)
 }
 
 // newRawTestPool 为需要自行控制迁移时机的测试创建数据库连接池。
@@ -827,14 +817,7 @@ func newRawTestPool(t *testing.T) *pgxpool.Pool {
 
 	ctx := testContext(t)
 	databaseURL := testDatabaseURL()
-
-	pool, err := NewPool(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("new raw pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	return pool
+	return postgrestest.NewRawIsolatedPool(t, ctx, databaseURL, "storage_postgres_raw", NewPool)
 }
 
 // testDatabaseURL 从当前配置中读取测试数据库地址。

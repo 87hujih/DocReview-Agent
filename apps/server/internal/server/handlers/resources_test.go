@@ -13,6 +13,7 @@ import (
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/postgres"
 	"agent_project/apps/server/internal/testsupport/postgrescleanup"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
@@ -326,17 +327,7 @@ func newHandlerTestPool(t *testing.T) *pgxpool.Pool {
 
 	ctx := testContext(t)
 	cfg := appconfig.Load()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("database not available: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "server_handlers", postgres.NewPool, postgres.RunMigrations)
 }
 
 // cleanupResource 清理 handler 测试中创建的资源数据。

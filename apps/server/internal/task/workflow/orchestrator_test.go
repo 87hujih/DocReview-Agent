@@ -16,6 +16,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -131,17 +132,7 @@ func newWorkflowTestPool(t *testing.T) *pgxpool.Pool {
 
 	ctx := workflowTestContext(t)
 	cfg := appconfig.Load()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("database not available: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "task_workflow", postgres.NewPool, postgres.RunMigrations)
 }
 
 func workflowCleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
