@@ -121,6 +121,63 @@ func TestMigrationCreatesTaskQueryIndexes(t *testing.T) {
 	}
 }
 
+func TestMigrationAddsAssistantSuggestionSourceColumn(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	type columnInfo struct {
+		ColumnName string
+		IsNullable string
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT column_name, is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND table_name = 'tasks'
+		  AND column_name = 'source_message_id'
+	`)
+	if err != nil {
+		t.Fatalf("query task source_message_id column: %v", err)
+	}
+	defer rows.Close()
+
+	columns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (columnInfo, error) {
+		var info columnInfo
+		err := row.Scan(&info.ColumnName, &info.IsNullable)
+		return info, err
+	})
+	if err != nil {
+		t.Fatalf("collect source_message_id column info: %v", err)
+	}
+
+	if len(columns) != 1 {
+		t.Fatalf("expected tasks.source_message_id column to exist once, got %d", len(columns))
+	}
+	if columns[0].IsNullable != "YES" {
+		t.Fatalf("expected tasks.source_message_id to be nullable, got %q", columns[0].IsNullable)
+	}
+
+	var indexName string
+	if err := pool.QueryRow(ctx, `
+		SELECT indexname
+		FROM pg_indexes
+		WHERE schemaname = 'public'
+		  AND tablename = 'tasks'
+		  AND indexname = 'idx_tasks_source_message_id_unique'
+	`).Scan(&indexName); err != nil {
+		t.Fatalf("query source_message_id unique index: %v", err)
+	}
+
+	if indexName != "idx_tasks_source_message_id_unique" {
+		t.Fatalf("expected source_message_id unique index, got %q", indexName)
+	}
+}
+
 func TestMigrationAddsExecutionChainBaseVersionColumns(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -307,12 +364,13 @@ func TestResourceCRUD(t *testing.T) {
 		t.Fatalf("create other version: %v", err)
 	}
 
+	lexicalToken := "考勤隔离测试-" + uniqueSuffix()
 	attendanceChunk := &ResourceChunk{
 		ResourceID:   resource.ID,
 		VersionID:    version.ID,
 		ChunkIndex:   1,
-		SectionTitle: "考勤管理",
-		Content:      "员工必须按时完成考勤签到和签退。",
+		SectionTitle: lexicalToken,
+		Content:      "员工必须按时完成" + lexicalToken + "签到和签退。",
 		Embedding:    testVector(0.45),
 	}
 	if err := repo.CreateChunk(ctx, attendanceChunk); err != nil {
@@ -331,7 +389,7 @@ func TestResourceCRUD(t *testing.T) {
 		t.Fatalf("create other chunk: %v", err)
 	}
 
-	lexicalChunks, err := repo.SearchChunksLexical(ctx, "考勤", 5)
+	lexicalChunks, err := repo.SearchChunksLexical(ctx, lexicalToken, 5)
 	if err != nil {
 		t.Fatalf("search lexical chunks: %v", err)
 	}
@@ -344,7 +402,7 @@ func TestResourceCRUD(t *testing.T) {
 		t.Fatalf("expected lexical search to rank attendance chunk first, got %q", lexicalChunks[0].ID)
 	}
 
-	filteredLexicalChunks, err := repo.SearchChunksLexicalByResource(ctx, "考勤", 5, resource.ID)
+	filteredLexicalChunks, err := repo.SearchChunksLexicalByResource(ctx, lexicalToken, 5, resource.ID)
 	if err != nil {
 		t.Fatalf("search lexical chunks by resource: %v", err)
 	}

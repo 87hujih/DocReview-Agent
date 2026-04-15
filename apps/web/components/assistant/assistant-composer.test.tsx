@@ -9,6 +9,8 @@ describe("AssistantComposer", () => {
         canUpload
         onSubmitMessage={() => {}}
         onUploadFile={() => {}}
+        uploadAccept=".md,.txt"
+        uploadHint="支持 md、txt"
       />
     );
 
@@ -17,8 +19,8 @@ describe("AssistantComposer", () => {
       throw new Error("expected file input to exist");
     }
 
-    expect(input).toHaveAttribute("accept", ".md,.txt,.doc,.docx,.pdf,.rtf,.odt");
-    expect(screen.getByText("支持 md、txt、doc、docx、pdf、rtf、odt")).toBeInTheDocument();
+    expect(input).toHaveAttribute("accept", ".md,.txt");
+    expect(screen.getByText("支持 md、txt")).toBeInTheDocument();
   });
 
   it("forwards the selected file to upload handler", () => {
@@ -28,6 +30,8 @@ describe("AssistantComposer", () => {
         canUpload
         onSubmitMessage={() => {}}
         onUploadFile={handleUploadFile}
+        uploadAccept=".md,.txt"
+        uploadHint="支持 md、txt"
       />
     );
 
@@ -48,6 +52,8 @@ describe("AssistantComposer", () => {
         canUpload
         onSubmitMessage={vi.fn()}
         onUploadFile={vi.fn()}
+        uploadAccept=".md,.txt"
+        uploadHint="支持 md、txt"
       />
     );
 

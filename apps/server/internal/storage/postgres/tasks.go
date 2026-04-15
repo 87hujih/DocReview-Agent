@@ -11,13 +11,14 @@ import (
 
 // Task 表示任务主记录。
 type Task struct {
-	ID           string
-	ResourceID   string
-	Instruction  string
-	Status       string
-	ErrorMessage *string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID              string
+	ResourceID      string
+	Instruction     string
+	SourceMessageID *string
+	Status          string
+	ErrorMessage    *string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // TaskStep 表示 orchestrator 执行中的单个步骤记录。
@@ -56,7 +57,7 @@ func (r *TaskRepo) Create(ctx context.Context, resourceID string, instruction st
 	task, err := scanTask(r.pool.QueryRow(ctx, `
 		INSERT INTO tasks (resource_id, instruction)
 		VALUES ($1, $2)
-		RETURNING id, resource_id, instruction, status, error_message, created_at, updated_at
+		RETURNING id, resource_id, instruction, source_message_id, status, error_message, created_at, updated_at
 	`, resourceID, instruction))
 	if err != nil {
 		return nil, err
@@ -65,10 +66,60 @@ func (r *TaskRepo) Create(ctx context.Context, resourceID string, instruction st
 	return &task, nil
 }
 
+// GetBySourceMessageID 根据助手建议消息 ID 查询任务，不存在时返回 nil。
+func (r *TaskRepo) GetBySourceMessageID(ctx context.Context, sourceMessageID string) (*Task, error) {
+	task, err := scanTask(r.pool.QueryRow(ctx, `
+		SELECT id, resource_id, instruction, source_message_id, status, error_message, created_at, updated_at
+		FROM tasks
+		WHERE source_message_id = $1
+	`, sourceMessageID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &task, nil
+}
+
+// CreateFromAssistantSuggestion 用任务建议消息 ID 建立持久化幂等边界。
+func (r *TaskRepo) CreateFromAssistantSuggestion(
+	ctx context.Context,
+	resourceID string,
+	instruction string,
+	sourceMessageID string,
+) (*Task, bool, error) {
+	task, err := scanTask(r.pool.QueryRow(ctx, `
+		INSERT INTO tasks (resource_id, instruction, source_message_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (source_message_id) WHERE source_message_id IS NOT NULL
+		DO NOTHING
+		RETURNING id, resource_id, instruction, source_message_id, status, error_message, created_at, updated_at
+	`, resourceID, instruction, sourceMessageID))
+	if err == nil {
+		return &task, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, err
+	}
+
+	existingTask, getErr := r.GetBySourceMessageID(ctx, sourceMessageID)
+	if getErr != nil {
+		return nil, false, getErr
+	}
+	if existingTask == nil {
+		return nil, false, pgx.ErrNoRows
+	}
+
+	return existingTask, false, nil
+}
+
 // GetByID 在任务不存在时返回 nil。
 func (r *TaskRepo) GetByID(ctx context.Context, id string) (*Task, error) {
 	task, err := scanTask(r.pool.QueryRow(ctx, `
-		SELECT id, resource_id, instruction, status, error_message, created_at, updated_at
+		SELECT id, resource_id, instruction, source_message_id, status, error_message, created_at, updated_at
 		FROM tasks
 		WHERE id = $1
 	`, id))
@@ -86,7 +137,7 @@ func (r *TaskRepo) GetByID(ctx context.Context, id string) (*Task, error) {
 // List 按创建时间倒序返回任务列表。
 func (r *TaskRepo) List(ctx context.Context) ([]Task, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, resource_id, instruction, status, error_message, created_at, updated_at
+		SELECT id, resource_id, instruction, source_message_id, status, error_message, created_at, updated_at
 		FROM tasks
 		ORDER BY created_at DESC, id DESC
 	`)
@@ -220,6 +271,7 @@ func scanTask(row pgx.Row) (Task, error) {
 		&task.ID,
 		&task.ResourceID,
 		&task.Instruction,
+		&task.SourceMessageID,
 		&task.Status,
 		&task.ErrorMessage,
 		&task.CreatedAt,

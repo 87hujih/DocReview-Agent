@@ -5,15 +5,18 @@ import { startTransition, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type {
+  AssistantCapabilities,
   AssistantMessage,
   AssistantRenderableMessage,
   AssistantSession,
   AssistantStreamEvent,
+  AssistantUploadCapabilities,
   AssistantTurnError
 } from "../../lib/assistant/types";
 import {
   confirmAssistantTaskSuggestion,
   deleteAssistantSession,
+  getAssistantCapabilities,
   getAssistantSession,
   getAssistantSessions,
   streamAssistantConversation,
@@ -31,6 +34,12 @@ import styles from "./assistant-shell.module.css";
 type HistoryStatus = "history_error" | "history_ready" | "loading_history";
 type TurnStatus = "confirming_task" | "idle" | "loading_conversation" | "stopping" | "streaming" | "uploading_file";
 
+const FALLBACK_UPLOAD_CAPABILITIES: AssistantUploadCapabilities = {
+  accept: ".md,.txt",
+  hint: "支持 md、txt",
+  supported_extensions: [".md", ".txt"]
+};
+
 export function AssistantShell() {
   const { railCollapsed, setRailCollapsed } = useAppChrome();
   const [sessions, setSessions] = useState<AssistantSession[]>([]);
@@ -43,36 +52,43 @@ export function AssistantShell() {
   const [activeTaskSuggestionId, setActiveTaskSuggestionId] = useState<string | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
   const [historyHost, setHistoryHost] = useState<HTMLElement | null>(null);
+  const [uploadCapabilities, setUploadCapabilities] = useState<AssistantUploadCapabilities>(FALLBACK_UPLOAD_CAPABILITIES);
   const abortControllerRef = useRef<AbortController | null>(null);
   const localMessageCounterRef = useRef(0);
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
+  const turnTokenRef = useRef(0);
 
   useEffect(() => {
     let active = true;
 
-    async function loadHistory() {
-      try {
-        const items = await getAssistantSessions();
-        if (!active) {
-          return;
-        }
+    async function loadInitialData() {
+      const [historyResult, capabilitiesResult] = await Promise.allSettled([
+        getAssistantSessions(),
+        getAssistantCapabilities()
+      ]);
+      if (!active) {
+        return;
+      }
 
-        startTransition(() => {
-          setSessions(items);
+      startTransition(() => {
+        if (historyResult.status === "fulfilled") {
+          setSessions(historyResult.value);
           setHistoryError(null);
           setHistoryStatus("history_ready");
-        });
-      } catch (error) {
-        if (!active) {
-          return;
+        } else {
+          setHistoryError(getErrorMessage(historyResult.reason));
+          setHistoryStatus("history_error");
         }
 
-        setHistoryError(getErrorMessage(error));
-        setHistoryStatus("history_error");
-      }
+        if (capabilitiesResult.status === "fulfilled") {
+          setUploadCapabilities(normalizeAssistantUploadCapabilities(capabilitiesResult.value));
+        } else {
+          setUploadCapabilities(FALLBACK_UPLOAD_CAPABILITIES);
+        }
+      });
     }
 
-    void loadHistory();
+    void loadInitialData();
 
     return () => {
       active = false;
@@ -119,11 +135,14 @@ export function AssistantShell() {
   }, [railCollapsed]);
 
   function resetToDraft() {
+    invalidateCurrentTurn(turnTokenRef);
     abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
     startTransition(() => {
       setCurrentSession(null);
       setMessages([]);
       setActionNotice(null);
+      setActiveTaskSuggestionId(null);
       setTurnStatus("idle");
       setStickToBottom(true);
     });
@@ -169,6 +188,7 @@ export function AssistantShell() {
     );
 
     let sessionSnapshot = currentSession;
+    const turnToken = beginTurn(turnTokenRef);
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -180,6 +200,10 @@ export function AssistantShell() {
     });
 
     const handleEvent = (event: AssistantStreamEvent) => {
+      if (!isActiveTurn(turnTokenRef, turnToken)) {
+        return;
+      }
+
       switch (event.type) {
         case "session_created":
           sessionSnapshot = event.session;
@@ -233,6 +257,10 @@ export function AssistantShell() {
             signal: controller.signal
           });
 
+      if (!isActiveTurn(turnTokenRef, turnToken)) {
+        return;
+      }
+
       if (result.status === "stopped") {
         startTransition(() => {
           setMessages((current) => finalizeTurnFailure(current, localAssistantMessage.id, result.error));
@@ -246,6 +274,10 @@ export function AssistantShell() {
       });
     } catch (error) {
       const turnError = toAssistantTurnError(error);
+      if (!isActiveTurn(turnTokenRef, turnToken)) {
+        return;
+      }
+
       startTransition(() => {
         setMessages((current) => finalizeTurnFailure(current, localAssistantMessage.id, turnError));
         setTurnStatus("idle");
@@ -398,6 +430,8 @@ export function AssistantShell() {
             isBusy={isBusy}
             onSubmitMessage={(nextMessage) => handleSubmitMessage(nextMessage)}
             onUploadFile={(file) => handleUploadFile(file)}
+            uploadAccept={uploadCapabilities.accept}
+            uploadHint={uploadCapabilities.hint}
           />
         </section>
       </section>
@@ -428,6 +462,19 @@ function buildLocalTextMessage(
 function nextLocalId(counterRef: MutableRefObject<number>, prefix: string): string {
   counterRef.current += 1;
   return `${prefix}-${counterRef.current}`;
+}
+
+function beginTurn(turnTokenRef: MutableRefObject<number>): number {
+  turnTokenRef.current += 1;
+  return turnTokenRef.current;
+}
+
+function invalidateCurrentTurn(turnTokenRef: MutableRefObject<number>) {
+  turnTokenRef.current += 1;
+}
+
+function isActiveTurn(turnTokenRef: MutableRefObject<number>, turnToken: number): boolean {
+  return turnTokenRef.current === turnToken;
 }
 
 function patchSessionTimestamp(session: AssistantSession, isoString: string): AssistantSession {
@@ -519,4 +566,34 @@ function upsertSession(current: AssistantSession[], session: AssistantSession): 
 
     return right.last_message_at.localeCompare(left.last_message_at);
   });
+}
+
+function normalizeAssistantUploadCapabilities(capabilities: AssistantCapabilities): AssistantUploadCapabilities {
+  const rawUpload = capabilities.upload;
+  const supportedExtensions =
+    rawUpload && Array.isArray(rawUpload.supported_extensions)
+      ? [...rawUpload.supported_extensions]
+      : [...FALLBACK_UPLOAD_CAPABILITIES.supported_extensions];
+  const accept =
+    rawUpload && typeof rawUpload.accept === "string" && rawUpload.accept.trim() !== ""
+      ? rawUpload.accept
+      : supportedExtensions.join(",");
+  const hint =
+    rawUpload && typeof rawUpload.hint === "string" && rawUpload.hint.trim() !== ""
+      ? rawUpload.hint
+      : buildUploadHintFromExtensions(supportedExtensions);
+
+  return {
+    accept,
+    hint,
+    supported_extensions: supportedExtensions
+  };
+}
+
+function buildUploadHintFromExtensions(supportedExtensions: string[]): string {
+  if (supportedExtensions.length === 0) {
+    return "当前服务未开放文件上传";
+  }
+
+  return `支持 ${supportedExtensions.map((extension) => extension.replace(/^\./, "")).join("、")}`;
 }

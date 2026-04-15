@@ -19,6 +19,8 @@ var (
 	ErrResourceNotFound = errors.New("资源不存在")
 	// ErrResourceCurrentVersionNotFound 表示资源缺少当前版本。
 	ErrResourceCurrentVersionNotFound = errors.New("资源当前版本不存在")
+	// ErrSuggestionMessageIDRequired 表示助手建议消息 ID 为空。
+	ErrSuggestionMessageIDRequired = errors.New("任务建议消息 ID 不能为空")
 )
 
 // Service 协调任务创建、查询和后台编排启动。
@@ -46,25 +48,9 @@ func New(
 
 // CreateTask 创建任务，并在生产接线中异步启动编排器。
 func (s *Service) CreateTask(ctx context.Context, resourceID string, instruction string) (*postgres.Task, error) {
-	instruction = strings.TrimSpace(instruction)
-	if instruction == "" {
-		return nil, ErrInstructionRequired
-	}
-
-	resource, err := s.resourceRepo.GetByID(ctx, resourceID)
+	resourceID, instruction, err := s.validateCreateTaskInput(ctx, resourceID, instruction)
 	if err != nil {
 		return nil, err
-	}
-	if resource == nil {
-		return nil, ErrResourceNotFound
-	}
-
-	version, err := s.resourceRepo.GetCurrentVersion(ctx, resourceID)
-	if err != nil {
-		return nil, err
-	}
-	if version == nil {
-		return nil, ErrResourceCurrentVersionNotFound
 	}
 
 	task, err := s.taskRepo.Create(ctx, resourceID, instruction)
@@ -72,25 +58,40 @@ func (s *Service) CreateTask(ctx context.Context, resourceID string, instruction
 		return nil, err
 	}
 
-	s.recordEvent(ctx, taskevents.RecordInput{
-		TaskID:    task.ID,
-		Source:    "task_service",
-		Level:     "info",
-		EventType: "task.created",
-		Message:   "任务已创建，等待编排执行",
-		Payload: map[string]any{
-			"resource_id": task.ResourceID,
-			"status":      task.Status,
-		},
-	})
+	return s.afterTaskCreated(ctx, task)
+}
 
-	if s.runner != nil {
-		if err := s.runner.Enqueue(task.ID); err != nil {
-			return s.failCreatedTask(ctx, task, err)
-		}
+// CreateTaskFromAssistantSuggestion 根据建议消息创建任务，并用 suggestion message id 做幂等保护。
+func (s *Service) CreateTaskFromAssistantSuggestion(
+	ctx context.Context,
+	resourceID string,
+	instruction string,
+	sourceMessageID string,
+) (*postgres.Task, bool, error) {
+	resourceID, instruction, err := s.validateCreateTaskInput(ctx, resourceID, instruction)
+	if err != nil {
+		return nil, false, err
 	}
 
-	return task, nil
+	sourceMessageID = strings.TrimSpace(sourceMessageID)
+	if sourceMessageID == "" {
+		return nil, false, ErrSuggestionMessageIDRequired
+	}
+
+	task, created, err := s.taskRepo.CreateFromAssistantSuggestion(ctx, resourceID, instruction, sourceMessageID)
+	if err != nil {
+		return nil, false, err
+	}
+	if !created {
+		return task, false, nil
+	}
+
+	task, err = s.afterTaskCreated(ctx, task)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return task, true, nil
 }
 
 // GetTask 返回任务和步骤列表。
@@ -124,6 +125,54 @@ func (s *Service) recordEvent(ctx context.Context, input taskevents.RecordInput)
 	if _, err := s.eventService.Record(ctx, input); err != nil {
 		log.Printf("警告：记录任务事件失败：task=%s event=%s err=%v", input.TaskID, input.EventType, err)
 	}
+}
+
+func (s *Service) validateCreateTaskInput(ctx context.Context, resourceID string, instruction string) (string, string, error) {
+	resourceID = strings.TrimSpace(resourceID)
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" {
+		return "", "", ErrInstructionRequired
+	}
+
+	resource, err := s.resourceRepo.GetByID(ctx, resourceID)
+	if err != nil {
+		return "", "", err
+	}
+	if resource == nil {
+		return "", "", ErrResourceNotFound
+	}
+
+	version, err := s.resourceRepo.GetCurrentVersion(ctx, resourceID)
+	if err != nil {
+		return "", "", err
+	}
+	if version == nil {
+		return "", "", ErrResourceCurrentVersionNotFound
+	}
+
+	return resourceID, instruction, nil
+}
+
+func (s *Service) afterTaskCreated(ctx context.Context, task *postgres.Task) (*postgres.Task, error) {
+	s.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "task_service",
+		Level:     "info",
+		EventType: "task.created",
+		Message:   "任务已创建，等待编排执行",
+		Payload: map[string]any{
+			"resource_id": task.ResourceID,
+			"status":      task.Status,
+		},
+	})
+
+	if s.runner != nil {
+		if err := s.runner.Enqueue(task.ID); err != nil {
+			return s.failCreatedTask(ctx, task, err)
+		}
+	}
+
+	return task, nil
 }
 
 func (s *Service) failCreatedTask(ctx context.Context, task *postgres.Task, enqueueErr error) (*postgres.Task, error) {

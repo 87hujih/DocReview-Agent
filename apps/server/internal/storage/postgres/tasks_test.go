@@ -2,10 +2,13 @@ package postgres
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func TestTaskRepoCRUD(t *testing.T) {
@@ -52,11 +55,17 @@ func TestTaskRepoCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
-	if len(listedTasks) < 2 {
-		t.Fatalf("expected at least 2 tasks, got %d", len(listedTasks))
+	secondTaskIndex := slices.IndexFunc(listedTasks, func(task Task) bool {
+		return task.ID == secondTask.ID
+	})
+	firstTaskIndex := slices.IndexFunc(listedTasks, func(task Task) bool {
+		return task.ID == firstTask.ID
+	})
+	if secondTaskIndex == -1 || firstTaskIndex == -1 {
+		t.Fatalf("expected task list to contain created tasks %q and %q, got %d tasks", secondTask.ID, firstTask.ID, len(listedTasks))
 	}
-	if listedTasks[0].ID != secondTask.ID {
-		t.Fatalf("expected latest task %q first, got %q", secondTask.ID, listedTasks[0].ID)
+	if secondTaskIndex > firstTaskIndex {
+		t.Fatalf("expected newer task %q to appear before older task %q, got indexes [%d %d]", secondTask.ID, firstTask.ID, secondTaskIndex, firstTaskIndex)
 	}
 
 	errorMessage := "planner failed"
@@ -163,6 +172,13 @@ func TestTaskRepoListOrdersByCreatedAtThenIDDescWhenTimestampsTie(t *testing.T) 
 	fixedCreatedAt := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
 	firstTaskID := "00000000-0000-0000-0000-000000000001"
 	secondTaskID := "00000000-0000-0000-0000-000000000002"
+	cleanupFixedTaskIDs := func() {
+		if _, cleanupErr := pool.Exec(testContext(t), `DELETE FROM tasks WHERE id = ANY($1)`, []string{firstTaskID, secondTaskID}); cleanupErr != nil {
+			t.Fatalf("cleanup fixed task ids: %v", cleanupErr)
+		}
+	}
+	cleanupFixedTaskIDs()
+	t.Cleanup(cleanupFixedTaskIDs)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO tasks (id, resource_id, instruction, status, created_at, updated_at)
 		VALUES ($1, $2, $3, 'pending', $4, $4), ($5, $2, $6, 'pending', $4, $4)
@@ -192,6 +208,86 @@ func TestTaskRepoListOrdersByCreatedAtThenIDDescWhenTimestampsTie(t *testing.T) 
 
 	if listedTasks[0].ID != wantOrder[0] || listedTasks[1].ID != wantOrder[1] {
 		t.Fatalf("expected tasks ordered by id desc when created_at ties, got [%s %s], want [%s %s]", listedTasks[0].ID, listedTasks[1].ID, wantOrder[0], wantOrder[1])
+	}
+}
+
+func TestTaskRepoCreateFromAssistantSuggestionReturnsExistingTaskOnDuplicate(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "助手建议幂等测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	assistantRepo := NewAssistantRepo(pool)
+	session, messages, err := assistantRepo.CreateSessionWithMessages(ctx, "助手建议幂等测试", []AssistantMessageInput{
+		{
+			Role:    "assistant",
+			Kind:    "task_suggestion",
+			Payload: []byte(`{"instruction":"请修订第二章"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create assistant session with suggestion message: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, cleanupErr := pool.Exec(testContext(t), `DELETE FROM assistant_sessions WHERE id = $1`, session.ID); cleanupErr != nil {
+			t.Fatalf("cleanup assistant session %q: %v", session.ID, cleanupErr)
+		}
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 assistant suggestion message, got %d", len(messages))
+	}
+	sourceMessageID := messages[0].ID
+
+	createFromSuggestionRepo, ok := any(taskRepo).(interface {
+		CreateFromAssistantSuggestion(context.Context, string, string, string) (*Task, bool, error)
+	})
+	if !ok {
+		t.Fatal("task repo does not implement assistant suggestion idempotency contract")
+	}
+
+	firstTask, firstCreated, err := createFromSuggestionRepo.CreateFromAssistantSuggestion(ctx, resource.ID, "请修订第二章", sourceMessageID)
+	if err != nil {
+		t.Fatalf("create task from assistant suggestion first time: %v", err)
+	}
+	if !firstCreated {
+		t.Fatal("expected first create-from-suggestion call to create a new task")
+	}
+
+	secondTask, secondCreated, err := createFromSuggestionRepo.CreateFromAssistantSuggestion(ctx, resource.ID, "请修订第二章", sourceMessageID)
+	if err != nil {
+		t.Fatalf("create task from assistant suggestion second time: %v", err)
+	}
+	if secondCreated {
+		t.Fatal("expected duplicate create-from-suggestion call to reuse existing task")
+	}
+	if secondTask == nil || firstTask == nil || secondTask.ID != firstTask.ID {
+		t.Fatalf("expected duplicate create to return existing task %q, got first=%#v second=%#v", firstTask.ID, firstTask, secondTask)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT id
+		FROM tasks
+		WHERE source_message_id = $1
+	`, sourceMessageID)
+	if err != nil {
+		t.Fatalf("query tasks by source_message_id: %v", err)
+	}
+	defer rows.Close()
+
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collect task ids by source_message_id: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 task for duplicate suggestion, got %d (%v)", len(ids), ids)
 	}
 }
 

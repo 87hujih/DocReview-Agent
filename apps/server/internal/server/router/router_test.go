@@ -195,6 +195,22 @@ func TestNewAddsCORSHeadersToAssistantStreamingResponses(t *testing.T) {
 	}
 }
 
+func TestNewRegistersAssistantCapabilitiesRouteWhenHandlerProvided(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
+		AssistantHandler: handlers.NewAssistantHandler(fakeAssistantRouterService{}),
+	})
+
+	response := ut.PerformRequest(
+		h.Engine,
+		"GET",
+		"/api/assistant/capabilities",
+		nil,
+	).Result()
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d for registered capabilities route, got %d", consts.StatusOK, response.StatusCode())
+	}
+}
+
 type fakeAssistantRouterService struct{}
 
 func (fakeAssistantRouterService) ListSessions(context.Context) ([]postgres.AssistantSession, error) {

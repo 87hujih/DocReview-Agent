@@ -6,6 +6,7 @@ import { AppChrome } from "../app-chrome";
 import {
   confirmAssistantTaskSuggestion,
   deleteAssistantSession,
+  getAssistantCapabilities,
   getAssistantSession,
   getAssistantSessions,
   streamAssistantConversation,
@@ -17,6 +18,7 @@ import {
 vi.mock("../../lib/api/assistant", () => ({
   confirmAssistantTaskSuggestion: vi.fn(),
   deleteAssistantSession: vi.fn(),
+  getAssistantCapabilities: vi.fn(),
   getAssistantSession: vi.fn(),
   getAssistantSessions: vi.fn(),
   streamAssistantConversation: vi.fn(),
@@ -31,6 +33,7 @@ vi.mock("next/navigation", () => ({
 
 const mockedGetAssistantSessions = vi.mocked(getAssistantSessions);
 const mockedGetAssistantSession = vi.mocked(getAssistantSession);
+const mockedGetAssistantCapabilities = vi.mocked(getAssistantCapabilities);
 const mockedStreamAssistantConversation = vi.mocked(streamAssistantConversation);
 const mockedStreamAssistantMessage = vi.mocked(streamAssistantMessage);
 const mockedToAssistantTurnError = vi.mocked(toAssistantTurnError);
@@ -50,12 +53,20 @@ describe("AssistantShell", () => {
   beforeEach(() => {
     mockedGetAssistantSessions.mockReset();
     mockedGetAssistantSession.mockReset();
+    mockedGetAssistantCapabilities.mockReset();
     mockedStreamAssistantConversation.mockReset();
     mockedStreamAssistantMessage.mockReset();
     mockedToAssistantTurnError.mockClear();
     mockedUploadAssistantFile.mockReset();
     mockedConfirmAssistantTaskSuggestion.mockReset();
     mockedDeleteAssistantSession.mockReset();
+    mockedGetAssistantCapabilities.mockResolvedValue({
+      upload: {
+        accept: ".md,.txt",
+        hint: "支持 md、txt",
+        supported_extensions: [".md", ".txt"]
+      }
+    });
   });
 
   it("loads session history but still starts from a blank draft conversation", async () => {
@@ -80,6 +91,43 @@ describe("AssistantShell", () => {
       expect(screen.getByText("昨天整理学生守则的思路")).toBeInTheDocument();
     });
     expect(screen.getByText("有什么可以帮到你？")).toBeInTheDocument();
+  });
+
+  it("loads assistant upload capabilities and passes them to the composer", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([]);
+
+    const { container } = renderAssistantShell();
+
+    await waitFor(() => {
+      expect(mockedGetAssistantCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    const input = container.querySelector('input[type="file"]');
+    if (!input) {
+      throw new Error("expected file input to exist");
+    }
+
+    expect(input).toHaveAttribute("accept", ".md,.txt");
+    expect(screen.getByText("请先发送第一条消息后再上传 · 支持 md、txt")).toBeInTheDocument();
+  });
+
+  it("falls back to conservative upload capabilities when loading capabilities fails", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([]);
+    mockedGetAssistantCapabilities.mockRejectedValue(new Error("capability failed"));
+
+    const { container } = renderAssistantShell();
+
+    await waitFor(() => {
+      expect(mockedGetAssistantCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    const input = container.querySelector('input[type="file"]');
+    if (!input) {
+      throw new Error("expected file input to exist");
+    }
+
+    expect(input).toHaveAttribute("accept", ".md,.txt");
+    expect(screen.getByText("请先发送第一条消息后再上传 · 支持 md、txt")).toBeInTheDocument();
   });
 
   it("collapses and restores the whole left rail instead of only hiding assistant history", async () => {
@@ -326,5 +374,231 @@ describe("AssistantShell", () => {
       expect(screen.getByText("本轮没有生成可展示内容。")).toBeInTheDocument();
     });
     expect(screen.queryByText(/^提示：本轮没有生成可展示内容。$/)).not.toBeInTheDocument();
+  });
+
+  it("marks the original suggestion card as consumed after confirming task creation", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([]);
+    let resolveStream: ((value: { status: "completed" }) => void) | null = null;
+    let onEvent: ((event: any) => void) | null = null;
+
+    mockedStreamAssistantConversation.mockImplementation(async (_message, options = {}) => {
+      onEvent = options.onEvent || null;
+      return new Promise((resolve) => {
+        resolveStream = resolve as (value: { status: "completed" }) => void;
+      });
+    });
+    mockedConfirmAssistantTaskSuggestion.mockResolvedValue({
+      error_message: null,
+      messages: [
+        {
+          created_at: "2026-04-10T10:30:02Z",
+          id: "message-created",
+          kind: "task_created",
+          payload: {
+            detail_url: "/tasks/task-1",
+            instruction: "请修订第二章",
+            resource_id: "resource-1",
+            status: "pending",
+            suggestion_message_id: "message-suggestion",
+            task_id: "task-1"
+          },
+          role: "assistant",
+          sequence_no: 3
+        }
+      ],
+      session: {
+        created_at: "2026-04-10T10:30:00Z",
+        id: "session-created",
+        last_message_at: "2026-04-10T10:30:02Z",
+        title: "请帮我梳理学生守则第二章",
+        updated_at: "2026-04-10T10:30:02Z"
+      },
+      task: {
+        created_at: "2026-04-10T10:30:02Z",
+        id: "task-1",
+        instruction: "请修订第二章",
+        resource_id: "resource-1",
+        status: "pending"
+      }
+    });
+
+    renderAssistantShell();
+
+    await waitFor(() => {
+      expect(mockedGetAssistantSessions).toHaveBeenCalledTimes(1);
+      expect(mockedGetAssistantCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "请帮我梳理学生守则第二章" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(mockedStreamAssistantConversation).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      onEvent?.({
+        session: {
+          created_at: "2026-04-10T10:30:00Z",
+          id: "session-created",
+          last_message_at: "2026-04-10T10:30:00Z",
+          title: "请帮我梳理学生守则第二章",
+          updated_at: "2026-04-10T10:30:00Z"
+        },
+        type: "session_created"
+      });
+      onEvent?.({
+        message: {
+          created_at: "2026-04-10T10:30:01Z",
+          id: "message-suggestion",
+          kind: "task_suggestion",
+          payload: {
+            action_label: "确认创建任务",
+            can_create: true,
+            instruction: "请修订第二章",
+            resource_id: "resource-1",
+            resource_label: "学生守则 · upload",
+            status_message: "资源已明确，可以创建任务。",
+            title: "建议创建任务"
+          },
+          role: "assistant",
+          sequence_no: 2
+        },
+        type: "task_suggestion"
+      });
+      resolveStream?.({ status: "completed" });
+    });
+
+    const confirmButton = await screen.findByRole("button", { name: "确认创建任务" });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => {
+      expect(mockedConfirmAssistantTaskSuggestion).toHaveBeenCalledWith("message-suggestion");
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "任务已创建" })).toBeDisabled();
+    });
+    expect(screen.queryByRole("button", { name: "确认创建任务" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a fresh draft clean when reset aborts a streaming turn", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([]);
+    mockedStreamAssistantConversation.mockImplementation(
+      async (_message, options = {}) =>
+        new Promise((resolve) => {
+          options.signal?.addEventListener(
+            "abort",
+            () => {
+              resolve({
+                error: {
+                  code: "generation_stopped",
+                  message: "已停止生成。"
+                },
+                status: "stopped"
+              });
+            },
+            { once: true }
+          );
+        })
+    );
+
+    renderAssistantShell();
+
+    await waitFor(() => {
+      expect(mockedGetAssistantSessions).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "帮我整理今天的学习安排" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(mockedStreamAssistantConversation).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "新对话" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("有什么可以帮到你？")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("已停止生成。")).not.toBeInTheDocument();
+  });
+
+  it("ignores stale stream events after resetting to a new draft", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([]);
+    let resolveStream: ((value: { status: "completed" }) => void) | null = null;
+    let onEvent: ((event: any) => void) | null = null;
+
+    mockedStreamAssistantConversation.mockImplementation(async (_message, options = {}) => {
+      onEvent = options.onEvent || null;
+      return new Promise((resolve) => {
+        resolveStream = resolve as (value: { status: "completed" }) => void;
+      });
+    });
+
+    renderAssistantShell();
+
+    await waitFor(() => {
+      expect(mockedGetAssistantSessions).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "请帮我梳理学生守则第二章" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(mockedStreamAssistantConversation).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "新对话" }));
+
+    await act(async () => {
+      onEvent?.({
+        session: {
+          created_at: "2026-04-10T10:30:00Z",
+          id: "session-created",
+          last_message_at: "2026-04-10T10:30:00Z",
+          title: "请帮我梳理学生守则第二章",
+          updated_at: "2026-04-10T10:30:00Z"
+        },
+        type: "session_created"
+      });
+      onEvent?.({
+        message: {
+          created_at: "2026-04-10T10:30:01Z",
+          id: "message-suggestion",
+          kind: "task_suggestion",
+          payload: {
+            action_label: "确认创建任务",
+            can_create: true,
+            instruction: "请修订第二章",
+            resource_id: "resource-1",
+            resource_label: "学生守则 · upload",
+            status_message: "资源已明确，可以创建任务。",
+            title: "建议创建任务"
+          },
+          role: "assistant",
+          sequence_no: 2
+        },
+        type: "task_suggestion"
+      });
+      onEvent?.({
+        delta: "旧 turn 的流式内容",
+        type: "message_delta"
+      });
+      resolveStream?.({ status: "completed" });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("有什么可以帮到你？")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("建议创建任务")).not.toBeInTheDocument();
+    expect(screen.queryByText("旧 turn 的流式内容")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "打开会话 请帮我梳理学生守则第二章" })).not.toBeInTheDocument();
   });
 });
