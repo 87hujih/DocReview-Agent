@@ -47,6 +47,25 @@ func NewTaskEventRepo(pool *pgxpool.Pool) *TaskEventRepo {
 
 // Add 写入一条任务事件。
 func (r *TaskEventRepo) Add(ctx context.Context, params TaskEventCreateParams) (*TaskEvent, error) {
+	event, err := scanTaskEvent(r.pool.QueryRow(ctx, insertTaskEventSQL, taskEventInsertArgs(params)...))
+	if err != nil {
+		return nil, err
+	}
+
+	return &event, nil
+}
+
+// AddTx 在事务内写入一条任务事件。
+func (r *TaskEventRepo) AddTx(ctx context.Context, tx pgx.Tx, params TaskEventCreateParams) (*TaskEvent, error) {
+	event, err := scanTaskEvent(tx.QueryRow(ctx, insertTaskEventSQL, taskEventInsertArgs(params)...))
+	if err != nil {
+		return nil, err
+	}
+
+	return &event, nil
+}
+
+func taskEventInsertArgs(params TaskEventCreateParams) []any {
 	payload := params.Payload
 	if len(payload) == 0 {
 		payload = []byte(`{}`)
@@ -56,17 +75,24 @@ func (r *TaskEventRepo) Add(ctx context.Context, params TaskEventCreateParams) (
 		createdAt = time.Now().UTC()
 	}
 
-	event, err := scanTaskEvent(r.pool.QueryRow(ctx, `
-		INSERT INTO task_events (task_id, run_id, step_name, source, level, event_type, message, payload, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
-		RETURNING id, task_id, run_id, step_name, source, level, event_type, message, payload, created_at
-	`, params.TaskID, params.RunID, params.StepName, params.Source, params.Level, params.EventType, params.Message, string(payload), createdAt))
-	if err != nil {
-		return nil, err
+	return []any{
+		params.TaskID,
+		params.RunID,
+		params.StepName,
+		params.Source,
+		params.Level,
+		params.EventType,
+		params.Message,
+		string(payload),
+		createdAt,
 	}
-
-	return &event, nil
 }
+
+const insertTaskEventSQL = `
+	INSERT INTO task_events (task_id, run_id, step_name, source, level, event_type, message, payload, created_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+	RETURNING id, task_id, run_id, step_name, source, level, event_type, message, payload, created_at
+`
 
 // ListByTask 按创建时间正序返回任务事件。
 func (r *TaskEventRepo) ListByTask(ctx context.Context, taskID string) ([]TaskEvent, error) {

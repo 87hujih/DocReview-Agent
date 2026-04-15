@@ -2,17 +2,15 @@ package job
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 
 	executoragent "agent_project/apps/server/internal/agent/executor"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
-	"agent_project/apps/server/internal/task/models"
-)
 
-var errTaskNotFound = errors.New("任务不存在")
+	"github.com/jackc/pgx/v5"
+)
 
 // Worker 负责消费执行作业并推动任务完成。
 type Worker struct {
@@ -92,85 +90,106 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 	newVersionID, err := w.executor.Execute(ctx, job)
 	if err != nil {
 		errorMessage := err.Error()
-		if updateErr := w.jobRepo.UpdateStatus(ctx, job.ID, "failed", &errorMessage, nil); updateErr != nil {
-			log.Printf("错误：更新失败作业状态失败：job=%s err=%v", job.ID, updateErr)
+		if finalizeErr := w.finalizeJobFailure(ctx, job, errorMessage, "执行作业执行失败"); finalizeErr != nil {
+			log.Printf("错误：原子收尾失败作业失败：job=%s err=%v", job.ID, finalizeErr)
 		}
-		if updateErr := w.transitionTask(ctx, job.TaskID, models.StatusFailed, &errorMessage); updateErr != nil {
-			log.Printf("错误：将任务切换为失败状态时出错：task=%s err=%v", job.TaskID, updateErr)
-		}
-		w.recordJobEvent(ctx, job, "error", "job.failed", "执行作业执行失败", map[string]any{
-			"approval_id":   job.ApprovalID,
-			"error_message": errorMessage,
-		})
 		return
 	}
 
-	if err := w.jobRepo.UpdateStatus(ctx, job.ID, "done", nil, &newVersionID); err != nil {
-		// 执行成功但落库失败，避免 job 永久卡在 running 状态
+	if err := w.finalizeJobSuccess(ctx, job, newVersionID); err != nil {
+		// 执行成功但终态收尾失败，继续尝试原子切换到 failed，避免 job/task 长期卡在运行中。
 		errorMessage := fmt.Sprintf("更新作业完成状态失败（new_version_id=%s）：%v", newVersionID, err)
 		log.Printf("错误：%s job=%s", errorMessage, job.ID)
-		if updateErr := w.jobRepo.UpdateStatus(ctx, job.ID, "failed", &errorMessage, nil); updateErr != nil {
-			log.Printf("错误：回退作业到 failed 状态失败：job=%s err=%v", job.ID, updateErr)
+		if finalizeErr := w.finalizeJobFailure(ctx, job, errorMessage, "执行作业落库失败"); finalizeErr != nil {
+			log.Printf("错误：回退作业到 failed 状态失败：job=%s err=%v", job.ID, finalizeErr)
 		}
-		if updateErr := w.transitionTask(ctx, job.TaskID, models.StatusFailed, &errorMessage); updateErr != nil {
-			log.Printf("错误：将任务切换为失败状态时出错：task=%s err=%v", job.TaskID, updateErr)
-		}
-		w.recordJobEvent(ctx, job, "error", "job.failed", "执行作业落库失败", map[string]any{
-			"approval_id":    job.ApprovalID,
-			"new_version_id": newVersionID,
-			"error_message":  errorMessage,
-		})
-		return
-	}
-	w.recordJobEvent(ctx, job, "info", "job.completed", "执行作业已完成", map[string]any{
-		"approval_id":    job.ApprovalID,
-		"new_version_id": newVersionID,
-	})
-	if err := w.transitionTask(ctx, job.TaskID, models.StatusCompleted, nil); err != nil {
-		log.Printf("错误：将任务切换为已完成状态时出错：task=%s err=%v", job.TaskID, err)
 	}
 }
 
-func (w *Worker) transitionTask(ctx context.Context, taskID string, to string, errorMessage *string) error {
-	task, err := w.taskRepo.GetByID(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	if task == nil {
-		return errTaskNotFound
-	}
-
-	from := task.Status
-	if err := models.Transition(task.Status, to); err != nil {
-		return err
-	}
-
-	if err := w.taskRepo.UpdateStatus(ctx, taskID, to, errorMessage); err != nil {
-		return err
-	}
-
-	// 补写状态变更事件，与 Orchestrator 保持一致
-	if w.eventSvc != nil {
-		payload := map[string]any{
-			"from_status": from,
-			"to_status":   to,
+func (w *Worker) finalizeJobSuccess(ctx context.Context, job *postgres.ExecutionJob, newVersionID string) error {
+	return w.jobRepo.FinalizeSuccess(ctx, job.ID, newVersionID, func(
+		ctx context.Context,
+		tx pgx.Tx,
+		task *postgres.Task,
+		job *postgres.ExecutionJob,
+		fromTaskStatus string,
+	) error {
+		if err := w.recordEventTx(ctx, tx, taskevents.RecordInput{
+			TaskID:    task.ID,
+			RunID:     stringPointer(job.ID),
+			Source:    "job_worker",
+			Level:     "info",
+			EventType: "job.completed",
+			Message:   "执行作业已完成",
+			Payload: map[string]any{
+				"approval_id":    job.ApprovalID,
+				"new_version_id": newVersionID,
+			},
+		}); err != nil {
+			return err
 		}
-		if errorMessage != nil {
-			payload["error_message"] = *errorMessage
-		}
-		if _, err := w.eventSvc.Record(ctx, taskevents.RecordInput{
-			TaskID:    taskID,
+
+		return w.recordEventTx(ctx, tx, taskevents.RecordInput{
+			TaskID:    task.ID,
+			RunID:     stringPointer(job.ID),
 			Source:    "job_worker",
 			Level:     "info",
 			EventType: "task.status_changed",
 			Message:   "任务状态已更新",
-			Payload:   payload,
+			Payload: map[string]any{
+				"from_status": fromTaskStatus,
+				"to_status":   task.Status,
+			},
+		})
+	})
+}
+
+func (w *Worker) finalizeJobFailure(ctx context.Context, job *postgres.ExecutionJob, errorMessage string, jobMessage string) error {
+	return w.jobRepo.FinalizeFailure(ctx, job.ID, errorMessage, func(
+		ctx context.Context,
+		tx pgx.Tx,
+		task *postgres.Task,
+		job *postgres.ExecutionJob,
+		fromTaskStatus string,
+	) error {
+		if err := w.recordEventTx(ctx, tx, taskevents.RecordInput{
+			TaskID:    task.ID,
+			RunID:     stringPointer(job.ID),
+			Source:    "job_worker",
+			Level:     "error",
+			EventType: "job.failed",
+			Message:   jobMessage,
+			Payload: map[string]any{
+				"approval_id":   job.ApprovalID,
+				"error_message": errorMessage,
+			},
 		}); err != nil {
-			log.Printf("警告：记录任务事件失败：task=%s event=task.status_changed err=%v", taskID, err)
+			return err
 		}
+
+		return w.recordEventTx(ctx, tx, taskevents.RecordInput{
+			TaskID:    task.ID,
+			RunID:     stringPointer(job.ID),
+			Source:    "job_worker",
+			Level:     "error",
+			EventType: "task.status_changed",
+			Message:   "任务状态已更新",
+			Payload: map[string]any{
+				"from_status":   fromTaskStatus,
+				"to_status":     task.Status,
+				"error_message": errorMessage,
+			},
+		})
+	})
+}
+
+func (w *Worker) recordEventTx(ctx context.Context, tx pgx.Tx, input taskevents.RecordInput) error {
+	if w.eventSvc == nil {
+		return nil
 	}
 
-	return nil
+	_, err := w.eventSvc.RecordTx(ctx, tx, input)
+	return err
 }
 
 func (w *Worker) recordJobEvent(
@@ -197,4 +216,8 @@ func (w *Worker) recordJobEvent(
 	}); err != nil {
 		log.Printf("警告：记录任务事件失败：task=%s run=%s event=%s err=%v", job.TaskID, job.ID, eventType, err)
 	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }

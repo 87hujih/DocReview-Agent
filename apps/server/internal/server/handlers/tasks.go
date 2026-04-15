@@ -104,7 +104,7 @@ func NewTaskHandler(svc *taskservice.Service, repo *postgres.TaskRepo, eventRepo
 	}
 }
 
-// Create 创建任务，并立即返回 pending 记录。
+// Create 创建任务，并立即返回任务当前状态。
 func (h *TaskHandler) Create(requestCtx context.Context, ctx *app.RequestContext) {
 	var request createTaskRequest
 	if err := json.Unmarshal(ctx.Request.Body(), &request); err != nil {

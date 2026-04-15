@@ -89,16 +89,16 @@ func (s *Service) GetJob(ctx context.Context, jobID string) (*postgres.Execution
 
 // Approve 将审批切换为 approved，并创建待执行 job。
 func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.Approval, error) {
-	approvalRecord, task, err := s.loadPendingApprovalTask(ctx, approvalID, models.StatusExecuting)
-	if err != nil {
-		return nil, err
-	}
-
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	approvalRecord, task, err := s.loadPendingApprovalTaskTx(ctx, tx, approvalID, models.StatusExecuting)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := postgres.UpdateApprovalStatusTx(ctx, tx, approvalID, "approved", nil); err != nil {
 		return nil, err
@@ -113,12 +113,23 @@ func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.App
 		return nil, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	from := task.Status
+	task.Status = models.StatusExecuting
+	if err := s.recordEventTx(ctx, tx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		RunID:     stringPointer(job.ID),
+		Source:    "approval_service",
+		Level:     "info",
+		EventType: "task.status_changed",
+		Message:   "任务状态已更新",
+		Payload: map[string]any{
+			"from_status": from,
+			"to_status":   models.StatusExecuting,
+		},
+	}); err != nil {
 		return nil, err
 	}
-
-	// 事务提交后写事件，失败只记日志
-	s.recordEvent(ctx, taskevents.RecordInput{
+	if err := s.recordEventTx(ctx, tx, taskevents.RecordInput{
 		TaskID:    task.ID,
 		RunID:     stringPointer(job.ID),
 		Source:    "approval_service",
@@ -130,8 +141,10 @@ func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.App
 			"job_id":      job.ID,
 			"status":      models.StatusExecuting,
 		},
-	})
-	s.recordEvent(ctx, taskevents.RecordInput{
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.recordEventTx(ctx, tx, taskevents.RecordInput{
 		TaskID:    task.ID,
 		RunID:     stringPointer(job.ID),
 		Source:    "approval_service",
@@ -143,7 +156,13 @@ func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.App
 			"job_id":      job.ID,
 			"job_status":  job.Status,
 		},
-	})
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 
 	s.enqueueJob()
 
@@ -157,16 +176,16 @@ func (s *Service) Reject(ctx context.Context, approvalID string, reason string) 
 		return nil, ErrReasonRequired
 	}
 
-	approvalRecord, task, err := s.loadPendingApprovalTask(ctx, approvalID, models.StatusFailed)
-	if err != nil {
-		return nil, err
-	}
-
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	approvalRecord, task, err := s.loadPendingApprovalTaskTx(ctx, tx, approvalID, models.StatusFailed)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := postgres.UpdateApprovalStatusTx(ctx, tx, approvalID, "rejected", &reason); err != nil {
 		return nil, err
@@ -176,12 +195,24 @@ func (s *Service) Reject(ctx context.Context, approvalID string, reason string) 
 		return nil, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	from := task.Status
+	task.Status = models.StatusFailed
+	task.ErrorMessage = &reason
+	if err := s.recordEventTx(ctx, tx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "approval_service",
+		Level:     "warn",
+		EventType: "task.status_changed",
+		Message:   "任务状态已更新",
+		Payload: map[string]any{
+			"from_status":   from,
+			"to_status":     models.StatusFailed,
+			"error_message": reason,
+		},
+	}); err != nil {
 		return nil, err
 	}
-
-	// 事务提交后写事件，失败只记日志
-	s.recordEvent(ctx, taskevents.RecordInput{
+	if err := s.recordEventTx(ctx, tx, taskevents.RecordInput{
 		TaskID:    task.ID,
 		Source:    "approval_service",
 		Level:     "warn",
@@ -192,7 +223,13 @@ func (s *Service) Reject(ctx context.Context, approvalID string, reason string) 
 			"reason":      reason,
 			"status":      models.StatusFailed,
 		},
-	})
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 
 	return s.approvalRepo.GetByID(ctx, approvalRecord.ID)
 }
@@ -210,6 +247,33 @@ func (s *Service) loadPendingApprovalTask(ctx context.Context, approvalID string
 	}
 
 	task, err := s.taskRepo.GetByID(ctx, approvalRecord.TaskID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if task == nil {
+		return nil, nil, ErrTaskNotFound
+	}
+
+	if err := models.Transition(task.Status, targetStatus); err != nil {
+		return nil, nil, err
+	}
+
+	return approvalRecord, task, nil
+}
+
+func (s *Service) loadPendingApprovalTaskTx(ctx context.Context, tx pgx.Tx, approvalID string, targetStatus string) (*postgres.Approval, *postgres.Task, error) {
+	approvalRecord, err := postgres.GetApprovalByIDForUpdateTx(ctx, tx, approvalID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if approvalRecord == nil {
+		return nil, nil, ErrApprovalNotFound
+	}
+	if approvalRecord.Status != "pending" {
+		return nil, nil, ErrApprovalAlreadyDecided
+	}
+
+	task, err := postgres.GetTaskByIDForUpdateTx(ctx, tx, approvalRecord.TaskID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -244,6 +308,15 @@ func (s *Service) recordEvent(ctx context.Context, input taskevents.RecordInput)
 	if _, err := s.eventService.Record(ctx, input); err != nil {
 		log.Printf("警告：记录任务事件失败：task=%s event=%s err=%v", input.TaskID, input.EventType, err)
 	}
+}
+
+func (s *Service) recordEventTx(ctx context.Context, tx pgx.Tx, input taskevents.RecordInput) error {
+	if s.eventService == nil {
+		return nil
+	}
+
+	_, err := s.eventService.RecordTx(ctx, tx, input)
+	return err
 }
 
 func stringPointer(value string) *string {
