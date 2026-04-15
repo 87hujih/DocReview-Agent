@@ -31,36 +31,94 @@ export default function TaskDetailPage() {
   const taskId = typeof params.id === "string" ? params.id : "";
 
   const [artifacts, setArtifacts] = useState<TaskArtifact[]>([]);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [artifactsError, setArtifactsError] = useState<string | null>(null);
+  const [artifactsLoaded, setArtifactsLoaded] = useState(false);
   const [events, setEvents] = useState<TaskEvent[]>([]);
+  const [eventsError, setEventsError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [steps, setSteps] = useState<TaskStep[]>([]);
   const [task, setTask] = useState<Task | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
+
+  function applyTaskResponse(taskResponse: { task: Task; steps: TaskStep[] }) {
+    setTask(taskResponse.task);
+    setSteps(taskResponse.steps);
+    setTaskError(null);
+  }
+
+  function applyArtifactsSuccess(taskArtifacts: TaskArtifact[]) {
+    setArtifacts(taskArtifacts);
+    setArtifactsLoaded(true);
+    setArtifactsError(null);
+  }
+
+  function applyArtifactsFailure(error: unknown) {
+    setArtifactsError(getErrorMessage(error));
+  }
+
+  function applyEventsSuccess(taskEvents: TaskEvent[]) {
+    setEvents(taskEvents);
+    setEventsError(null);
+  }
+
+  function applyEventsFailure(error: unknown) {
+    setEventsError(getErrorMessage(error));
+  }
 
   // Effect 1: 初始加载，仅在 taskId 变化时触发
   useEffect(() => {
     if (!taskId) {
       setIsLoading(false);
+      setTask(null);
+      setSteps([]);
+      setArtifacts([]);
+      setEvents([]);
+      setTaskError(null);
+      setArtifactsError(null);
+      setEventsError(null);
+      setArtifactsLoaded(false);
       return;
     }
 
     let active = true;
 
     async function load() {
+      setIsLoading(true);
+      setTask(null);
+      setSteps([]);
+      setArtifacts([]);
+      setEvents([]);
+      setTaskError(null);
+      setArtifactsError(null);
+      setEventsError(null);
+      setArtifactsLoaded(false);
+
       try {
-        const [taskResponse, taskArtifacts, taskEvents] = await Promise.all([
-          getTask(taskId),
+        const taskResponse = await getTask(taskId);
+        if (!active) return;
+        applyTaskResponse(taskResponse);
+
+        const [taskArtifacts, taskEvents] = await Promise.allSettled([
           getTaskArtifacts(taskId),
           getTaskEvents(taskId)
         ]);
         if (!active) return;
-        setTask(taskResponse.task);
-        setSteps(taskResponse.steps);
-        setArtifacts(taskArtifacts);
-        setEvents(taskEvents);
-        setErrorMessage(null);
+
+        if (taskArtifacts.status === "fulfilled") {
+          applyArtifactsSuccess(taskArtifacts.value);
+        } else {
+          applyArtifactsFailure(taskArtifacts.reason);
+        }
+
+        if (taskEvents.status === "fulfilled") {
+          applyEventsSuccess(taskEvents.value);
+        } else {
+          applyEventsFailure(taskEvents.reason);
+        }
       } catch (error) {
-        if (active) setErrorMessage(getErrorMessage(error));
+        if (active) {
+          setTaskError(getErrorMessage(error));
+        }
       } finally {
         if (active) setIsLoading(false);
       }
@@ -80,31 +138,53 @@ export default function TaskDetailPage() {
     if (!taskId || taskStatus === null || isTerminalStatus(taskStatus)) return;
 
     let active = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
-    const timer = setInterval(() => {
-      if (!active) return;
+    async function pollOnce() {
+      try {
+        const taskResponse = await getTask(taskId);
+        if (!active) return;
+        applyTaskResponse(taskResponse);
 
-      void (async () => {
-        try {
-          const [taskResponse, taskArtifacts, taskEvents] = await Promise.all([
-            getTask(taskId),
-            getTaskArtifacts(taskId),
-            getTaskEvents(taskId)
-          ]);
-          if (!active) return;
-          setTask(taskResponse.task);
-          setSteps(taskResponse.steps);
-          setArtifacts(taskArtifacts);
-          setEvents(taskEvents);
-        } catch {
-          // 轮询失败静默处理，下次间隔自动重试
+        const [taskArtifacts, taskEvents] = await Promise.allSettled([
+          getTaskArtifacts(taskId),
+          getTaskEvents(taskId)
+        ]);
+        if (!active) return;
+
+        if (taskArtifacts.status === "fulfilled") {
+          applyArtifactsSuccess(taskArtifacts.value);
+        } else {
+          applyArtifactsFailure(taskArtifacts.reason);
         }
-      })();
+
+        if (taskEvents.status === "fulfilled") {
+          applyEventsSuccess(taskEvents.value);
+        } else {
+          applyEventsFailure(taskEvents.reason);
+        }
+      } catch (error) {
+        if (active) {
+          setTaskError(getErrorMessage(error));
+        }
+      } finally {
+        if (active) {
+          timer = setTimeout(() => {
+            void pollOnce();
+          }, 3000);
+        }
+      }
+    }
+
+    timer = setTimeout(() => {
+      void pollOnce();
     }, 3000);
 
     return () => {
       active = false;
-      clearInterval(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
     };
   }, [taskStatus, taskId]);
 
@@ -112,7 +192,9 @@ export default function TaskDetailPage() {
   const reviewSummary = getReviewSummaryArtifact(artifacts);
   const diffPreview = getDiffPreviewArtifact(artifacts);
   const hasCompletedResult = task?.status === "completed" && task.resource_id.trim() !== "";
-  const showErrorOnly = !isLoading && !task && Boolean(errorMessage);
+  const showArtifactsPlaceholder =
+    artifactsLoaded && citations.length === 0 && !reviewSummary && !diffPreview;
+  const showErrorOnly = !isLoading && !task && Boolean(taskError);
 
   return (
     <div className={styles.page}>
@@ -121,7 +203,7 @@ export default function TaskDetailPage() {
         label="任务会话"
         title="任务详情"
       >
-        {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
+        {taskError ? <p className={styles.error}>错误 &gt; {taskError}</p> : null}
 
         {isLoading && !task ? (
           <p className={styles.placeholder}>正在加载任务会话</p>
@@ -154,8 +236,10 @@ export default function TaskDetailPage() {
         </TerminalFrame>
       ) : null}
 
+      {!showErrorOnly && eventsError ? <p className={styles.error}>事件流错误 &gt; {eventsError}</p> : null}
       {!showErrorOnly ? <TaskTimeline events={events} steps={steps} /> : null}
 
+      {!showErrorOnly && artifactsError ? <p className={styles.error}>产物错误 &gt; {artifactsError}</p> : null}
       {!showErrorOnly && citations.length > 0 ? <CitationList citations={citations} /> : null}
 
       {!showErrorOnly && reviewSummary ? (
@@ -169,7 +253,7 @@ export default function TaskDetailPage() {
 
       {!showErrorOnly && diffPreview ? <DiffPreview sections={diffPreview.sections} /> : null}
 
-      {!showErrorOnly && !isLoading && citations.length === 0 && !reviewSummary && !diffPreview ? (
+      {!showErrorOnly && !isLoading && showArtifactsPlaceholder ? (
         <TerminalFrame
           label="产物"
           title="等待产物生成"
