@@ -245,3 +245,34 @@ func TestCreateForTaskAwaitingApprovalNonDrafting(t *testing.T) {
 		t.Fatalf("事务回滚后不应存在审批记录，实际找到 %q", existing.ID)
 	}
 }
+
+func TestJobRepoCreateRejectsDuplicateApprovalID(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	jobRepo := NewJobRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "执行作业唯一约束测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
+
+	task, err := taskRepo.Create(ctx, resource.ID, "相同审批不应重复创建 job")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+
+	if _, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID); err != nil {
+		t.Fatalf("create first job: %v", err)
+	}
+	if _, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID); err == nil {
+		t.Fatal("expected duplicate approval_id job creation to fail")
+	}
+}

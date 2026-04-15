@@ -85,6 +85,25 @@ func (r *ApprovalRepo) GetByID(ctx context.Context, id string) (*Approval, error
 	return &approval, nil
 }
 
+// GetByIDForUpdateTx 在事务内按主键读取审批记录并加行锁，不存在时返回 nil。
+func GetApprovalByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (*Approval, error) {
+	approval, err := scanApproval(tx.QueryRow(ctx, `
+		SELECT id, task_id, status, reject_reason, decided_at, created_at
+		FROM approvals
+		WHERE id = $1
+		FOR UPDATE
+	`, id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &approval, nil
+}
+
 // GetByTaskID 按任务 ID 读取审批记录，不存在时返回 nil。
 func (r *ApprovalRepo) GetByTaskID(ctx context.Context, taskID string) (*Approval, error) {
 	approval, err := scanApproval(r.pool.QueryRow(ctx, `
@@ -184,6 +203,25 @@ func (r *JobRepo) GetByID(ctx context.Context, id string) (*ExecutionJob, error)
 	}
 
 	return &job, nil
+}
+
+// GetTaskByIDForUpdateTx 在事务内按主键读取任务并加行锁，不存在时返回 nil。
+func GetTaskByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (*Task, error) {
+	task, err := scanTask(tx.QueryRow(ctx, `
+		SELECT id, resource_id, instruction, status, error_message, created_at, updated_at
+		FROM tasks
+		WHERE id = $1
+		FOR UPDATE
+	`, id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &task, nil
 }
 
 // ClaimNext 抢占最早的 pending job 并切换为 running；没有待处理作业时返回 nil。

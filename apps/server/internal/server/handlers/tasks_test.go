@@ -11,6 +11,7 @@ import (
 	servermiddleware "agent_project/apps/server/internal/server/middleware"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskservice "agent_project/apps/server/internal/task/service"
+	"agent_project/apps/server/internal/task/workflow"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
@@ -91,6 +92,54 @@ func TestCreateTaskHandlerMissingVersion(t *testing.T) {
 
 	if response.StatusCode() != consts.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+}
+
+func TestCreateTaskHandlerReturnsCreatedFailedTaskWhenSchedulingFails(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	runner := workflow.NewOrchestratorRunner(0, 1, 0, nil, taskRepo)
+	runner.Stop()
+	taskSvc := taskservice.New(taskRepo, resourceRepo, runner, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	engine := server.New()
+	engine.POST("/api/tasks", handler.Create)
+
+	ctx := testContext(t)
+	resource, err := resourceRepo.Create(ctx, "任务创建调度失败测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "当前版本内容", "original"); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/tasks",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"resource_id":"` + resource.ID + `","instruction":"优化第三章数据分类条款"}`),
+			Len:  len(`{"resource_id":"` + resource.ID + `","instruction":"优化第三章数据分类条款"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusCreated {
+		t.Fatalf("expected status %d, got %d", consts.StatusCreated, response.StatusCode())
+	}
+
+	body := string(response.Body())
+	if !strings.Contains(body, `"status":"failed"`) {
+		t.Fatalf("expected failed status, got %q", body)
+	}
+	if !strings.Contains(body, `"error_message":"工作流执行器已停止，无法调度执行"`) {
+		t.Fatalf("expected scheduling failure error message, got %q", body)
 	}
 }
 
@@ -417,7 +466,8 @@ func TestCreateTaskInvalidResourceIDFormat(t *testing.T) {
 	}
 }
 
-func TestHealthHandlerSetsRequestIDHeader(t *testing.T) {	engine := server.New()
+func TestHealthHandlerSetsRequestIDHeader(t *testing.T) {
+	engine := server.New()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	engine.Use(servermiddleware.RequestContext("server", logger))
 	engine.GET("/healthz", Health)

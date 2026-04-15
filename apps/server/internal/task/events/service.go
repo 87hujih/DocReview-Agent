@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"agent_project/apps/server/internal/storage/postgres"
+
+	"github.com/jackc/pgx/v5"
 )
 
 var (
@@ -22,6 +24,7 @@ var (
 
 type taskEventWriter interface {
 	Add(ctx context.Context, input postgres.TaskEventCreateParams) (*postgres.TaskEvent, error)
+	AddTx(ctx context.Context, tx pgx.Tx, input postgres.TaskEventCreateParams) (*postgres.TaskEvent, error)
 }
 
 // RecordInput 描述一次任务事件记录请求。
@@ -48,46 +51,22 @@ func New(repo taskEventWriter) *Service {
 
 // Record 校验并写入一条任务事件。
 func (s *Service) Record(ctx context.Context, input RecordInput) (*postgres.TaskEvent, error) {
-	taskID := strings.TrimSpace(input.TaskID)
-	if taskID == "" {
-		return nil, ErrTaskIDRequired
-	}
-
-	source := strings.TrimSpace(input.Source)
-	if source == "" {
-		return nil, ErrSourceRequired
-	}
-
-	eventType := strings.TrimSpace(input.EventType)
-	if eventType == "" {
-		return nil, ErrEventTypeRequired
-	}
-
-	message := strings.TrimSpace(input.Message)
-	if message == "" {
-		return nil, ErrMessageRequired
-	}
-
-	level := strings.ToLower(strings.TrimSpace(input.Level))
-	if level == "" {
-		level = "info"
-	}
-
-	payload, err := marshalPayload(input.Payload)
+	params, err := buildCreateParams(input)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.repo.Add(ctx, postgres.TaskEventCreateParams{
-		TaskID:    taskID,
-		RunID:     input.RunID,
-		StepName:  strings.TrimSpace(input.StepName),
-		Source:    source,
-		Level:     level,
-		EventType: eventType,
-		Message:   message,
-		Payload:   payload,
-	})
+	return s.repo.Add(ctx, params)
+}
+
+// RecordTx 校验并在事务内写入一条任务事件。
+func (s *Service) RecordTx(ctx context.Context, tx pgx.Tx, input RecordInput) (*postgres.TaskEvent, error) {
+	params, err := buildCreateParams(input)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.repo.AddTx(ctx, tx, params)
 }
 
 func marshalPayload(payload any) ([]byte, error) {
@@ -105,4 +84,47 @@ func marshalPayload(payload any) ([]byte, error) {
 	}
 
 	return encoded, nil
+}
+
+func buildCreateParams(input RecordInput) (postgres.TaskEventCreateParams, error) {
+	taskID := strings.TrimSpace(input.TaskID)
+	if taskID == "" {
+		return postgres.TaskEventCreateParams{}, ErrTaskIDRequired
+	}
+
+	source := strings.TrimSpace(input.Source)
+	if source == "" {
+		return postgres.TaskEventCreateParams{}, ErrSourceRequired
+	}
+
+	eventType := strings.TrimSpace(input.EventType)
+	if eventType == "" {
+		return postgres.TaskEventCreateParams{}, ErrEventTypeRequired
+	}
+
+	message := strings.TrimSpace(input.Message)
+	if message == "" {
+		return postgres.TaskEventCreateParams{}, ErrMessageRequired
+	}
+
+	level := strings.ToLower(strings.TrimSpace(input.Level))
+	if level == "" {
+		level = "info"
+	}
+
+	payload, err := marshalPayload(input.Payload)
+	if err != nil {
+		return postgres.TaskEventCreateParams{}, err
+	}
+
+	return postgres.TaskEventCreateParams{
+		TaskID:    taskID,
+		RunID:     input.RunID,
+		StepName:  strings.TrimSpace(input.StepName),
+		Source:    source,
+		Level:     level,
+		EventType: eventType,
+		Message:   message,
+		Payload:   payload,
+	}, nil
 }

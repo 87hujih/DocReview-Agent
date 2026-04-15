@@ -8,6 +8,7 @@ import (
 
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
+	"agent_project/apps/server/internal/task/models"
 	"agent_project/apps/server/internal/task/workflow"
 )
 
@@ -85,19 +86,7 @@ func (s *Service) CreateTask(ctx context.Context, resourceID string, instruction
 
 	if s.runner != nil {
 		if err := s.runner.Enqueue(task.ID); err != nil {
-			if errors.Is(err, workflow.ErrQueueFull) {
-				errorMsg := "任务队列已满，无法调度执行"
-				_ = s.taskRepo.UpdateStatus(ctx, task.ID, "failed", &errorMsg)
-				s.recordEvent(ctx, taskevents.RecordInput{
-					TaskID:    task.ID,
-					Source:    "task_service",
-					Level:     "error",
-					EventType: "task.failed",
-					Message:   errorMsg,
-					Payload:   map[string]any{"reason": "queue_full"},
-				})
-			}
-			return nil, err
+			return s.failCreatedTask(ctx, task, err)
 		}
 	}
 
@@ -134,5 +123,57 @@ func (s *Service) recordEvent(ctx context.Context, input taskevents.RecordInput)
 
 	if _, err := s.eventService.Record(ctx, input); err != nil {
 		log.Printf("警告：记录任务事件失败：task=%s event=%s err=%v", input.TaskID, input.EventType, err)
+	}
+}
+
+func (s *Service) failCreatedTask(ctx context.Context, task *postgres.Task, enqueueErr error) (*postgres.Task, error) {
+	errorMsg, reason := taskEnqueueFailureDetail(enqueueErr)
+	from := task.Status
+	if err := models.Transition(task.Status, models.StatusFailed); err != nil {
+		return nil, err
+	}
+	if err := s.taskRepo.UpdateStatus(ctx, task.ID, models.StatusFailed, &errorMsg); err != nil {
+		return nil, err
+	}
+
+	task.Status = models.StatusFailed
+	task.ErrorMessage = &errorMsg
+	s.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "task_service",
+		Level:     "error",
+		EventType: "task.status_changed",
+		Message:   "任务状态已更新为失败",
+		Payload: map[string]any{
+			"from_status":   from,
+			"to_status":     models.StatusFailed,
+			"error_message": errorMsg,
+			"reason":        reason,
+		},
+	})
+	s.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "task_service",
+		Level:     "error",
+		EventType: "task.failed",
+		Message:   errorMsg,
+		Payload: map[string]any{
+			"reason":        reason,
+			"error_message": errorMsg,
+			"status":        models.StatusFailed,
+		},
+	})
+
+	return task, nil
+}
+
+func taskEnqueueFailureDetail(err error) (string, string) {
+	switch {
+	case errors.Is(err, workflow.ErrQueueFull):
+		return "任务队列已满，无法调度执行", "queue_full"
+	case errors.Is(err, workflow.ErrRunnerStopped):
+		return "工作流执行器已停止，无法调度执行", "runner_stopped"
+	default:
+		return "任务调度失败，无法启动执行", "enqueue_failed"
 	}
 }

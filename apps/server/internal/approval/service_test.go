@@ -2,9 +2,11 @@ package approval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -102,14 +104,17 @@ func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list task events: %v", err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("expected 2 task events, got %d", len(events))
+	if len(events) != 3 {
+		t.Fatalf("expected 3 task events, got %d", len(events))
 	}
-	if events[0].EventType != "approval.approved" {
-		t.Fatalf("expected first event type %q, got %q", "approval.approved", events[0].EventType)
+	if events[0].EventType != "task.status_changed" {
+		t.Fatalf("expected first event type %q, got %q", "task.status_changed", events[0].EventType)
 	}
-	if events[1].EventType != "job.queued" {
-		t.Fatalf("expected second event type %q, got %q", "job.queued", events[1].EventType)
+	if events[1].EventType != "approval.approved" {
+		t.Fatalf("expected second event type %q, got %q", "approval.approved", events[1].EventType)
+	}
+	if events[2].EventType != "job.queued" {
+		t.Fatalf("expected third event type %q, got %q", "job.queued", events[2].EventType)
 	}
 }
 
@@ -176,11 +181,14 @@ func TestRejectUpdatesApprovalAndTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list task events: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 task event, got %d", len(events))
+	if len(events) != 2 {
+		t.Fatalf("expected 2 task events, got %d", len(events))
 	}
-	if events[0].EventType != "approval.rejected" {
-		t.Fatalf("expected event type %q, got %q", "approval.rejected", events[0].EventType)
+	if events[0].EventType != "task.status_changed" {
+		t.Fatalf("expected first event type %q, got %q", "task.status_changed", events[0].EventType)
+	}
+	if events[1].EventType != "approval.rejected" {
+		t.Fatalf("expected second event type %q, got %q", "approval.rejected", events[1].EventType)
 	}
 }
 
@@ -220,6 +228,188 @@ func TestApproveAlreadyDecidedReturnsError(t *testing.T) {
 
 	if _, err := service.Approve(ctx, approvalRecord.ID); err == nil {
 		t.Fatal("expected second approve to fail")
+	}
+}
+
+func TestApproveConcurrentOnlyOneSucceeds(t *testing.T) {
+	pool := newApprovalTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	ctx := approvalTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "审批并发批准测试-"+approvalUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupApprovalResource(t, pool, resource.ID)
+	})
+
+	task, err := taskRepo.Create(ctx, resource.ID, "并发批准只能成功一次")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
+		t.Fatalf("update task to awaiting approval: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil)
+	startCh := make(chan struct{})
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-startCh
+			_, err := service.Approve(ctx, approvalRecord.ID)
+			errCh <- err
+		}()
+	}
+
+	close(startCh)
+	wg.Wait()
+	close(errCh)
+
+	var successCount, alreadyDecidedCount int
+	for err := range errCh {
+		switch {
+		case err == nil:
+			successCount++
+		case errors.Is(err, ErrApprovalAlreadyDecided):
+			alreadyDecidedCount++
+		default:
+			t.Fatalf("unexpected concurrent approve error: %v", err)
+		}
+	}
+	if successCount != 1 || alreadyDecidedCount != 1 {
+		t.Fatalf("expected one success and one already-decided error, got success=%d already_decided=%d", successCount, alreadyDecidedCount)
+	}
+
+	pendingJobs, err := jobRepo.ListPending(ctx)
+	if err != nil {
+		t.Fatalf("list pending jobs: %v", err)
+	}
+	if len(pendingJobs) != 1 {
+		t.Fatalf("expected 1 pending job after concurrent approve, got %d", len(pendingJobs))
+	}
+}
+
+func TestApproveAndRejectConcurrentOnlyOneSucceeds(t *testing.T) {
+	pool := newApprovalTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	ctx := approvalTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "审批并发冲突测试-"+approvalUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupApprovalResource(t, pool, resource.ID)
+	})
+
+	task, err := taskRepo.Create(ctx, resource.ID, "批准和拒绝只能成功一个")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
+		t.Fatalf("update task to awaiting approval: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil)
+	startCh := make(chan struct{})
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-startCh
+		_, err := service.Approve(ctx, approvalRecord.ID)
+		errCh <- err
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-startCh
+		_, err := service.Reject(ctx, approvalRecord.ID, "并发拒绝")
+		errCh <- err
+	}()
+
+	close(startCh)
+	wg.Wait()
+	close(errCh)
+
+	var successCount, alreadyDecidedCount int
+	for err := range errCh {
+		switch {
+		case err == nil:
+			successCount++
+		case errors.Is(err, ErrApprovalAlreadyDecided):
+			alreadyDecidedCount++
+		default:
+			t.Fatalf("unexpected concurrent approve/reject error: %v", err)
+		}
+	}
+	if successCount != 1 || alreadyDecidedCount != 1 {
+		t.Fatalf("expected one success and one already-decided error, got success=%d already_decided=%d", successCount, alreadyDecidedCount)
+	}
+
+	updatedApproval, err := approvalRepo.GetByID(ctx, approvalRecord.ID)
+	if err != nil {
+		t.Fatalf("get updated approval: %v", err)
+	}
+	if updatedApproval == nil {
+		t.Fatal("expected updated approval, got nil")
+	}
+
+	updatedTask, err := taskRepo.GetByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get updated task: %v", err)
+	}
+	if updatedTask == nil {
+		t.Fatal("expected updated task, got nil")
+	}
+
+	pendingJobs, err := jobRepo.ListPending(ctx)
+	if err != nil {
+		t.Fatalf("list pending jobs: %v", err)
+	}
+
+	switch updatedApproval.Status {
+	case "approved":
+		if updatedTask.Status != models.StatusExecuting {
+			t.Fatalf("expected approved task to be executing, got %q", updatedTask.Status)
+		}
+		if len(pendingJobs) != 1 {
+			t.Fatalf("expected exactly 1 pending job after approve wins, got %d", len(pendingJobs))
+		}
+	case "rejected":
+		if updatedTask.Status != models.StatusFailed {
+			t.Fatalf("expected rejected task to be failed, got %q", updatedTask.Status)
+		}
+		if len(pendingJobs) != 0 {
+			t.Fatalf("expected no pending jobs after reject wins, got %d", len(pendingJobs))
+		}
+	default:
+		t.Fatalf("unexpected approval status after concurrent approve/reject: %q", updatedApproval.Status)
 	}
 }
 
