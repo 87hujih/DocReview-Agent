@@ -130,15 +130,27 @@ func TestMigrationAddsAssistantSuggestionSourceColumn(t *testing.T) {
 		t.Fatalf("run migrations again: %v", err)
 	}
 
+	var currentSchema string
+	if err := pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&currentSchema); err != nil {
+		t.Fatalf("query current schema: %v", err)
+	}
+	if currentSchema == "" {
+		t.Fatal("expected isolated schema, got empty current_schema()")
+	}
+	if currentSchema == "public" {
+		t.Fatalf("expected isolated schema instead of public, got %q", currentSchema)
+	}
+
 	type columnInfo struct {
-		ColumnName string
-		IsNullable string
+		TableSchema string
+		ColumnName  string
+		IsNullable  string
 	}
 
 	rows, err := pool.Query(ctx, `
-		SELECT column_name, is_nullable
+		SELECT table_schema, column_name, is_nullable
 		FROM information_schema.columns
-		WHERE table_schema = 'public'
+		WHERE table_schema = current_schema()
 		  AND table_name = 'tasks'
 		  AND column_name = 'source_message_id'
 	`)
@@ -149,7 +161,7 @@ func TestMigrationAddsAssistantSuggestionSourceColumn(t *testing.T) {
 
 	columns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (columnInfo, error) {
 		var info columnInfo
-		err := row.Scan(&info.ColumnName, &info.IsNullable)
+		err := row.Scan(&info.TableSchema, &info.ColumnName, &info.IsNullable)
 		return info, err
 	})
 	if err != nil {
@@ -159,21 +171,28 @@ func TestMigrationAddsAssistantSuggestionSourceColumn(t *testing.T) {
 	if len(columns) != 1 {
 		t.Fatalf("expected tasks.source_message_id column to exist once, got %d", len(columns))
 	}
+	if columns[0].TableSchema != currentSchema {
+		t.Fatalf("expected tasks.source_message_id in current schema %q, got %q", currentSchema, columns[0].TableSchema)
+	}
 	if columns[0].IsNullable != "YES" {
 		t.Fatalf("expected tasks.source_message_id to be nullable, got %q", columns[0].IsNullable)
 	}
 
+	var indexSchema string
 	var indexName string
 	if err := pool.QueryRow(ctx, `
-		SELECT indexname
+		SELECT schemaname, indexname
 		FROM pg_indexes
-		WHERE schemaname = 'public'
+		WHERE schemaname = current_schema()
 		  AND tablename = 'tasks'
 		  AND indexname = 'idx_tasks_source_message_id_unique'
-	`).Scan(&indexName); err != nil {
+	`).Scan(&indexSchema, &indexName); err != nil {
 		t.Fatalf("query source_message_id unique index: %v", err)
 	}
 
+	if indexSchema != currentSchema {
+		t.Fatalf("expected source_message_id unique index in current schema %q, got %q", currentSchema, indexSchema)
+	}
 	if indexName != "idx_tasks_source_message_id_unique" {
 		t.Fatalf("expected source_message_id unique index, got %q", indexName)
 	}
