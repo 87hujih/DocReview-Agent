@@ -264,26 +264,49 @@ func TestApprovalRepoReadListAndUpdateStatus(t *testing.T) {
 		t.Fatal("expected decided_at to be set")
 	}
 
+	testApprovalIDs := map[string]struct{}{
+		firstApproval.ID:  {},
+		secondApproval.ID: {},
+	}
+
 	allApprovals, err := approvalRepo.List(ctx, "")
 	if err != nil {
 		t.Fatalf("list approvals: %v", err)
 	}
-	if len(allApprovals) < 2 {
-		t.Fatalf("expected at least 2 approvals, got %d", len(allApprovals))
+
+	filteredApprovals := make([]Approval, 0, len(testApprovalIDs))
+	for _, approval := range allApprovals {
+		if _, ok := testApprovalIDs[approval.ID]; !ok {
+			continue
+		}
+
+		filteredApprovals = append(filteredApprovals, approval)
 	}
-	if allApprovals[0].ID != secondApproval.ID {
-		t.Fatalf("expected latest approval %q first, got %q", secondApproval.ID, allApprovals[0].ID)
+	if len(filteredApprovals) != 2 {
+		t.Fatalf("expected 2 approvals in test set, got %d", len(filteredApprovals))
+	}
+	if filteredApprovals[0].ID != secondApproval.ID {
+		t.Fatalf("expected latest approval %q first in test set, got %q", secondApproval.ID, filteredApprovals[0].ID)
 	}
 
 	rejectedApprovals, err := approvalRepo.List(ctx, "rejected")
 	if err != nil {
 		t.Fatalf("list rejected approvals: %v", err)
 	}
-	if len(rejectedApprovals) != 1 {
-		t.Fatalf("expected 1 rejected approval, got %d", len(rejectedApprovals))
+
+	filteredRejectedApprovals := make([]Approval, 0, len(testApprovalIDs))
+	for _, approval := range rejectedApprovals {
+		if _, ok := testApprovalIDs[approval.ID]; !ok {
+			continue
+		}
+
+		filteredRejectedApprovals = append(filteredRejectedApprovals, approval)
 	}
-	if rejectedApprovals[0].ID != firstApproval.ID {
-		t.Fatalf("expected rejected approval id %q, got %q", firstApproval.ID, rejectedApprovals[0].ID)
+	if len(filteredRejectedApprovals) != 1 {
+		t.Fatalf("expected 1 rejected approval in test set, got %d", len(filteredRejectedApprovals))
+	}
+	if filteredRejectedApprovals[0].ID != firstApproval.ID {
+		t.Fatalf("expected rejected approval id %q, got %q", firstApproval.ID, filteredRejectedApprovals[0].ID)
 	}
 }
 
@@ -334,6 +357,18 @@ func TestJobRepoCRUD(t *testing.T) {
 	secondJob, err := jobRepo.Create(ctx, secondTask.ID, secondApproval.ID)
 	if err != nil {
 		t.Fatalf("create second job: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE execution_jobs
+		SET created_at = CASE
+			WHEN id = $1 THEN TIMESTAMP '2000-01-01 00:00:00'
+			WHEN id = $2 THEN TIMESTAMP '2000-01-01 00:00:01'
+			ELSE created_at
+		END
+		WHERE id IN ($1, $2)
+	`, firstJob.ID, secondJob.ID); err != nil {
+		t.Fatalf("stabilize job ordering: %v", err)
 	}
 
 	gotJob, err := jobRepo.GetByID(ctx, firstJob.ID)
@@ -409,8 +444,8 @@ func TestJobRepoCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claim when no pending job: %v", err)
 	}
-	if noPendingJob != nil {
-		t.Fatalf("expected nil when no pending job, got %#v", noPendingJob)
+	if noPendingJob != nil && (noPendingJob.ID == firstJob.ID || noPendingJob.ID == secondJob.ID) {
+		t.Fatalf("expected test jobs to be consumed, got %#v", noPendingJob)
 	}
 }
 

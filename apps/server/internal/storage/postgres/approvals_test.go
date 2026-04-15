@@ -1,7 +1,12 @@
 package postgres
 
 import (
+	"context"
 	"testing"
+
+	"agent_project/apps/server/internal/task/models"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // TestApprovalRepoCRUD 验证审批仓储的基本读写流程。
@@ -274,5 +279,220 @@ func TestJobRepoCreateRejectsDuplicateApprovalID(t *testing.T) {
 	}
 	if _, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID); err == nil {
 		t.Fatal("expected duplicate approval_id job creation to fail")
+	}
+}
+
+func TestJobRepoFinalizeSuccessWritesTaskStateAndEventsAtomically(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	jobRepo := NewJobRepo(pool)
+	eventRepo := NewTaskEventRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "作业成功收尾测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
+
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "原始版本内容", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	task, err := taskRepo.Create(ctx, resource.ID, "验证作业成功收尾")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusExecuting, nil); err != nil {
+		t.Fatalf("update task to executing: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	job, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := jobRepo.UpdateStatus(ctx, job.ID, "running", nil, nil); err != nil {
+		t.Fatalf("mark job running: %v", err)
+	}
+
+	if err := jobRepo.FinalizeSuccess(ctx, job.ID, version.ID, func(
+		ctx context.Context,
+		tx pgx.Tx,
+		task *Task,
+		job *ExecutionJob,
+		fromTaskStatus string,
+	) error {
+		if _, err := eventRepo.AddTx(ctx, tx, TaskEventCreateParams{
+			TaskID:    task.ID,
+			RunID:     &job.ID,
+			Source:    "job_worker",
+			Level:     "info",
+			EventType: "job.completed",
+			Message:   "执行作业已完成",
+			Payload:   []byte(`{"approval_id":"` + job.ApprovalID + `","new_version_id":"` + version.ID + `"}`),
+		}); err != nil {
+			return err
+		}
+		if _, err := eventRepo.AddTx(ctx, tx, TaskEventCreateParams{
+			TaskID:    task.ID,
+			RunID:     &job.ID,
+			Source:    "job_worker",
+			Level:     "info",
+			EventType: "task.status_changed",
+			Message:   "任务状态已更新",
+			Payload:   []byte(`{"from_status":"` + fromTaskStatus + `","to_status":"` + task.Status + `"}`),
+		}); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("finalize success: %v", err)
+	}
+
+	storedJob, err := jobRepo.GetByID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if storedJob == nil || storedJob.Status != "done" {
+		t.Fatalf("expected job status done, got %#v", storedJob)
+	}
+	if storedJob.NewVersionID == nil || *storedJob.NewVersionID != version.ID {
+		t.Fatalf("expected new version id %q, got %#v", version.ID, storedJob.NewVersionID)
+	}
+
+	storedTask, err := taskRepo.GetByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if storedTask == nil || storedTask.Status != models.StatusCompleted {
+		t.Fatalf("expected task status %q, got %#v", models.StatusCompleted, storedTask)
+	}
+
+	events, err := eventRepo.ListByTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("list task events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 task events, got %d", len(events))
+	}
+	if events[0].EventType != "job.completed" {
+		t.Fatalf("expected first event type %q, got %q", "job.completed", events[0].EventType)
+	}
+	if events[1].EventType != "task.status_changed" {
+		t.Fatalf("expected second event type %q, got %q", "task.status_changed", events[1].EventType)
+	}
+}
+
+func TestJobRepoFinalizeFailureWritesTaskStateAndEventsAtomically(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	jobRepo := NewJobRepo(pool)
+	eventRepo := NewTaskEventRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "作业失败收尾测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
+
+	task, err := taskRepo.Create(ctx, resource.ID, "验证作业失败收尾")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusExecuting, nil); err != nil {
+		t.Fatalf("update task to executing: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	job, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := jobRepo.UpdateStatus(ctx, job.ID, "running", nil, nil); err != nil {
+		t.Fatalf("mark job running: %v", err)
+	}
+
+	errorMessage := "执行作业失败"
+	if err := jobRepo.FinalizeFailure(ctx, job.ID, errorMessage, func(
+		ctx context.Context,
+		tx pgx.Tx,
+		task *Task,
+		job *ExecutionJob,
+		fromTaskStatus string,
+	) error {
+		if _, err := eventRepo.AddTx(ctx, tx, TaskEventCreateParams{
+			TaskID:    task.ID,
+			RunID:     &job.ID,
+			Source:    "job_worker",
+			Level:     "error",
+			EventType: "job.failed",
+			Message:   "执行作业执行失败",
+			Payload:   []byte(`{"approval_id":"` + job.ApprovalID + `","error_message":"` + errorMessage + `"}`),
+		}); err != nil {
+			return err
+		}
+		if _, err := eventRepo.AddTx(ctx, tx, TaskEventCreateParams{
+			TaskID:    task.ID,
+			RunID:     &job.ID,
+			Source:    "job_worker",
+			Level:     "error",
+			EventType: "task.status_changed",
+			Message:   "任务状态已更新",
+			Payload:   []byte(`{"from_status":"` + fromTaskStatus + `","to_status":"` + task.Status + `","error_message":"` + errorMessage + `"}`),
+		}); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("finalize failure: %v", err)
+	}
+
+	storedJob, err := jobRepo.GetByID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if storedJob == nil || storedJob.Status != "failed" {
+		t.Fatalf("expected job status failed, got %#v", storedJob)
+	}
+	if storedJob.ErrorMessage == nil || *storedJob.ErrorMessage != errorMessage {
+		t.Fatalf("expected job error %q, got %#v", errorMessage, storedJob.ErrorMessage)
+	}
+
+	storedTask, err := taskRepo.GetByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if storedTask == nil || storedTask.Status != models.StatusFailed {
+		t.Fatalf("expected task status %q, got %#v", models.StatusFailed, storedTask)
+	}
+	if storedTask.ErrorMessage == nil || *storedTask.ErrorMessage != errorMessage {
+		t.Fatalf("expected task error %q, got %#v", errorMessage, storedTask.ErrorMessage)
+	}
+
+	events, err := eventRepo.ListByTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("list task events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 task events, got %d", len(events))
+	}
+	if events[0].EventType != "job.failed" {
+		t.Fatalf("expected first event type %q, got %q", "job.failed", events[0].EventType)
+	}
+	if events[1].EventType != "task.status_changed" {
+		t.Fatalf("expected second event type %q, got %q", "task.status_changed", events[1].EventType)
 	}
 }

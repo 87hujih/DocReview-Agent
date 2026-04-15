@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"agent_project/apps/server/internal/task/models"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -42,6 +44,9 @@ type ApprovalRepo struct {
 type JobRepo struct {
 	pool *pgxpool.Pool
 }
+
+// ExecutionJobFinalizeHook 允许调用方在作业和任务终态更新事务内补写事件。
+type ExecutionJobFinalizeHook func(ctx context.Context, tx pgx.Tx, task *Task, job *ExecutionJob, fromTaskStatus string) error
 
 // NewApprovalRepo 使用连接池创建审批仓储。
 func NewApprovalRepo(pool *pgxpool.Pool) *ApprovalRepo {
@@ -205,6 +210,24 @@ func (r *JobRepo) GetByID(ctx context.Context, id string) (*ExecutionJob, error)
 	return &job, nil
 }
 
+func getExecutionJobByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (*ExecutionJob, error) {
+	job, err := scanExecutionJob(tx.QueryRow(ctx, `
+		SELECT id, task_id, approval_id, status, error_message, new_version_id, started_at, completed_at, created_at
+		FROM execution_jobs
+		WHERE id = $1
+		FOR UPDATE
+	`, id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &job, nil
+}
+
 // GetTaskByIDForUpdateTx 在事务内按主键读取任务并加行锁，不存在时返回 nil。
 func GetTaskByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (*Task, error) {
 	task, err := scanTask(tx.QueryRow(ctx, `
@@ -266,6 +289,26 @@ func (r *JobRepo) UpdateStatus(ctx context.Context, id string, status string, er
 	return err
 }
 
+// FinalizeSuccess 在同一事务内将 execution_job 和 task 推进到成功终态。
+func (r *JobRepo) FinalizeSuccess(
+	ctx context.Context,
+	jobID string,
+	newVersionID string,
+	hook ExecutionJobFinalizeHook,
+) error {
+	return r.finalize(ctx, jobID, "done", nil, &newVersionID, models.StatusCompleted, hook)
+}
+
+// FinalizeFailure 在同一事务内将 execution_job 和 task 推进到失败终态。
+func (r *JobRepo) FinalizeFailure(
+	ctx context.Context,
+	jobID string,
+	errorMessage string,
+	hook ExecutionJobFinalizeHook,
+) error {
+	return r.finalize(ctx, jobID, "failed", &errorMessage, nil, models.StatusFailed, hook)
+}
+
 func scanApproval(row pgx.Row) (Approval, error) {
 	var approval Approval
 
@@ -305,6 +348,29 @@ func scanExecutionJob(row pgx.Row) (ExecutionJob, error) {
 	return job, nil
 }
 
+// UpdateExecutionJobStatusTx 在事务内更新执行作业状态。
+func UpdateExecutionJobStatusTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	id string,
+	status string,
+	errorMessage *string,
+	newVersionID *string,
+) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE execution_jobs
+		SET status = $2,
+		    error_message = $3,
+		    new_version_id = $4,
+		    completed_at = CASE
+		        WHEN $2 IN ('done', 'failed') THEN now()
+		        ELSE NULL
+		    END
+		WHERE id = $1
+	`, id, status, errorMessage, newVersionID)
+	return err
+}
+
 // UpdateApprovalStatusTx 在事务内更新审批状态。
 func UpdateApprovalStatusTx(ctx context.Context, tx pgx.Tx, id string, status string, rejectReason *string) error {
 	_, err := tx.Exec(ctx, `
@@ -329,6 +395,65 @@ func CreateJobTx(ctx context.Context, tx pgx.Tx, taskID string, approvalID strin
 	}
 
 	return &job, nil
+}
+
+func (r *JobRepo) finalize(
+	ctx context.Context,
+	jobID string,
+	jobStatus string,
+	errorMessage *string,
+	newVersionID *string,
+	taskStatus string,
+	hook ExecutionJobFinalizeHook,
+) error {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	job, err := getExecutionJobByIDForUpdateTx(ctx, tx, jobID)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return fmt.Errorf("执行作业不存在")
+	}
+	if job.Status != "running" {
+		return fmt.Errorf("执行作业状态不是 running（当前：%s）", job.Status)
+	}
+
+	task, err := GetTaskByIDForUpdateTx(ctx, tx, job.TaskID)
+	if err != nil {
+		return err
+	}
+	if task == nil {
+		return fmt.Errorf("任务不存在")
+	}
+
+	fromTaskStatus := task.Status
+	if err := models.Transition(task.Status, taskStatus); err != nil {
+		return err
+	}
+	if err := UpdateExecutionJobStatusTx(ctx, tx, job.ID, jobStatus, errorMessage, newVersionID); err != nil {
+		return err
+	}
+	if err := UpdateTaskStatusTx(ctx, tx, task.ID, taskStatus, errorMessage); err != nil {
+		return err
+	}
+
+	job.Status = jobStatus
+	job.ErrorMessage = errorMessage
+	job.NewVersionID = newVersionID
+	task.Status = taskStatus
+	task.ErrorMessage = errorMessage
+	if hook != nil {
+		if err := hook(ctx, tx, task, job, fromTaskStatus); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 // UpdateTaskStatusTx 在事务内更新任务状态。

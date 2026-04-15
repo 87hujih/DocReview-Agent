@@ -156,6 +156,37 @@ func cleanupTaskServiceResource(t *testing.T, pool *pgxpool.Pool, resourceID str
 	t.Helper()
 
 	ctx := taskServiceTestContext(t)
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM execution_jobs
+		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
+		   OR new_version_id IN (SELECT id FROM resource_versions WHERE resource_id = $1)
+	`, resourceID); err != nil {
+		t.Fatalf("cleanup execution jobs for resource %q: %v", resourceID, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM approvals
+		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
+	`, resourceID); err != nil {
+		t.Fatalf("cleanup approvals for resource %q: %v", resourceID, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM task_events
+		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
+	`, resourceID); err != nil {
+		t.Fatalf("cleanup task events for resource %q: %v", resourceID, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM task_artifacts
+		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
+	`, resourceID); err != nil {
+		t.Fatalf("cleanup task artifacts for resource %q: %v", resourceID, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM task_steps
+		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
+	`, resourceID); err != nil {
+		t.Fatalf("cleanup task steps for resource %q: %v", resourceID, err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM tasks WHERE resource_id = $1`, resourceID); err != nil {
 		t.Fatalf("cleanup tasks for resource %q: %v", resourceID, err)
 	}
