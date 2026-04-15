@@ -17,12 +17,12 @@ export async function getAssistantSessions(): Promise<AssistantSession[]> {
   return response.sessions;
 }
 
-export async function getAssistantSession(sessionId: string): Promise<AssistantConversation> {
-  return apiFetch<AssistantConversation>(`/api/assistant/sessions/${sessionId}`);
-}
-
 export async function getAssistantCapabilities(): Promise<AssistantCapabilities> {
   return apiFetch<AssistantCapabilities>("/api/assistant/capabilities");
+}
+
+export async function getAssistantSession(sessionId: string): Promise<AssistantConversation> {
+  return apiFetch<AssistantConversation>(`/api/assistant/sessions/${sessionId}`);
 }
 
 export async function createAssistantConversation(message: string): Promise<AssistantConversation> {

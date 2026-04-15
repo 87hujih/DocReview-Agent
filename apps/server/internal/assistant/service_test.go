@@ -20,7 +20,7 @@ func TestStartConversationUsesResponderReply(t *testing.T) {
 			Reply: "当然可以，我们先把目标和限制条件说清楚。",
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, nil)
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
 
 	result, err := service.StartConversation(context.Background(), "我想先聊聊这周要做什么")
 	if err != nil {
@@ -39,7 +39,7 @@ func TestStartConversationUsesResponderReply(t *testing.T) {
 
 func TestStartConversationDoesNotSuggestTaskForCapabilityQuestion(t *testing.T) {
 	repo := newFakeSessionRepo()
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, &fakeChatResponder{
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
 		result: &ChatCompletionResult{
 			Reply: "我可以回答问题、整理信息，也可以在需要时给出任务建议。",
 		},
@@ -65,7 +65,7 @@ func TestAppendMessageCreatesTaskSuggestionFromResponderInstruction(t *testing.T
 			TaskInstruction: &instruction,
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, nil)
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
 
 	result, err := service.AppendMessage(context.Background(), session.ID, "把第二章做成后续事项")
 	if err != nil {
@@ -123,7 +123,7 @@ func TestAppendMessagePassesLatestResourceContextAndCitationsToResponder(t *test
 			},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, retriever)
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
 
 	if _, err := service.AppendMessage(context.Background(), session.ID, "考勤条款有什么风险"); err != nil {
 		t.Fatalf("append message: %v", err)
@@ -177,7 +177,7 @@ func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testin
 			},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, retriever)
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
 
 	err := service.AppendMessageStream(context.Background(), session.ID, "继续看考勤", func(StreamEvent) error { return nil })
 	if err != nil {
@@ -196,7 +196,7 @@ func TestAppendMessageDoesNotCallRetrieverWithoutReadyResource(t *testing.T) {
 	session := repo.seedSession("空白会话")
 	responder := &fakeChatResponder{result: &ChatCompletionResult{Reply: "先继续聊需求。"}}
 	retriever := &fakeResourceCitationRetriever{}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, retriever)
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
 
 	if _, err := service.AppendMessage(context.Background(), session.ID, "先看看目标"); err != nil {
 		t.Fatalf("append message: %v", err)
@@ -208,7 +208,7 @@ func TestAppendMessageDoesNotCallRetrieverWithoutReadyResource(t *testing.T) {
 
 func TestStartConversationCreatesSessionAndTaskSuggestion(t *testing.T) {
 	repo := newFakeSessionRepo()
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, &fakeChatResponder{
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
 		result: &ChatCompletionResult{
 			Reply: "我先帮你梳理这份学生守则，再给你任务建议。",
 		},
@@ -270,7 +270,7 @@ func TestAppendMessageUsesLatestUploadedResourceForTaskSuggestion(t *testing.T) 
 		CreatedAt: time.Now(),
 	})
 
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, &fakeChatResponder{
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
 		result: &ChatCompletionResult{
 			Reply: "我先基于当前资料看第二章，再帮你收敛成任务。",
 		},
@@ -301,7 +301,7 @@ func TestStartConversationStreamPersistsUserFirstAndAssistantAfterCompletion(t *
 			chunks: []string{"当然可以", "，我们先梳理目标。"},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, nil)
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
 
 	var events []StreamEvent
 	err := service.StartConversationStream(context.Background(), "帮我梳理这周学习安排", func(event StreamEvent) error {
@@ -371,7 +371,7 @@ func TestAppendMessageStreamDoesNotPersistAssistantOnCancellation(t *testing.T) 
 			errs:   []error{nil, context.Canceled},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, nil)
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
 
 	err := service.AppendMessageStream(context.Background(), session.ID, "继续看看考勤部分", func(StreamEvent) error {
 		return nil
@@ -399,7 +399,7 @@ func TestStartConversationStreamReturnsEmptyReplyError(t *testing.T) {
 	responder := &fakeChatResponder{
 		stream: &fakeChatStream{},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{}, responder, nil)
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
 
 	err := service.StartConversationStream(context.Background(), "帮我总结学生手册", func(StreamEvent) error {
 		return nil
@@ -440,7 +440,7 @@ func TestUploadFilePersistsSessionFileMessage(t *testing.T) {
 		},
 	}
 
-	service := NewService(repo, importer, fakeTaskCreator{}, &fakeChatResponder{}, nil)
+	service := NewService(repo, importer, &fakeTaskCreator{}, &fakeChatResponder{}, nil)
 	result, err := service.UploadFile(context.Background(), session.ID, "学生手册.md", []byte("# 学生手册\n内容"))
 	if err != nil {
 		t.Fatalf("upload file: %v", err)
@@ -497,7 +497,7 @@ func TestUploadFileStoresOriginalFileAndPersistsFileID(t *testing.T) {
 	service := NewService(
 		repo,
 		importer,
-		fakeTaskCreator{},
+		&fakeTaskCreator{},
 		&fakeChatResponder{},
 		nil,
 		WithUploadedFileStorage(fileStore, uploadedFiles),
@@ -552,7 +552,7 @@ func TestConfirmTaskSuggestionCreatesTaskCreatedMessage(t *testing.T) {
 		CreatedAt: time.Now(),
 	})
 
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{
 		result: &postgres.Task{
 			ID:          "task-1",
 			ResourceID:  resourceID,
@@ -607,7 +607,7 @@ func TestConfirmTaskSuggestionAppendsFailureSystemMessageWhenTaskCreationFails(t
 		CreatedAt: time.Now(),
 	})
 
-	service := NewService(repo, fakeDocumentImporter{}, fakeTaskCreator{
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{
 		err: errors.New("task create failed"),
 	}, &fakeChatResponder{}, nil)
 
@@ -630,6 +630,77 @@ func TestConfirmTaskSuggestionAppendsFailureSystemMessageWhenTaskCreationFails(t
 
 	if result.Messages[0].Kind != KindSystem {
 		t.Fatalf("expected system message, got %q", result.Messages[0].Kind)
+	}
+}
+
+func TestConfirmTaskSuggestionReturnsExistingTaskWithoutAppendingDuplicateTaskCreatedMessage(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	resourceID := "resource-1"
+
+	suggestionMessage := repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-suggestion",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindTaskSuggestion,
+		SequenceNo: 1,
+		Payload: mustJSON(t, TaskSuggestionPayload{
+			ActionLabel:   "确认创建任务",
+			CanCreate:     true,
+			Instruction:   "请修订第二章",
+			ResourceID:    &resourceID,
+			ResourceLabel: "学生手册 · upload",
+			StatusMessage: "资源已明确，可以创建任务。",
+			Title:         "建议创建任务",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	taskCreator := &fakeTaskCreator{
+		result: &postgres.Task{
+			ID:          "task-1",
+			ResourceID:  resourceID,
+			Instruction: "请修订第二章",
+			Status:      "pending",
+		},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, taskCreator, &fakeChatResponder{}, nil)
+
+	firstResult, err := service.ConfirmTaskSuggestion(context.Background(), suggestionMessage.ID)
+	if err != nil {
+		t.Fatalf("confirm task suggestion first time: %v", err)
+	}
+	if len(firstResult.Messages) != 1 {
+		t.Fatalf("expected first confirm to append 1 task_created message, got %d", len(firstResult.Messages))
+	}
+
+	secondResult, err := service.ConfirmTaskSuggestion(context.Background(), suggestionMessage.ID)
+	if err != nil {
+		t.Fatalf("confirm task suggestion second time: %v", err)
+	}
+	if secondResult.Task == nil || secondResult.Task.ID != "task-1" {
+		t.Fatalf("expected duplicate confirm to return existing task, got %#v", secondResult.Task)
+	}
+	if len(secondResult.Messages) != 0 {
+		t.Fatalf("expected duplicate confirm to append 0 messages, got %d", len(secondResult.Messages))
+	}
+	if taskCreator.calls != 2 {
+		t.Fatalf("expected current implementation to call task creator twice before idempotency fix, got %d", taskCreator.calls)
+	}
+
+	messages, err := repo.ListMessages(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+
+	taskCreatedCount := 0
+	for _, message := range messages {
+		if message.Kind == KindTaskCreated {
+			taskCreatedCount++
+		}
+	}
+	if taskCreatedCount != 1 {
+		t.Fatalf("expected session to contain exactly 1 task_created message, got %d", taskCreatedCount)
 	}
 }
 
@@ -821,14 +892,29 @@ func (r *fakeUploadedFileRepo) UpdateResourceID(_ context.Context, fileID string
 type fakeTaskCreator struct {
 	result *postgres.Task
 	err    error
+	calls  int
+	seen   map[string]bool
 }
 
-func (c fakeTaskCreator) CreateTask(context.Context, string, string) (*postgres.Task, error) {
+func (c *fakeTaskCreator) CreateTaskFromAssistantSuggestion(
+	_ context.Context,
+	_ string,
+	_ string,
+	sourceMessageID string,
+) (*postgres.Task, bool, error) {
+	c.calls++
 	if c.err != nil {
-		return nil, c.err
+		return nil, false, c.err
 	}
+	if c.seen == nil {
+		c.seen = make(map[string]bool)
+	}
+	if c.seen[sourceMessageID] {
+		return c.result, false, nil
+	}
+	c.seen[sourceMessageID] = true
 
-	return c.result, nil
+	return c.result, true, nil
 }
 
 type fakeChatResponder struct {

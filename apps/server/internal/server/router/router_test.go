@@ -202,22 +202,6 @@ func TestNewRegistersAssistantStreamingRoutesWhenHandlerProvided(t *testing.T) {
 	}
 }
 
-func TestNewRegistersAssistantCapabilitiesRouteWhenHandlerProvided(t *testing.T) {
-	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
-		AssistantHandler: handlers.NewAssistantHandler(fakeAssistantRouterService{}),
-	})
-
-	response := ut.PerformRequest(
-		h.Engine,
-		"GET",
-		"/api/assistant/capabilities",
-		nil,
-	).Result()
-	if response.StatusCode() == consts.StatusNotFound {
-		t.Fatalf("expected assistant capabilities route to be registered, got %d", response.StatusCode())
-	}
-}
-
 func TestNewAddsCORSHeadersToAssistantStreamingResponses(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		AssistantHandler: handlers.NewAssistantHandler(fakeAssistantRouterService{}),
@@ -233,6 +217,22 @@ func TestNewAddsCORSHeadersToAssistantStreamingResponses(t *testing.T) {
 
 	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "*" {
 		t.Fatalf("expected Access-Control-Allow-Origin header '*', got %q", value)
+	}
+}
+
+func TestNewRegistersAssistantCapabilitiesRouteWhenHandlerProvided(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
+		AssistantHandler: handlers.NewAssistantHandler(fakeAssistantRouterService{}),
+	})
+
+	response := ut.PerformRequest(
+		h.Engine,
+		"GET",
+		"/api/assistant/capabilities",
+		nil,
+	).Result()
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d for registered capabilities route, got %d", consts.StatusOK, response.StatusCode())
 	}
 }
 

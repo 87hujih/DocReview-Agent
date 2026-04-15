@@ -23,6 +23,18 @@ function formatTime(isoString: string): string {
   return `${h}:${m}`;
 }
 
+function collectConsumedSuggestionIds(messages: AssistantRenderableMessage[]): Set<string> {
+  const consumedSuggestionIds = new Set<string>();
+
+  for (const message of messages) {
+    if (message.kind === "task_created") {
+      consumedSuggestionIds.add(message.payload.suggestion_message_id);
+    }
+  }
+
+  return consumedSuggestionIds;
+}
+
 export function AssistantMessageList({
   activeTaskSuggestionId,
   messages,
@@ -41,10 +53,15 @@ export function AssistantMessageList({
     );
   }
 
+  const consumedSuggestionIds = collectConsumedSuggestionIds(messages);
+
   return (
     <div className={styles.list}>
       {messages.map((message) => {
         if (message.kind === "task_suggestion") {
+          const isConsumed = consumedSuggestionIds.has(message.id);
+          const isCreating = activeTaskSuggestionId === message.id;
+
           return (
             <section key={message.id} className={styles.card}>
               <div className={styles.labelRow}>
@@ -58,11 +75,11 @@ export function AssistantMessageList({
               <p className={styles.cardMeta}>{message.payload.resource_label}</p>
               <p className={styles.cardStatus}>{message.payload.status_message}</p>
               <button
-                disabled={!message.payload.can_create || activeTaskSuggestionId === message.id}
+                disabled={!message.payload.can_create || isCreating || isConsumed}
                 onClick={() => void onConfirmTaskSuggestion(message.id)}
                 type="button"
               >
-                {activeTaskSuggestionId === message.id ? "正在创建任务" : message.payload.action_label}
+                {isCreating ? "正在创建任务" : isConsumed ? "任务已创建" : message.payload.action_label}
               </button>
             </section>
           );

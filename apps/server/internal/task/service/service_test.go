@@ -132,6 +132,81 @@ func TestCreateTaskMarksTaskFailedWhenRunnerStopped(t *testing.T) {
 	assertTaskFailureEvents(t, ctx, eventRepo, task.ID, []string{"task.created", "task.status_changed", "task.failed"})
 }
 
+func TestCreateTaskFromAssistantSuggestionReturnsExistingTaskOnDuplicate(t *testing.T) {
+	pool := newTaskServiceTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	eventService := taskevents.New(eventRepo)
+	service := New(taskRepo, resourceRepo, nil, eventService)
+	ctx := taskServiceTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "任务服务助手建议幂等测试-"+taskServiceUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupTaskServiceResource(t, pool, resource.ID)
+	})
+
+	assistantRepo := postgres.NewAssistantRepo(pool)
+	session, messages, err := assistantRepo.CreateSessionWithMessages(ctx, "任务服务助手建议幂等测试", []postgres.AssistantMessageInput{
+		{
+			Role:    "assistant",
+			Kind:    "task_suggestion",
+			Payload: []byte(`{"instruction":"请修订第二章"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create assistant session with suggestion message: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupTaskServiceAssistantSession(t, pool, session.ID)
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 assistant suggestion message, got %d", len(messages))
+	}
+	sourceMessageID := messages[0].ID
+
+	if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "当前版本内容", "original"); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	createFromSuggestionService, ok := any(service).(interface {
+		CreateTaskFromAssistantSuggestion(context.Context, string, string, string) (*postgres.Task, bool, error)
+	})
+	if !ok {
+		t.Fatal("task service does not implement assistant suggestion idempotency contract")
+	}
+
+	firstTask, firstCreated, err := createFromSuggestionService.CreateTaskFromAssistantSuggestion(ctx, resource.ID, "请修订第二章", sourceMessageID)
+	if err != nil {
+		t.Fatalf("create task from assistant suggestion first time: %v", err)
+	}
+	if !firstCreated {
+		t.Fatal("expected first create-from-suggestion call to create a new task")
+	}
+
+	secondTask, secondCreated, err := createFromSuggestionService.CreateTaskFromAssistantSuggestion(ctx, resource.ID, "请修订第二章", sourceMessageID)
+	if err != nil {
+		t.Fatalf("create task from assistant suggestion second time: %v", err)
+	}
+	if secondCreated {
+		t.Fatal("expected duplicate create-from-suggestion call to return existing task")
+	}
+	if firstTask == nil || secondTask == nil || secondTask.ID != firstTask.ID {
+		t.Fatalf("expected duplicate create to return task %q, got first=%#v second=%#v", firstTask.ID, firstTask, secondTask)
+	}
+
+	events, err := eventRepo.ListByTask(ctx, firstTask.ID)
+	if err != nil {
+		t.Fatalf("list task events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected duplicate create to keep only 1 task.created event, got %d", len(events))
+	}
+}
+
 func newTaskServiceTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -150,6 +225,15 @@ func cleanupTaskServiceResource(t *testing.T, pool *pgxpool.Pool, resourceID str
 	ctx := taskServiceTestContext(t)
 	if err := postgrescleanup.CleanupResourceTree(ctx, pool, resourceID); err != nil {
 		t.Fatalf("cleanup resource tree for resource %q: %v", resourceID, err)
+	}
+}
+
+func cleanupTaskServiceAssistantSession(t *testing.T, pool *pgxpool.Pool, sessionID string) {
+	t.Helper()
+
+	ctx := taskServiceTestContext(t)
+	if _, err := pool.Exec(ctx, `DELETE FROM assistant_sessions WHERE id = $1`, sessionID); err != nil {
+		t.Fatalf("cleanup assistant session %q: %v", sessionID, err)
 	}
 }
 

@@ -9,9 +9,9 @@ import type {
   AssistantMessage,
   AssistantRenderableMessage,
   AssistantSession,
-  AssistantUploadCapabilities,
   AssistantStreamEvent,
-  AssistantTurnError
+  AssistantTurnError,
+  AssistantUploadCapabilities
 } from "../../lib/assistant/types";
 import {
   confirmAssistantTaskSuggestion,
@@ -34,7 +34,7 @@ import styles from "./assistant-shell.module.css";
 type HistoryStatus = "history_error" | "history_ready" | "loading_history";
 type TurnStatus = "confirming_task" | "idle" | "loading_conversation" | "stopping" | "streaming" | "uploading_file";
 
-const DEFAULT_UPLOAD_CAPABILITIES: AssistantUploadCapabilities = {
+const FALLBACK_UPLOAD_CAPABILITIES: AssistantUploadCapabilities = {
   accept: ".md,.txt",
   hint: "支持 md、txt",
   supported_extensions: [".md", ".txt"]
@@ -45,9 +45,6 @@ export function AssistantShell() {
   const [sessions, setSessions] = useState<AssistantSession[]>([]);
   const [currentSession, setCurrentSession] = useState<AssistantSession | null>(null);
   const [messages, setMessages] = useState<AssistantRenderableMessage[]>([]);
-  const [uploadCapabilities, setUploadCapabilities] = useState<AssistantUploadCapabilities>(
-    DEFAULT_UPLOAD_CAPABILITIES
-  );
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading_history");
   const [turnStatus, setTurnStatus] = useState<TurnStatus>("idle");
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -55,15 +52,17 @@ export function AssistantShell() {
   const [activeTaskSuggestionId, setActiveTaskSuggestionId] = useState<string | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
   const [historyHost, setHistoryHost] = useState<HTMLElement | null>(null);
+  const [uploadCapabilities, setUploadCapabilities] = useState<AssistantUploadCapabilities>(FALLBACK_UPLOAD_CAPABILITIES);
   const abortControllerRef = useRef<AbortController | null>(null);
   const localMessageCounterRef = useRef(0);
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
+  const turnTokenRef = useRef(0);
 
   useEffect(() => {
     let active = true;
 
-    async function loadHistory() {
-      const [sessionsResult, capabilitiesResult] = await Promise.allSettled([
+    async function loadInitialData() {
+      const [historyResult, capabilitiesResult] = await Promise.allSettled([
         getAssistantSessions(),
         getAssistantCapabilities()
       ]);
@@ -72,21 +71,24 @@ export function AssistantShell() {
       }
 
       startTransition(() => {
-        setUploadCapabilities(toUploadCapabilities(capabilitiesResult));
-
-        if (sessionsResult.status === "fulfilled") {
-          setSessions(sessionsResult.value);
+        if (historyResult.status === "fulfilled") {
+          setSessions(historyResult.value);
           setHistoryError(null);
           setHistoryStatus("history_ready");
-          return;
+        } else {
+          setHistoryError(getErrorMessage(historyResult.reason));
+          setHistoryStatus("history_error");
         }
 
-        setHistoryError(getErrorMessage(sessionsResult.reason));
-        setHistoryStatus("history_error");
+        if (capabilitiesResult.status === "fulfilled") {
+          setUploadCapabilities(normalizeAssistantUploadCapabilities(capabilitiesResult.value));
+        } else {
+          setUploadCapabilities(FALLBACK_UPLOAD_CAPABILITIES);
+        }
       });
     }
 
-    void loadHistory();
+    void loadInitialData();
 
     return () => {
       active = false;
@@ -133,11 +135,14 @@ export function AssistantShell() {
   }, [railCollapsed]);
 
   function resetToDraft() {
+    invalidateCurrentTurn(turnTokenRef);
     abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
     startTransition(() => {
       setCurrentSession(null);
       setMessages([]);
       setActionNotice(null);
+      setActiveTaskSuggestionId(null);
       setTurnStatus("idle");
       setStickToBottom(true);
     });
@@ -183,6 +188,7 @@ export function AssistantShell() {
     );
 
     let sessionSnapshot = currentSession;
+    const turnToken = beginTurn(turnTokenRef);
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -194,6 +200,10 @@ export function AssistantShell() {
     });
 
     const handleEvent = (event: AssistantStreamEvent) => {
+      if (!isActiveTurn(turnTokenRef, turnToken)) {
+        return;
+      }
+
       switch (event.type) {
         case "session_created":
           sessionSnapshot = event.session;
@@ -247,6 +257,10 @@ export function AssistantShell() {
             signal: controller.signal
           });
 
+      if (!isActiveTurn(turnTokenRef, turnToken)) {
+        return;
+      }
+
       if (result.status === "stopped") {
         startTransition(() => {
           setMessages((current) => finalizeTurnFailure(current, localAssistantMessage.id, result.error));
@@ -260,6 +274,10 @@ export function AssistantShell() {
       });
     } catch (error) {
       const turnError = toAssistantTurnError(error);
+      if (!isActiveTurn(turnTokenRef, turnToken)) {
+        return;
+      }
+
       startTransition(() => {
         setMessages((current) => finalizeTurnFailure(current, localAssistantMessage.id, turnError));
         setTurnStatus("idle");
@@ -445,6 +463,19 @@ function nextLocalId(counterRef: MutableRefObject<number>, prefix: string): stri
   return `${prefix}-${counterRef.current}`;
 }
 
+function beginTurn(turnTokenRef: MutableRefObject<number>): number {
+  turnTokenRef.current += 1;
+  return turnTokenRef.current;
+}
+
+function invalidateCurrentTurn(turnTokenRef: MutableRefObject<number>) {
+  turnTokenRef.current += 1;
+}
+
+function isActiveTurn(turnTokenRef: MutableRefObject<number>, turnToken: number): boolean {
+  return turnTokenRef.current === turnToken;
+}
+
 function patchSessionTimestamp(session: AssistantSession, isoString: string): AssistantSession {
   return {
     ...session,
@@ -536,12 +567,32 @@ function upsertSession(current: AssistantSession[], session: AssistantSession): 
   });
 }
 
-function toUploadCapabilities(
-  result: PromiseSettledResult<AssistantCapabilities>
-): AssistantUploadCapabilities {
-  if (result.status === "fulfilled") {
-    return result.value.upload;
+function normalizeAssistantUploadCapabilities(capabilities: AssistantCapabilities): AssistantUploadCapabilities {
+  const rawUpload = capabilities.upload;
+  const supportedExtensions =
+    rawUpload && Array.isArray(rawUpload.supported_extensions)
+      ? [...rawUpload.supported_extensions]
+      : [...FALLBACK_UPLOAD_CAPABILITIES.supported_extensions];
+  const accept =
+    rawUpload && typeof rawUpload.accept === "string" && rawUpload.accept.trim() !== ""
+      ? rawUpload.accept
+      : supportedExtensions.join(",");
+  const hint =
+    rawUpload && typeof rawUpload.hint === "string" && rawUpload.hint.trim() !== ""
+      ? rawUpload.hint
+      : buildUploadHintFromExtensions(supportedExtensions);
+
+  return {
+    accept,
+    hint,
+    supported_extensions: supportedExtensions
+  };
+}
+
+function buildUploadHintFromExtensions(supportedExtensions: string[]): string {
+  if (supportedExtensions.length === 0) {
+    return "当前服务未开放文件上传";
   }
 
-  return DEFAULT_UPLOAD_CAPABILITIES;
+  return `支持 ${supportedExtensions.map((extension) => extension.replace(/^\./, "")).join("、")}`;
 }

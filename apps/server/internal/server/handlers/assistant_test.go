@@ -21,6 +21,13 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
+const (
+	testAssistantSessionUUID         = "00000000-0000-0000-0000-000000000001"
+	testAssistantMissingSessionUUID  = "00000000-0000-0000-0000-000000000999"
+	testAssistantSuggestionUUID      = "00000000-0000-0000-0000-000000000002"
+	testAssistantMissingSuggestionID = "00000000-0000-0000-0000-000000000998"
+)
+
 func TestListAssistantSessionsHandler(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		listSessionsResult: []postgres.AssistantSession{
@@ -61,7 +68,7 @@ func TestListAssistantSessionsHandler(t *testing.T) {
 	}
 }
 
-func TestGetAssistantCapabilitiesHandlerReturnsUploadExtensions(t *testing.T) {
+func TestGetAssistantCapabilitiesHandlerReturnsUploadCapabilities(t *testing.T) {
 	handler := NewAssistantHandlerWithUploadLimitAndPolicy(
 		fakeAssistantService{},
 		defaultAssistantUploadMaxBytes,
@@ -93,11 +100,8 @@ func TestGetAssistantCapabilitiesHandlerReturnsUploadExtensions(t *testing.T) {
 	if payload.Upload.Hint != "支持 md、txt" {
 		t.Fatalf("expected hint %q, got %q", "支持 md、txt", payload.Upload.Hint)
 	}
-	if len(payload.Upload.SupportedExtensions) != 2 {
-		t.Fatalf("expected 2 supported extensions, got %d", len(payload.Upload.SupportedExtensions))
-	}
-	if payload.Upload.SupportedExtensions[0] != ".md" || payload.Upload.SupportedExtensions[1] != ".txt" {
-		t.Fatalf("expected supported extensions [.md .txt], got %v", payload.Upload.SupportedExtensions)
+	if len(payload.Upload.SupportedExtensions) != 2 || payload.Upload.SupportedExtensions[0] != ".md" || payload.Upload.SupportedExtensions[1] != ".txt" {
+		t.Fatalf("expected supported_extensions [.md .txt], got %v", payload.Upload.SupportedExtensions)
 	}
 }
 
@@ -202,7 +206,7 @@ func TestAppendAssistantMessageHandler(t *testing.T) {
 	response := ut.PerformRequest(
 		engine.Engine,
 		"POST",
-		"/api/assistant/sessions/session-1/messages",
+		"/api/assistant/sessions/"+testAssistantSessionUUID+"/messages",
 		&ut.Body{
 			Body: bytes.NewBufferString(`{"message":"请修订第二章"}`),
 			Len:  len(`{"message":"请修订第二章"}`),
@@ -337,7 +341,7 @@ func TestAppendMessageStreamHandler(t *testing.T) {
 	response := ut.PerformRequest(
 		engine.Engine,
 		"POST",
-		"/api/assistant/sessions/session-1/messages/stream",
+		"/api/assistant/sessions/"+testAssistantSessionUUID+"/messages/stream",
 		&ut.Body{
 			Body: bytes.NewBufferString(`{"message":"继续看看第二章"}`),
 			Len:  len(`{"message":"继续看看第二章"}`),
@@ -382,7 +386,7 @@ func TestAppendMessageStreamHandlerReturnsJSON404BeforeOpeningStream(t *testing.
 	response := ut.PerformRequest(
 		engine.Engine,
 		"POST",
-		"/api/assistant/sessions/missing/messages/stream",
+		"/api/assistant/sessions/"+testAssistantMissingSessionUUID+"/messages/stream",
 		&ut.Body{
 			Body: bytes.NewBufferString(`{"message":"继续看看第二章"}`),
 			Len:  len(`{"message":"继续看看第二章"}`),
@@ -499,7 +503,7 @@ func TestUploadAssistantFileHandler(t *testing.T) {
 	response := ut.PerformRequest(
 		engine.Engine,
 		"POST",
-		"/api/assistant/sessions/session-1/files",
+		"/api/assistant/sessions/"+testAssistantSessionUUID+"/files",
 		&ut.Body{
 			Body: body,
 			Len:  body.Len(),
@@ -616,7 +620,7 @@ func TestUploadAssistantFileHandlerRejectsTooLargeFile(t *testing.T) {
 	response := ut.PerformRequest(
 		engine.Engine,
 		"POST",
-		"/api/assistant/sessions/session-1/files",
+		"/api/assistant/sessions/"+testAssistantSessionUUID+"/files",
 		&ut.Body{
 			Body: body,
 			Len:  body.Len(),
@@ -660,7 +664,7 @@ func TestConfirmTaskSuggestionHandlerReturnsHandledFailurePayload(t *testing.T) 
 	engine := server.New()
 	engine.POST("/api/assistant/task-suggestions/:id/confirm", handler.ConfirmTaskSuggestion)
 
-	response := ut.PerformRequest(engine.Engine, "POST", "/api/assistant/task-suggestions/message-1/confirm", nil).Result()
+	response := ut.PerformRequest(engine.Engine, "POST", "/api/assistant/task-suggestions/"+testAssistantSuggestionUUID+"/confirm", nil).Result()
 	if response.StatusCode() != consts.StatusOK {
 		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
 	}
@@ -685,7 +689,7 @@ func TestDeleteAssistantSessionHandler(t *testing.T) {
 	engine := server.New()
 	engine.DELETE("/api/assistant/sessions/:id", handler.DeleteSession)
 
-	response := ut.PerformRequest(engine.Engine, "DELETE", "/api/assistant/sessions/session-1", nil).Result()
+	response := ut.PerformRequest(engine.Engine, "DELETE", "/api/assistant/sessions/"+testAssistantSessionUUID, nil).Result()
 	if response.StatusCode() != consts.StatusNoContent {
 		t.Fatalf("expected status %d, got %d", consts.StatusNoContent, response.StatusCode())
 	}
@@ -766,6 +770,22 @@ func (f fakeAssistantService) DeleteSession(context.Context, string) (bool, erro
 	return f.deleteSessionResult, f.deleteSessionErr
 }
 
+type fakeAssistantUploadPolicy struct {
+	supportedExtensions []string
+}
+
+func (f fakeAssistantUploadPolicy) SupportsFileName(string) bool {
+	return true
+}
+
+func (f fakeAssistantUploadPolicy) SupportedExtensions() []string {
+	return append([]string(nil), f.supportedExtensions...)
+}
+
+func (f fakeAssistantUploadPolicy) UnsupportedFileMessage(string) string {
+	return "unsupported"
+}
+
 func mustMarshalHandlerJSON(t *testing.T, value any) []byte {
 	t.Helper()
 
@@ -795,6 +815,19 @@ func mustDocumentParser(t *testing.T, options documentparser.Options) documentpa
 func performUploadRequest(t *testing.T, engine *server.Hertz, fileName string, contentType string, content []byte) *protocol.Response {
 	t.Helper()
 
+	return performUploadRequestToPath(t, engine, "/api/assistant/sessions/"+testAssistantSessionUUID+"/files", fileName, contentType, content)
+}
+
+func performUploadRequestToPath(
+	t *testing.T,
+	engine *server.Hertz,
+	path string,
+	fileName string,
+	contentType string,
+	content []byte,
+) *protocol.Response {
+	t.Helper()
+
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	fileHeader := textproto.MIMEHeader{}
@@ -814,7 +847,7 @@ func performUploadRequest(t *testing.T, engine *server.Hertz, fileName string, c
 	return ut.PerformRequest(
 		engine.Engine,
 		"POST",
-		"/api/assistant/sessions/session-1/files",
+		path,
 		&ut.Body{
 			Body: body,
 			Len:  body.Len(),
@@ -863,9 +896,24 @@ func TestGetAssistantConversationNotFound(t *testing.T) {
 	engine := server.New()
 	engine.GET("/api/assistant/sessions/:id", handler.GetConversation)
 
-	response := ut.PerformRequest(engine.Engine, "GET", "/api/assistant/sessions/missing", nil).Result()
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/assistant/sessions/"+testAssistantMissingSessionUUID, nil).Result()
 	if response.StatusCode() != consts.StatusNotFound {
 		t.Fatalf("expected status %d, got %d", consts.StatusNotFound, response.StatusCode())
+	}
+}
+
+func TestGetAssistantConversationInvalidID(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{})
+
+	engine := server.New()
+	engine.GET("/api/assistant/sessions/:id", handler.GetConversation)
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/assistant/sessions/not-a-uuid", nil).Result()
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+	if !strings.Contains(string(response.Body()), "会话 ID 非法") {
+		t.Fatalf("expected invalid session id error, got %q", string(response.Body()))
 	}
 }
 
@@ -901,9 +949,109 @@ func TestConfirmTaskSuggestionNotFound(t *testing.T) {
 	engine := server.New()
 	engine.POST("/api/assistant/task-suggestions/:id/confirm", handler.ConfirmTaskSuggestion)
 
-	response := ut.PerformRequest(engine.Engine, "POST", "/api/assistant/task-suggestions/missing/confirm", nil).Result()
+	response := ut.PerformRequest(engine.Engine, "POST", "/api/assistant/task-suggestions/"+testAssistantMissingSuggestionID+"/confirm", nil).Result()
 	if response.StatusCode() != consts.StatusNotFound {
 		t.Fatalf("expected status %d, got %d", consts.StatusNotFound, response.StatusCode())
+	}
+}
+
+func TestAppendAssistantMessageInvalidID(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{})
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/messages", handler.AppendMessage)
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/not-a-uuid/messages",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"message":"请修订第二章"}`),
+			Len:  len(`{"message":"请修订第二章"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+	if !strings.Contains(string(response.Body()), "会话 ID 非法") {
+		t.Fatalf("expected invalid session id error, got %q", string(response.Body()))
+	}
+}
+
+func TestAppendAssistantMessageStreamInvalidID(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{})
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/messages/stream", handler.AppendMessageStream)
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/not-a-uuid/messages/stream",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"message":"请修订第二章"}`),
+			Len:  len(`{"message":"请修订第二章"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+	if !strings.Contains(string(response.Body()), "会话 ID 非法") {
+		t.Fatalf("expected invalid session id error, got %q", string(response.Body()))
+	}
+}
+
+func TestUploadAssistantFileInvalidID(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{})
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/files", handler.UploadFile)
+
+	response := performUploadRequestToPath(
+		t,
+		engine,
+		"/api/assistant/sessions/not-a-uuid/files",
+		"test.md",
+		"text/markdown",
+		[]byte("# test"),
+	)
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+	if !strings.Contains(string(response.Body()), "会话 ID 非法") {
+		t.Fatalf("expected invalid session id error, got %q", string(response.Body()))
+	}
+}
+
+func TestDeleteAssistantSessionInvalidID(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{})
+
+	engine := server.New()
+	engine.DELETE("/api/assistant/sessions/:id", handler.DeleteSession)
+
+	response := ut.PerformRequest(engine.Engine, "DELETE", "/api/assistant/sessions/not-a-uuid", nil).Result()
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+	if !strings.Contains(string(response.Body()), "会话 ID 非法") {
+		t.Fatalf("expected invalid session id error, got %q", string(response.Body()))
+	}
+}
+
+func TestConfirmTaskSuggestionInvalidID(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{})
+
+	engine := server.New()
+	engine.POST("/api/assistant/task-suggestions/:id/confirm", handler.ConfirmTaskSuggestion)
+
+	response := ut.PerformRequest(engine.Engine, "POST", "/api/assistant/task-suggestions/not-a-uuid/confirm", nil).Result()
+	if response.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", consts.StatusBadRequest, response.StatusCode())
+	}
+	if !strings.Contains(string(response.Body()), "任务建议 ID 非法") {
+		t.Fatalf("expected invalid task suggestion id error, got %q", string(response.Body()))
 	}
 }
 
@@ -915,7 +1063,7 @@ func TestDeleteAssistantSessionInternalError(t *testing.T) {
 	engine := server.New()
 	engine.DELETE("/api/assistant/sessions/:id", handler.DeleteSession)
 
-	response := ut.PerformRequest(engine.Engine, "DELETE", "/api/assistant/sessions/session-1", nil).Result()
+	response := ut.PerformRequest(engine.Engine, "DELETE", "/api/assistant/sessions/"+testAssistantSessionUUID, nil).Result()
 	if response.StatusCode() != consts.StatusInternalServerError {
 		t.Fatalf("expected status %d, got %d", consts.StatusInternalServerError, response.StatusCode())
 	}

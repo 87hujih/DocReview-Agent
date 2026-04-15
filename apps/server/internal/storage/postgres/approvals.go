@@ -262,7 +262,7 @@ func getExecutionJobByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (
 // GetTaskByIDForUpdateTx 在事务内按主键读取任务并加行锁，不存在时返回 nil。
 func GetTaskByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (*Task, error) {
 	task, err := scanTask(tx.QueryRow(ctx, `
-		SELECT id, resource_id, instruction, status, error_message, created_at, updated_at
+		SELECT id, resource_id, instruction, source_message_id, status, error_message, created_at, updated_at
 		FROM tasks
 		WHERE id = $1
 		FOR UPDATE

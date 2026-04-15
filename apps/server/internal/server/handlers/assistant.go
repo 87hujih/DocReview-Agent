@@ -14,6 +14,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/google/uuid"
 )
 
 type assistantService interface {
@@ -178,6 +179,39 @@ func (textOnlyAssistantUploadPolicy) UnsupportedFileMessage(string) string {
 	return "当前服务仅支持 md、txt；pdf/docx 等文件需要启用 Tika 解析。"
 }
 
+func buildAssistantUploadCapabilitiesResponse(policy assistantUploadPolicy) assistantUploadCapabilitiesResponse {
+	supportedExtensions := append([]string(nil), policy.SupportedExtensions()...)
+	if supportedExtensions == nil {
+		supportedExtensions = []string{}
+	}
+
+	return assistantUploadCapabilitiesResponse{
+		SupportedExtensions: supportedExtensions,
+		Accept:              strings.Join(supportedExtensions, ","),
+		Hint:                buildAssistantUploadHint(supportedExtensions),
+	}
+}
+
+func buildAssistantUploadHint(supportedExtensions []string) string {
+	if len(supportedExtensions) == 0 {
+		return "当前服务未开放文件上传"
+	}
+
+	labels := make([]string, 0, len(supportedExtensions))
+	for _, extension := range supportedExtensions {
+		normalized := strings.TrimSpace(strings.TrimPrefix(extension, "."))
+		if normalized == "" {
+			continue
+		}
+		labels = append(labels, normalized)
+	}
+	if len(labels) == 0 {
+		return "当前服务未开放文件上传"
+	}
+
+	return "支持 " + strings.Join(labels, "、")
+}
+
 // ListSessions 返回左侧历史栏需要的会话摘要。
 func (h *AssistantHandler) ListSessions(requestCtx context.Context, ctx *app.RequestContext) {
 	sessions, err := h.service.ListSessions(requestCtx)
@@ -196,9 +230,21 @@ func (h *AssistantHandler) ListSessions(requestCtx context.Context, ctx *app.Req
 	ctx.JSON(consts.StatusOK, response)
 }
 
+// GetCapabilities 返回助手页需要的上传能力声明。
+func (h *AssistantHandler) GetCapabilities(_ context.Context, ctx *app.RequestContext) {
+	ctx.JSON(consts.StatusOK, assistantCapabilitiesResponse{
+		Upload: buildAssistantUploadCapabilitiesResponse(h.uploadPolicy),
+	})
+}
+
 // GetConversation 返回一个会话及完整消息流。
 func (h *AssistantHandler) GetConversation(requestCtx context.Context, ctx *app.RequestContext) {
-	result, err := h.service.GetConversation(requestCtx, ctx.Param("id"))
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	result, err := h.service.GetConversation(requestCtx, sessionID)
 	if err != nil {
 		h.writeAssistantError(ctx, err, "查询会话失败")
 		return
@@ -207,18 +253,6 @@ func (h *AssistantHandler) GetConversation(requestCtx context.Context, ctx *app.
 	ctx.JSON(consts.StatusOK, assistantConversationResponse{
 		Session:  toAssistantSessionResponse(result.Session),
 		Messages: toAssistantMessageResponses(result.Messages),
-	})
-}
-
-// GetCapabilities 返回当前部署下助手可用的上传能力。
-func (h *AssistantHandler) GetCapabilities(_ context.Context, ctx *app.RequestContext) {
-	extensions := h.uploadPolicy.SupportedExtensions()
-	ctx.JSON(consts.StatusOK, assistantCapabilitiesResponse{
-		Upload: assistantUploadCapabilitiesResponse{
-			SupportedExtensions: extensions,
-			Accept:              strings.Join(extensions, ","),
-			Hint:                buildAssistantUploadHint(extensions),
-		},
 	})
 }
 
@@ -267,7 +301,12 @@ func (h *AssistantHandler) AppendMessage(requestCtx context.Context, ctx *app.Re
 		return
 	}
 
-	result, err := h.service.AppendMessage(requestCtx, ctx.Param("id"), request.Message)
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	result, err := h.service.AppendMessage(requestCtx, sessionID, request.Message)
 	if err != nil {
 		h.writeAssistantError(ctx, err, "追加消息失败")
 		return
@@ -291,13 +330,18 @@ func (h *AssistantHandler) AppendMessageStream(requestCtx context.Context, ctx *
 		return
 	}
 
-	if _, err := h.service.GetConversation(requestCtx, ctx.Param("id")); err != nil {
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	if _, err := h.service.GetConversation(requestCtx, sessionID); err != nil {
 		h.writeAssistantError(ctx, err, "查询会话失败")
 		return
 	}
 
 	h.streamAssistantEvents(ctx, func(emit func(assistant.StreamEvent) error) error {
-		return h.service.AppendMessageStream(requestCtx, ctx.Param("id"), request.Message, emit)
+		return h.service.AppendMessageStream(requestCtx, sessionID, request.Message, emit)
 	})
 }
 
@@ -330,7 +374,12 @@ func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.Reque
 		return
 	}
 
-	result, err := h.service.UploadFile(requestCtx, ctx.Param("id"), file.Filename, content)
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	result, err := h.service.UploadFile(requestCtx, sessionID, file.Filename, content)
 	if err != nil {
 		h.writeAssistantError(ctx, err, "上传文件失败")
 		return
@@ -346,7 +395,12 @@ func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.Reque
 
 // ConfirmTaskSuggestion 把一条任务建议落为真实任务。
 func (h *AssistantHandler) ConfirmTaskSuggestion(requestCtx context.Context, ctx *app.RequestContext) {
-	result, err := h.service.ConfirmTaskSuggestion(requestCtx, ctx.Param("id"))
+	messageID, ok := parseAssistantUUIDParam(ctx, "任务建议 ID")
+	if !ok {
+		return
+	}
+
+	result, err := h.service.ConfirmTaskSuggestion(requestCtx, messageID)
 	if err != nil {
 		h.writeAssistantError(ctx, err, "确认任务建议失败")
 		return
@@ -362,7 +416,12 @@ func (h *AssistantHandler) ConfirmTaskSuggestion(requestCtx context.Context, ctx
 
 // DeleteSession 删除一个会话。
 func (h *AssistantHandler) DeleteSession(requestCtx context.Context, ctx *app.RequestContext) {
-	deleted, err := h.service.DeleteSession(requestCtx, ctx.Param("id"))
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	deleted, err := h.service.DeleteSession(requestCtx, sessionID)
 	if err != nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "删除会话失败"})
 		return
@@ -373,6 +432,16 @@ func (h *AssistantHandler) DeleteSession(requestCtx context.Context, ctx *app.Re
 	}
 
 	ctx.Status(consts.StatusNoContent)
+}
+
+func parseAssistantUUIDParam(ctx *app.RequestContext, field string) (string, bool) {
+	id := strings.TrimSpace(ctx.Param("id"))
+	if _, err := uuid.Parse(id); err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": field + " 非法"})
+		return "", false
+	}
+
+	return id, true
 }
 
 func (h *AssistantHandler) writeAssistantError(ctx *app.RequestContext, err error, defaultMessage string) {
@@ -545,17 +614,4 @@ func writeAssistantSSEEvent(writer *io.PipeWriter, eventType string, payload any
 	}
 	_, err := io.WriteString(writer, "\n\n")
 	return err
-}
-
-func buildAssistantUploadHint(extensions []string) string {
-	if len(extensions) == 0 {
-		return "当前未开放文件上传"
-	}
-
-	labels := make([]string, 0, len(extensions))
-	for _, extension := range extensions {
-		labels = append(labels, strings.TrimPrefix(extension, "."))
-	}
-
-	return "支持 " + strings.Join(labels, "、")
 }

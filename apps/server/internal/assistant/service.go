@@ -42,7 +42,12 @@ type documentImporter interface {
 }
 
 type taskCreator interface {
-	CreateTask(ctx context.Context, resourceID string, instruction string) (*postgres.Task, error)
+	CreateTaskFromAssistantSuggestion(
+		ctx context.Context,
+		resourceID string,
+		instruction string,
+		sourceMessageID string,
+	) (*postgres.Task, bool, error)
 }
 
 type resourceCitationRetriever interface {
@@ -400,7 +405,12 @@ func (s *Service) ConfirmTaskSuggestion(ctx context.Context, messageID string) (
 		}, nil
 	}
 
-	task, taskErr := s.tasks.CreateTask(ctx, *suggestion.ResourceID, suggestion.Instruction)
+	task, created, taskErr := s.tasks.CreateTaskFromAssistantSuggestion(
+		ctx,
+		*suggestion.ResourceID,
+		suggestion.Instruction,
+		message.ID,
+	)
 	if taskErr != nil {
 		errorMessage := fmt.Sprintf("任务创建失败：%v", taskErr)
 		messages, appendErr := s.appendSystemMessage(ctx, message.SessionID, errorMessage)
@@ -420,6 +430,13 @@ func (s *Service) ConfirmTaskSuggestion(ctx context.Context, messageID string) (
 			Session:      *updatedSession,
 			Messages:     messages,
 			ErrorMessage: stringPointer(errorMessage),
+		}, nil
+	}
+	if !created {
+		return &ConfirmTaskResult{
+			Session:  *session,
+			Task:     task,
+			Messages: []postgres.AssistantMessage{},
 		}, nil
 	}
 
