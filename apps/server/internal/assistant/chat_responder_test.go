@@ -60,6 +60,81 @@ func TestBuildChatMessagesMergesRuntimeContextIntoSingleSystemPrompt(t *testing.
 	}
 }
 
+func TestBuildRuntimeContextFormatsSectionAwareCitationWindow(t *testing.T) {
+	systemPrompt := buildSystemPrompt(ChatCompletionInput{
+		Citations: []citation.Citation{
+			{
+				CitationID:   "cite_1",
+				SectionID:    "project-1",
+				SectionType:  "project",
+				SectionTitle: "智能排班系统",
+				Snippet:      "智能排班系统",
+				Window: []string{
+					"项目名称：智能排班系统",
+					"项目描述：负责多门店排班、班次冲突校验与成本优化。",
+					"技术栈：Go、React、PostgreSQL",
+				},
+			},
+		},
+		Message: "这个候选人做过哪些项目",
+		Resource: &resourceContext{
+			ID:     "resource-1",
+			Title:  "候选人简历",
+			Source: "upload",
+		},
+	})
+
+	if !strings.Contains(systemPrompt, "section_type=project") {
+		t.Fatalf("expected section type in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "section_id=project-1") {
+		t.Fatalf("expected section id in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "证据窗口") {
+		t.Fatalf("expected evidence window in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "技术栈：Go、React、PostgreSQL") {
+		t.Fatalf("expected window content in system prompt, got %q", systemPrompt)
+	}
+}
+
+func TestBuildRuntimeContextAddsProjectSectionList(t *testing.T) {
+	systemPrompt := buildSystemPrompt(ChatCompletionInput{
+		Citations: []citation.Citation{
+			{
+				CitationID:   "cite_1",
+				SectionID:    "project-1",
+				SectionType:  "project",
+				SectionTitle: "智能排班系统",
+				Snippet:      "智能排班系统",
+				Window: []string{
+					"项目名称：智能排班系统",
+					"项目描述：负责排班。",
+				},
+			},
+			{
+				CitationID:   "cite_2",
+				SectionID:    "project-2",
+				SectionType:  "project",
+				SectionTitle: "智能考勤系统",
+				Snippet:      "智能考勤系统",
+				Window: []string{
+					"项目名称：智能考勤系统",
+					"项目描述：负责考勤分析。",
+				},
+			},
+		},
+		Message: "这个候选人做过哪些项目",
+	})
+
+	if !strings.Contains(systemPrompt, "当前识别到的项目 section 列表") {
+		t.Fatalf("expected project section list in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "智能排班系统") || !strings.Contains(systemPrompt, "智能考勤系统") {
+		t.Fatalf("expected project titles in system prompt, got %q", systemPrompt)
+	}
+}
+
 func TestBuildChatMessagesIncludesSnapshotProjection(t *testing.T) {
 	messages := buildChatMessages(ChatCompletionInput{
 		Snapshot: &SessionContextSnapshot{

@@ -46,6 +46,8 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	expectedTables := []string{
 		"resources",
 		"resource_versions",
+		"resource_version_structures",
+		"resource_sections",
 		"resource_chunks",
 		"assistant_sessions",
 		"assistant_messages",
@@ -80,6 +82,44 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 
 	if trigramExtension != "pg_trgm" {
 		t.Fatalf("expected pg_trgm extension, got %q", trigramExtension)
+	}
+}
+
+func TestMigrationCreatesStructuredDocumentIndexes(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT indexname
+		FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND indexname = ANY($1)
+	`, []string{
+		"idx_resource_sections_version_type_order",
+		"idx_resource_chunks_version_type_role_index",
+	})
+	if err != nil {
+		t.Fatalf("query structured document indexes: %v", err)
+	}
+	defer rows.Close()
+
+	indexNames, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collect structured document indexes: %v", err)
+	}
+
+	expectedIndexes := []string{
+		"idx_resource_sections_version_type_order",
+		"idx_resource_chunks_version_type_role_index",
+	}
+	for _, expectedIndex := range expectedIndexes {
+		if !slices.Contains(indexNames, expectedIndex) {
+			t.Fatalf("expected index %q to exist, got %v", expectedIndex, indexNames)
+		}
 	}
 }
 

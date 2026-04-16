@@ -89,6 +89,7 @@ type Service struct {
 	retriever     resourceCitationRetriever
 	responder     chatResponder
 	tasks         taskCreator
+	evidenceGate  evidenceGate
 	fileStore     uploadedFileStore
 	uploadedFiles uploadedFileRepository
 	contextLoader replyContextLoader
@@ -121,6 +122,9 @@ func NewService(
 	if service.contextLoader == nil {
 		service.contextLoader = NewContextLoader(snapshotReaderFromProjector(service.projector), service.retriever)
 	}
+	if service.evidenceGate == nil {
+		service.evidenceGate = NewEvidenceGate()
+	}
 
 	return service
 }
@@ -144,6 +148,13 @@ func WithReplyContextLoader(loader replyContextLoader) ServiceOption {
 func WithSessionContextProjector(projector sessionContextProjector) ServiceOption {
 	return func(service *Service) {
 		service.projector = projector
+	}
+}
+
+// WithEvidenceGate 为 assistant service 注入证据质量门控策略。
+func WithEvidenceGate(gate evidenceGate) ServiceOption {
+	return func(service *Service) {
+		service.evidenceGate = gate
 	}
 }
 
@@ -535,7 +546,7 @@ func (s *Service) buildReplyInputs(
 		return nil, errors.New("助手对话模型未配置")
 	}
 
-	replyContext, err := s.loadReplyContext(ctx, sessionID, history, content)
+	replyContext, err := s.prepareReplyContext(ctx, sessionID, history, content)
 	if err != nil {
 		return nil, err
 	}
@@ -788,7 +799,7 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		return errors.New("助手对话模型未配置")
 	}
 
-	replyContext, err := s.loadReplyContext(ctx, input.sessionID, input.history, input.content)
+	replyContext, err := s.prepareReplyContext(ctx, input.sessionID, input.history, input.content)
 	if err != nil {
 		return err
 	}
@@ -977,6 +988,75 @@ func (s *Service) loadReplyContext(
 	}
 
 	return s.contextLoader.LoadForReply(ctx, sessionID, history, currentMessage)
+}
+
+func (s *Service) prepareReplyContext(
+	ctx context.Context,
+	sessionID string,
+	history []postgres.AssistantMessage,
+	currentMessage string,
+) (*ReplyContext, error) {
+	replyContext, err := s.loadReplyContext(ctx, sessionID, history, currentMessage)
+	if err != nil {
+		return nil, err
+	}
+
+	citations, err := s.loadResourceCitations(ctx, replyContext.ActiveResource, currentMessage, replyContext.Citations)
+	if err != nil {
+		return nil, err
+	}
+	replyContext.Citations = citations
+
+	return replyContext, nil
+}
+
+func (s *Service) loadResourceCitations(
+	ctx context.Context,
+	resource *resourceContext,
+	query string,
+	initial []citation.Citation,
+) ([]citation.Citation, error) {
+	citations := append([]citation.Citation(nil), initial...)
+	if s.isEvidenceUsable(citations) {
+		return citations, nil
+	}
+
+	fallback, err := s.searchResourceCitations(ctx, resource, query, 8)
+	if err != nil {
+		return nil, err
+	}
+	if s.isEvidenceUsable(fallback) {
+		return fallback, nil
+	}
+
+	return nil, nil
+}
+
+func (s *Service) isEvidenceUsable(citations []citation.Citation) bool {
+	if s == nil || s.evidenceGate == nil {
+		return len(citations) > 0
+	}
+
+	ok, _ := s.evidenceGate.Evaluate(citations)
+	return ok
+}
+
+func (s *Service) searchResourceCitations(
+	ctx context.Context,
+	resource *resourceContext,
+	query string,
+	limit int,
+) ([]citation.Citation, error) {
+	if s == nil || s.retriever == nil || resource == nil {
+		return nil, nil
+	}
+
+	trimmedQuery := strings.TrimSpace(query)
+	if trimmedQuery == "" || limit <= 0 {
+		return nil, nil
+	}
+
+	return s.retriever.SearchByResource(ctx, resource.ID, trimmedQuery, limit)
 }
 
 func snapshotReaderFromProjector(projector sessionContextProjector) sessionContextSnapshotReader {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/knowledge/sections"
@@ -96,6 +97,76 @@ func TestImportDocumentUsesParsedTextWhenParserConfigured(t *testing.T) {
 
 	if repo.createSourceRef == nil || *repo.createSourceRef != "学生守则.pdf" {
 		t.Fatalf("expected original filename to remain source_ref, got %#v", repo.createSourceRef)
+	}
+}
+
+func TestImportDocumentPersistsStructuredDocumentAndSections(t *testing.T) {
+	repo := &fakeResourceRepo{
+		resource: &postgres.Resource{
+			ID:         "resource-structured",
+			Title:      "结构化简历",
+			SourceType: "upload",
+		},
+		version: &postgres.ResourceVersion{
+			ID:         "version-structured",
+			ResourceID: "resource-structured",
+			Content:    "CampusHub 项目正文",
+			Source:     "assistant_upload",
+		},
+	}
+	service := NewService(
+		repo,
+		fakeEmbedder{},
+		WithParser(fakeDocumentParser{
+			result: &documentparser.Result{
+				Text: "CampusHub 项目正文",
+				Document: &documentparser.ParsedDocument{
+					SourceFormat: "pdf",
+					Blocks: []documentparser.Block{
+						{Type: documentparser.BlockParagraph, Text: "CampusHub 项目正文"},
+					},
+				},
+			},
+		}),
+		WithNormalizer(fakeDocumentNormalizer{
+			result: documentnormalize.NormalizedDocument{
+				Sections: []documentnormalize.NormalizedSection{
+					{
+						SectionKey: "project-1",
+						Type:       documentnormalize.SectionTypeProject,
+						Title:      "CampusHub",
+						Content:    "项目正文",
+						TechStack:  []string{"Go", "Redis"},
+						PageStart:  1,
+						PageEnd:    1,
+					},
+				},
+			},
+		}),
+	)
+
+	result, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName: "resume.pdf",
+		Content:  []byte("%PDF-binary-content"),
+	})
+	if err != nil {
+		t.Fatalf("import document with structure: %v", err)
+	}
+
+	if result.Version == nil || result.Version.ID != "version-structured" {
+		t.Fatalf("expected structured version result, got %#v", result.Version)
+	}
+	if repo.createdVersionStructure == nil {
+		t.Fatal("expected structured version payload to be persisted")
+	}
+	if repo.createdVersionStructure.SourceFormat != "pdf" {
+		t.Fatalf("expected source format pdf, got %q", repo.createdVersionStructure.SourceFormat)
+	}
+	if len(repo.replacedSections) != 1 {
+		t.Fatalf("expected 1 persisted normalized section, got %d", len(repo.replacedSections))
+	}
+	if repo.replacedSections[0].SectionType != string(documentnormalize.SectionTypeProject) {
+		t.Fatalf("expected persisted section type %q, got %q", documentnormalize.SectionTypeProject, repo.replacedSections[0].SectionType)
 	}
 }
 
@@ -321,22 +392,25 @@ func TestImportDirectorySkipsIndexedResource(t *testing.T) {
 }
 
 type fakeResourceRepo struct {
-	listResult            []postgres.Resource
-	currentVersion        *postgres.ResourceVersion
-	currentVersions       map[string]*postgres.ResourceVersion
-	chunkCount            int
-	chunkCountByVersion   map[string]int
-	createSourceRef       *string
-	createdChunks         []*postgres.ResourceChunk
-	graphChunks           []postgres.ResourceChunkInput
-	resource              *postgres.Resource
-	version               *postgres.ResourceVersion
-	graphCalls            int
-	replaceCalls          int
-	updateSourceRefCalls  []sourceRefUpdateCall
-	lastGraphParams       postgres.CreateDocumentGraphParams
-	lastReplaceVersionID  string
-	lastReplaceResourceID string
+	listResult              []postgres.Resource
+	currentVersion          *postgres.ResourceVersion
+	currentVersions         map[string]*postgres.ResourceVersion
+	chunkCount              int
+	chunkCountByVersion     map[string]int
+	createSourceRef         *string
+	createdChunks           []*postgres.ResourceChunk
+	graphChunks             []postgres.ResourceChunkInput
+	resource                *postgres.Resource
+	version                 *postgres.ResourceVersion
+	graphCalls              int
+	replaceCalls            int
+	structureCalls          int
+	updateSourceRefCalls    []sourceRefUpdateCall
+	lastGraphParams         postgres.CreateDocumentGraphParams
+	lastReplaceVersionID    string
+	lastReplaceResourceID   string
+	createdVersionStructure *postgres.ResourceVersionStructureInput
+	replacedSections        []postgres.ResourceSectionInput
 }
 
 func (r *fakeResourceRepo) List(context.Context) ([]postgres.Resource, error) {
@@ -425,6 +499,28 @@ func (r *fakeResourceRepo) ReplaceVersionChunks(_ context.Context, versionID str
 	return nil
 }
 
+func (r *fakeResourceRepo) CreateVersionStructure(_ context.Context, input postgres.ResourceVersionStructureInput) (*postgres.ResourceVersionStructure, error) {
+	r.structureCalls++
+	r.createdVersionStructure = &input
+	return &postgres.ResourceVersionStructure{
+		ID:               "structure-1",
+		ResourceID:       input.ResourceID,
+		VersionID:        input.VersionID,
+		SourceFormat:     input.SourceFormat,
+		ParserName:       input.ParserName,
+		ParserVersion:    input.ParserVersion,
+		DocumentJSON:     input.DocumentJSON,
+		QualityFlagsJSON: input.QualityFlagsJSON,
+	}, nil
+}
+
+func (r *fakeResourceRepo) ReplaceSectionsForVersion(_ context.Context, versionID string, resourceID string, sections []postgres.ResourceSectionInput) error {
+	r.lastReplaceVersionID = versionID
+	r.lastReplaceResourceID = resourceID
+	r.replacedSections = append([]postgres.ResourceSectionInput(nil), sections...)
+	return nil
+}
+
 type fakeEmbedder struct{}
 
 func (fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -476,6 +572,14 @@ func (p fakeDocumentParser) SupportedExtensions() []string {
 
 func (p fakeDocumentParser) UnsupportedFileMessage(string) string {
 	return "不支持的文件格式"
+}
+
+type fakeDocumentNormalizer struct {
+	result documentnormalize.NormalizedDocument
+}
+
+func (f fakeDocumentNormalizer) Normalize(documentparser.ParsedDocument) documentnormalize.NormalizedDocument {
+	return f.result
 }
 
 type fakeVersionIndexer struct {

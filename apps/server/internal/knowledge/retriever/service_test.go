@@ -74,8 +74,8 @@ func TestShouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride(t *testing.T)
 func TestBuildCitationsFromChunks(t *testing.T) {
 	longContent := strings.Repeat("a", 205)
 	chunks := []postgres.ResourceChunk{
-		{ResourceID: "res-1", SectionTitle: "Section 1", Content: "alpha"},
-		{ResourceID: "res-2", SectionTitle: "Section 2", Content: longContent},
+		{ResourceID: "res-1", SectionID: "section-1", SectionType: "project", SectionTitle: "Section 1", Content: "alpha"},
+		{ResourceID: "res-2", SectionID: "section-2", SectionType: "project", SectionTitle: "Section 2", Content: longContent, Metadata: map[string]any{"window": []string{"Section 2", "detail"}}},
 		{ResourceID: "res-3", SectionTitle: "Section 3", Content: "gamma"},
 	}
 
@@ -94,6 +94,15 @@ func TestBuildCitationsFromChunks(t *testing.T) {
 
 	if citations[1].Snippet != longContent[:200]+"..." {
 		t.Fatalf("expected truncated snippet, got %q", citations[1].Snippet)
+	}
+	if citations[1].SectionID != "section-2" {
+		t.Fatalf("expected section id %q, got %q", "section-2", citations[1].SectionID)
+	}
+	if citations[1].SectionType != "project" {
+		t.Fatalf("expected section type %q, got %q", "project", citations[1].SectionType)
+	}
+	if len(citations[1].Window) != 2 {
+		t.Fatalf("expected window context, got %#v", citations[1].Window)
 	}
 }
 
@@ -196,6 +205,125 @@ func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
 	}
 	if !strings.Contains(citations[0].Snippet, "新版本") {
 		t.Fatalf("expected citation from current version, got %q", citations[0].Snippet)
+	}
+}
+
+func TestSearchByResourceUsesProjectSectionsFirst(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-structured",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:            "chunk-project-name",
+				ResourceID:    "resource-structured",
+				VersionID:     "version-current",
+				SectionID:     "section-project-1",
+				SectionType:   "project",
+				SectionTitle:  "CampusHub",
+				ChunkRole:     "project_name",
+				WindowGroupID: "project-1",
+				Content:       "CampusHub",
+			},
+			{
+				ID:            "chunk-project-description",
+				ResourceID:    "resource-structured",
+				VersionID:     "version-current",
+				SectionID:     "section-project-1",
+				SectionType:   "project",
+				SectionTitle:  "CampusHub",
+				ChunkRole:     "project_description",
+				WindowGroupID: "project-1",
+				Content:       "面向校园活动场景的平台",
+			},
+			{
+				ID:          "chunk-legacy",
+				ResourceID:  "resource-structured",
+				VersionID:   "version-current",
+				SectionType: "whole_document",
+				ChunkRole:   "section_body",
+				Content:     "杂项正文",
+			},
+		},
+		lexicalByVersion: []postgres.ResourceChunk{
+			{
+				ID:            "chunk-project-description",
+				ResourceID:    "resource-structured",
+				VersionID:     "version-current",
+				SectionID:     "section-project-1",
+				SectionType:   "project",
+				SectionTitle:  "CampusHub",
+				ChunkRole:     "project_description",
+				WindowGroupID: "project-1",
+				Content:       "面向校园活动场景的平台",
+			},
+		},
+	}
+	reranker := fakeRetrieverReranker{
+		results: []reranker.Result{
+			{Index: 0, RelevanceScore: 0.99},
+		},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, reranker)
+
+	citations, err := service.SearchByResource(context.Background(), "resource-structured", "有哪些项目", 3)
+	if err != nil {
+		t.Fatalf("search by resource: %v", err)
+	}
+
+	if len(citations) != 1 {
+		t.Fatalf("expected 1 structured citation, got %d", len(citations))
+	}
+	if citations[0].SectionType != "project" {
+		t.Fatalf("expected project citation, got %q", citations[0].SectionType)
+	}
+	if len(citations[0].Window) < 2 {
+		t.Fatalf("expected project window expansion, got %#v", citations[0].Window)
+	}
+}
+
+func TestSearchByResourceFallsBackToLegacyChunks(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-legacy",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-legacy",
+				ResourceID:   "resource-legacy",
+				VersionID:    "version-current",
+				SectionTitle: "全文",
+				Content:      "旧版正文中的项目列表",
+			},
+		},
+		lexicalByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-legacy",
+				ResourceID:   "resource-legacy",
+				VersionID:    "version-current",
+				SectionTitle: "全文",
+				Content:      "旧版正文中的项目列表",
+			},
+		},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, fakeRetrieverReranker{
+		results: []reranker.Result{
+			{Index: 0, RelevanceScore: 0.91},
+		},
+	})
+
+	citations, err := service.SearchByResource(context.Background(), "resource-legacy", "有哪些项目", 3)
+	if err != nil {
+		t.Fatalf("search by resource fallback: %v", err)
+	}
+
+	if len(citations) != 1 {
+		t.Fatalf("expected 1 fallback citation, got %d", len(citations))
+	}
+	if citations[0].SectionType != "" && citations[0].SectionType != "whole_document" {
+		t.Fatalf("expected legacy fallback citation, got section type %q", citations[0].SectionType)
 	}
 }
 

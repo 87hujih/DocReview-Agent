@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 	"time"
 
@@ -171,6 +172,211 @@ func TestAppendMessagePassesLatestResourceContextAndCitationsToResponder(t *test
 	}
 }
 
+func TestAppendMessageRetriesLowQualityCitationsBeforeAnswering(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("候选人简历")
+	resourceID := "resource-1"
+
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    resourceID,
+			ResourceTitle: "候选人简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	retriever := &fakeResourceCitationRetriever{
+		results: [][]citation.Citation{
+			{
+				{
+					CitationID:   "cite_1",
+					ResourceID:   resourceID,
+					SectionTitle: "全文",
+					Snippet:      "项目",
+				},
+			},
+			{
+				{
+					CitationID:   "cite_2",
+					ResourceID:   resourceID,
+					SectionID:    "project-1",
+					SectionType:  "project",
+					SectionTitle: "智能排班系统",
+					Snippet:      "智能排班系统",
+					Window: []string{
+						"项目名称：智能排班系统",
+						"项目描述：负责多门店排班、班次冲突校验与成本优化。",
+						"技术栈：Go、React、PostgreSQL",
+					},
+				},
+			},
+		},
+	}
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "我根据更完整的项目证据来回答。",
+		},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "这个候选人做过哪些项目"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if retriever.calls != 2 {
+		t.Fatalf("expected 2 retriever calls, got %d", retriever.calls)
+	}
+	if !reflect.DeepEqual(retriever.limits, []int{4, 8}) {
+		t.Fatalf("expected retriever limits [4 8], got %#v", retriever.limits)
+	}
+	if responder.lastInput == nil {
+		t.Fatal("expected responder to receive chat input")
+	}
+	if len(responder.lastInput.Citations) != 1 {
+		t.Fatalf("expected responder to receive fallback citations, got %d", len(responder.lastInput.Citations))
+	}
+	if responder.lastInput.Citations[0].SectionID != "project-1" {
+		t.Fatalf("expected fallback section id %q, got %q", "project-1", responder.lastInput.Citations[0].SectionID)
+	}
+	if len(responder.lastInput.Citations[0].Window) < 2 {
+		t.Fatalf("expected fallback citations to carry evidence window, got %#v", responder.lastInput.Citations[0].Window)
+	}
+}
+
+func TestAppendMessageClearsCitationsWhenFallbackStillLowQuality(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("候选人简历")
+	resourceID := "resource-1"
+
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    resourceID,
+			ResourceTitle: "候选人简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	retriever := &fakeResourceCitationRetriever{
+		results: [][]citation.Citation{
+			{
+				{
+					CitationID:   "cite_1",
+					ResourceID:   resourceID,
+					SectionTitle: "全文",
+					Snippet:      "项目",
+				},
+			},
+			{
+				{
+					CitationID:   "cite_2",
+					ResourceID:   resourceID,
+					SectionTitle: "全文",
+					Snippet:      "项目描述：",
+				},
+			},
+		},
+	}
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "现有片段不足以支持可靠结论。",
+		},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "这个候选人做过哪些项目"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if retriever.calls != 2 {
+		t.Fatalf("expected 2 retriever calls, got %d", retriever.calls)
+	}
+	if !reflect.DeepEqual(retriever.limits, []int{4, 8}) {
+		t.Fatalf("expected retriever limits [4 8], got %#v", retriever.limits)
+	}
+	if responder.lastInput == nil {
+		t.Fatal("expected responder to receive chat input")
+	}
+	if len(responder.lastInput.Citations) != 0 {
+		t.Fatalf("expected low quality citations to be cleared before reply, got %#v", responder.lastInput.Citations)
+	}
+}
+
+func TestAppendMessagePassesHighQualityCitationsWithoutFallback(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("候选人简历")
+	resourceID := "resource-1"
+
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    resourceID,
+			ResourceTitle: "候选人简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	citations := []citation.Citation{
+		{
+			CitationID:   "cite_1",
+			ResourceID:   resourceID,
+			SectionID:    "project-1",
+			SectionType:  "project",
+			SectionTitle: "智能排班系统",
+			Snippet:      "智能排班系统",
+			Window: []string{
+				"项目名称：智能排班系统",
+				"项目描述：负责多门店排班、班次冲突校验与成本优化。",
+			},
+		},
+	}
+	retriever := &fakeResourceCitationRetriever{
+		results: [][]citation.Citation{citations},
+	}
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "我直接基于结构化证据回答。",
+		},
+	}
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "这个候选人做过哪些项目"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if retriever.calls != 1 {
+		t.Fatalf("expected 1 retriever call, got %d", retriever.calls)
+	}
+	if !reflect.DeepEqual(retriever.limits, []int{4}) {
+		t.Fatalf("expected retriever limits [4], got %#v", retriever.limits)
+	}
+	if !reflect.DeepEqual(responder.lastInput.Citations, citations) {
+		t.Fatalf("expected citations to be forwarded unchanged, got %#v", responder.lastInput.Citations)
+	}
+}
+
 func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -198,7 +404,11 @@ func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testin
 				CitationID:   "cite_1",
 				ResourceID:   resourceID,
 				SectionTitle: "第二章 考勤",
-				Snippet:      "考勤内容",
+				Snippet:      "员工每天需要在 9 点前签到并补充异常说明。",
+				Window: []string{
+					"第二章 考勤",
+					"员工每天需要在 9 点前签到并补充异常说明。",
+				},
 			},
 		},
 	}
@@ -1162,13 +1372,16 @@ func (s *fakeChatStream) Close() error {
 }
 
 type fakeResourceCitationRetriever struct {
-	result []citation.Citation
-	err    error
+	result  []citation.Citation
+	results [][]citation.Citation
+	err     error
+	errs    []error
 
 	calls      int
 	resourceID string
 	query      string
 	limit      int
+	limits     []int
 }
 
 func (r *fakeResourceCitationRetriever) SearchByResource(_ context.Context, resourceID string, query string, limit int) ([]citation.Citation, error) {
@@ -1176,8 +1389,17 @@ func (r *fakeResourceCitationRetriever) SearchByResource(_ context.Context, reso
 	r.resourceID = resourceID
 	r.query = query
 	r.limit = limit
+	r.limits = append(r.limits, limit)
+
+	callIndex := r.calls - 1
+	if callIndex < len(r.errs) && r.errs[callIndex] != nil {
+		return nil, r.errs[callIndex]
+	}
 	if r.err != nil {
 		return nil, r.err
+	}
+	if callIndex < len(r.results) {
+		return r.results[callIndex], nil
 	}
 
 	return r.result, nil

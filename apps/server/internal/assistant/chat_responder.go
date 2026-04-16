@@ -252,13 +252,11 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 	if len(input.Citations) > 0 {
 		lines := make([]string, 0, len(input.Citations)+1)
 		lines = append(lines, "与本轮用户问题最相关的资源片段：")
+		if projectSections := buildProjectSectionList(input.Citations); projectSections != "" {
+			lines = append(lines, projectSections)
+		}
 		for index, item := range input.Citations {
-			lines = append(lines, fmt.Sprintf(
-				"%d. [%s] %s",
-				index+1,
-				fallbackSectionTitle(item.SectionTitle),
-				strings.TrimSpace(item.Snippet),
-			))
+			lines = append(lines, buildCitationProjection(index+1, item))
 		}
 		sections = append(sections, strings.Join(lines, "\n"))
 	} else if input.Resource != nil {
@@ -435,6 +433,64 @@ func fallbackSectionTitle(title string) string {
 	}
 
 	return trimmed
+}
+
+func buildProjectSectionList(citations []citation.Citation) string {
+	seen := make(map[string]struct{})
+	titles := make([]string, 0, len(citations))
+	for _, item := range citations {
+		if strings.TrimSpace(item.SectionType) != "project" {
+			continue
+		}
+
+		title := fallbackSectionTitle(item.SectionTitle)
+		if _, ok := seen[title]; ok {
+			continue
+		}
+		seen[title] = struct{}{}
+		titles = append(titles, title)
+	}
+
+	if len(titles) == 0 {
+		return ""
+	}
+
+	return "当前识别到的项目 section 列表：" + strings.Join(titles, "；")
+}
+
+func buildCitationProjection(index int, item citation.Citation) string {
+	lines := []string{buildCitationHeader(index, item)}
+
+	snippet := strings.TrimSpace(item.Snippet)
+	if snippet != "" {
+		lines = append(lines, "   证据摘要："+snippet)
+	}
+
+	window := normalizeEvidenceWindow(item.Window)
+	if len(window) > 0 {
+		lines = append(lines, "   证据窗口：")
+		for _, entry := range window {
+			lines = append(lines, "   - "+entry)
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func buildCitationHeader(index int, item citation.Citation) string {
+	metaParts := make([]string, 0, 2)
+	if sectionType := strings.TrimSpace(item.SectionType); sectionType != "" {
+		metaParts = append(metaParts, "section_type="+sectionType)
+	}
+	if sectionID := strings.TrimSpace(item.SectionID); sectionID != "" {
+		metaParts = append(metaParts, "section_id="+sectionID)
+	}
+
+	if len(metaParts) == 0 {
+		return fmt.Sprintf("%d. [%s]", index, fallbackSectionTitle(item.SectionTitle))
+	}
+
+	return fmt.Sprintf("%d. [%s] %s", index, strings.Join(metaParts, ", "), fallbackSectionTitle(item.SectionTitle))
 }
 
 func trimJSONCodeFence(content string) string {

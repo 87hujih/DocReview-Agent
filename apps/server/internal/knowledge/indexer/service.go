@@ -23,6 +23,7 @@ type embedderClient interface {
 type Input struct {
 	Resource postgres.Resource
 	Version  postgres.ResourceVersion
+	Sections []postgres.ResourceSectionInput
 }
 
 // Service 负责把某个资源版本重建为一组可检索分块。
@@ -41,6 +42,45 @@ func NewService(repo resourceChunkReplacer, embedder embedderClient) *Service {
 
 // BuildVersionChunks 根据版本正文生成待写入的分块输入。
 func (s *Service) BuildVersionChunks(ctx context.Context, input Input) ([]postgres.ResourceChunkInput, error) {
+	if len(input.Sections) > 0 {
+		specs := buildSectionChunkSpecs(input.Sections)
+		if len(specs) == 0 {
+			return nil, nil
+		}
+
+		texts := make([]string, 0, len(specs))
+		for _, spec := range specs {
+			texts = append(texts, spec.Content)
+		}
+
+		vectors, err := s.embedder.Embed(ctx, texts)
+		if err != nil {
+			return nil, err
+		}
+		if len(vectors) != len(specs) {
+			return nil, fmt.Errorf("embedding 数量不匹配：得到 %d 个向量，对应 %d 个结构化分块", len(vectors), len(specs))
+		}
+
+		inputChunks := make([]postgres.ResourceChunkInput, 0, len(specs))
+		for index, spec := range specs {
+			inputChunks = append(inputChunks, postgres.ResourceChunkInput{
+				ChunkIndex:    index,
+				SectionTitle:  spec.SectionTitle,
+				Content:       spec.Content,
+				Embedding:     pgvector.NewVector(vectors[index]),
+				SectionID:     spec.SectionID,
+				SectionType:   spec.SectionType,
+				ChunkRole:     spec.ChunkRole,
+				WindowGroupID: spec.WindowGroupID,
+				PageStart:     spec.PageStart,
+				PageEnd:       spec.PageEnd,
+				Metadata:      spec.Metadata,
+			})
+		}
+
+		return inputChunks, nil
+	}
+
 	content := strings.TrimSpace(input.Version.Content)
 	if content == "" {
 		return nil, nil
@@ -68,6 +108,8 @@ func (s *Service) BuildVersionChunks(ctx context.Context, input Input) ([]postgr
 			SectionTitle: chunk.SectionTitle,
 			Content:      chunk.Content,
 			Embedding:    pgvector.NewVector(vectors[index]),
+			SectionType:  "whole_document",
+			ChunkRole:    "section_body",
 		})
 	}
 

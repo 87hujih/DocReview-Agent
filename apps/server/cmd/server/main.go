@@ -15,6 +15,7 @@ import (
 	"agent_project/apps/server/internal/approval"
 	"agent_project/apps/server/internal/assistant"
 	appconfig "agent_project/apps/server/internal/config"
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/job"
 	"agent_project/apps/server/internal/knowledge/embedder"
@@ -79,7 +80,14 @@ func main() {
 		log.Fatalf("文档解析器初始化失败：%v", err)
 	}
 
-	ingestService := ingest.NewService(resourceRepo, emb, ingest.WithParser(docParser), ingest.WithIndexer(versionIndexer))
+	normalizeService := documentnormalize.NewService()
+	ingestService := ingest.NewService(
+		resourceRepo,
+		emb,
+		ingest.WithParser(docParser),
+		ingest.WithNormalizer(normalizeService),
+		ingest.WithIndexer(versionIndexer),
+	)
 
 	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
 		TimeoutMS: cfg.LLMTimeoutMS,
@@ -168,6 +176,7 @@ func main() {
 		taskService,
 		assistantResponder,
 		retrieverService,
+		assistant.WithEvidenceGate(assistant.NewEvidenceGate()),
 		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
 		assistant.WithSessionContextProjector(sessionContextProjector),
 	)
