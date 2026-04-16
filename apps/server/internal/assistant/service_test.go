@@ -37,6 +37,31 @@ func TestStartConversationUsesResponderReply(t *testing.T) {
 	}
 }
 
+func TestStartConversationCreatesEmptyContextSnapshot(t *testing.T) {
+	repo := newFakeSessionRepo()
+	projector := &fakeSessionContextProjector{}
+	service := NewService(
+		repo,
+		fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "先把目标梳理一下。"}},
+		nil,
+		WithSessionContextProjector(projector),
+	)
+
+	result, err := service.StartConversation(context.Background(), "先聊一下学生守则")
+	if err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+
+	if len(projector.initSessionIDs) != 1 {
+		t.Fatalf("expected projector to initialize 1 session snapshot, got %d", len(projector.initSessionIDs))
+	}
+	if projector.initSessionIDs[0] != result.Session.ID {
+		t.Fatalf("expected initialized session id %q, got %q", result.Session.ID, projector.initSessionIDs[0])
+	}
+}
+
 func TestStartConversationDoesNotSuggestTaskForCapabilityQuestion(t *testing.T) {
 	repo := newFakeSessionRepo()
 	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
@@ -294,6 +319,44 @@ func TestAppendMessageUsesLatestUploadedResourceForTaskSuggestion(t *testing.T) 
 	}
 }
 
+func TestAppendMessageProjectsPendingTaskSuggestionIntoSnapshot(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	projector := &fakeSessionContextProjector{}
+	instruction := "请把第二章整理成任务"
+	service := NewService(
+		repo,
+		fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			result: &ChatCompletionResult{
+				Reply:           "我先给你一张任务建议卡。",
+				TaskInstruction: &instruction,
+			},
+		},
+		nil,
+		WithSessionContextProjector(projector),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "请把第二章整理成任务"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(projector.taskSuggestionCalls) != 1 {
+		t.Fatalf("expected 1 task suggestion projection, got %d", len(projector.taskSuggestionCalls))
+	}
+	call := projector.taskSuggestionCalls[0]
+	if call.SessionID != session.ID {
+		t.Fatalf("expected projected session id %q, got %q", session.ID, call.SessionID)
+	}
+	if call.MessageID != "message-appended-c" {
+		t.Fatalf("expected projected suggestion message id %q, got %q", "message-appended-c", call.MessageID)
+	}
+	if call.Instruction != instruction {
+		t.Fatalf("expected projected instruction %q, got %q", instruction, call.Instruction)
+	}
+}
+
 func TestStartConversationStreamPersistsUserFirstAndAssistantAfterCompletion(t *testing.T) {
 	repo := newFakeSessionRepo()
 	responder := &fakeChatResponder{
@@ -464,6 +527,54 @@ func TestUploadFilePersistsSessionFileMessage(t *testing.T) {
 	}
 }
 
+func TestUploadFileProjectsActiveResourceIntoSnapshot(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("空白会话")
+	projector := &fakeSessionContextProjector{}
+	importer := fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-uploaded",
+				Title:      "学生手册",
+				SourceType: "upload",
+			},
+		},
+	}
+
+	service := NewService(
+		repo,
+		importer,
+		&fakeTaskCreator{},
+		&fakeChatResponder{},
+		nil,
+		WithSessionContextProjector(projector),
+	)
+
+	if _, err := service.UploadFile(context.Background(), session.ID, "学生手册.md", []byte("# 学生手册\n内容")); err != nil {
+		t.Fatalf("upload file: %v", err)
+	}
+
+	if len(projector.fileReadyCalls) != 1 {
+		t.Fatalf("expected 1 file ready projection, got %d", len(projector.fileReadyCalls))
+	}
+	call := projector.fileReadyCalls[0]
+	if call.SessionID != session.ID {
+		t.Fatalf("expected projected session id %q, got %q", session.ID, call.SessionID)
+	}
+	if call.ResourceID != "resource-uploaded" {
+		t.Fatalf("expected projected resource id %q, got %q", "resource-uploaded", call.ResourceID)
+	}
+	if call.ResourceTitle != "学生手册" {
+		t.Fatalf("expected projected resource title %q, got %q", "学生手册", call.ResourceTitle)
+	}
+	if call.ResourceSource != "upload" {
+		t.Fatalf("expected projected resource source %q, got %q", "upload", call.ResourceSource)
+	}
+	if call.SourceMessageID != "message-appended-a" {
+		t.Fatalf("expected projected source message id %q, got %q", "message-appended-a", call.SourceMessageID)
+	}
+}
+
 func TestUploadFileStoresOriginalFileAndPersistsFileID(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("原文件保存")
@@ -581,6 +692,68 @@ func TestConfirmTaskSuggestionCreatesTaskCreatedMessage(t *testing.T) {
 	createdPayload := decodeTaskCreatedPayload(t, result.Messages[0].Payload)
 	if createdPayload.TaskID != "task-1" {
 		t.Fatalf("expected task id %q, got %q", "task-1", createdPayload.TaskID)
+	}
+}
+
+func TestConfirmTaskSuggestionProjectsLatestTaskIntoSnapshot(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	projector := &fakeSessionContextProjector{}
+	resourceID := "resource-1"
+
+	suggestionMessage := repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-suggestion",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindTaskSuggestion,
+		SequenceNo: 1,
+		Payload: mustJSON(t, TaskSuggestionPayload{
+			ActionLabel:   "确认创建任务",
+			CanCreate:     true,
+			Instruction:   "请修订第二章",
+			ResourceID:    &resourceID,
+			ResourceLabel: "学生手册 · upload",
+			StatusMessage: "资源已明确，可以创建任务。",
+			Title:         "建议创建任务",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	service := NewService(
+		repo,
+		fakeDocumentImporter{},
+		&fakeTaskCreator{
+			result: &postgres.Task{
+				ID:          "task-1",
+				ResourceID:  resourceID,
+				Instruction: "请修订第二章",
+				Status:      "pending",
+			},
+		},
+		&fakeChatResponder{},
+		nil,
+		WithSessionContextProjector(projector),
+	)
+
+	if _, err := service.ConfirmTaskSuggestion(context.Background(), suggestionMessage.ID); err != nil {
+		t.Fatalf("confirm task suggestion: %v", err)
+	}
+
+	if len(projector.taskCreatedCalls) != 1 {
+		t.Fatalf("expected 1 task created projection, got %d", len(projector.taskCreatedCalls))
+	}
+	call := projector.taskCreatedCalls[0]
+	if call.SessionID != session.ID {
+		t.Fatalf("expected projected session id %q, got %q", session.ID, call.SessionID)
+	}
+	if call.TaskID != "task-1" {
+		t.Fatalf("expected projected task id %q, got %q", "task-1", call.TaskID)
+	}
+	if call.Status != "pending" {
+		t.Fatalf("expected projected task status %q, got %q", "pending", call.Status)
+	}
+	if call.SourceMessageID != suggestionMessage.ID {
+		t.Fatalf("expected projected source message id %q, got %q", suggestionMessage.ID, call.SourceMessageID)
 	}
 }
 
@@ -1008,6 +1181,51 @@ func (r *fakeResourceCitationRetriever) SearchByResource(_ context.Context, reso
 	}
 
 	return r.result, nil
+}
+
+type fakeSessionContextProjector struct {
+	err error
+
+	initSessionIDs      []string
+	fileReadyCalls      []SessionFileReadyProjection
+	taskSuggestionCalls []TaskSuggestionProjection
+	taskCreatedCalls    []TaskCreatedProjection
+}
+
+func (p *fakeSessionContextProjector) InitSession(_ context.Context, sessionID string) error {
+	if p.err != nil {
+		return p.err
+	}
+
+	p.initSessionIDs = append(p.initSessionIDs, sessionID)
+	return nil
+}
+
+func (p *fakeSessionContextProjector) ProjectSessionFileReady(_ context.Context, projection SessionFileReadyProjection) error {
+	if p.err != nil {
+		return p.err
+	}
+
+	p.fileReadyCalls = append(p.fileReadyCalls, projection)
+	return nil
+}
+
+func (p *fakeSessionContextProjector) ProjectTaskSuggestionCreated(_ context.Context, projection TaskSuggestionProjection) error {
+	if p.err != nil {
+		return p.err
+	}
+
+	p.taskSuggestionCalls = append(p.taskSuggestionCalls, projection)
+	return nil
+}
+
+func (p *fakeSessionContextProjector) ProjectTaskCreated(_ context.Context, projection TaskCreatedProjection) error {
+	if p.err != nil {
+		return p.err
+	}
+
+	p.taskCreatedCalls = append(p.taskCreatedCalls, projection)
+	return nil
 }
 
 func decodeTaskSuggestionPayload(t *testing.T, payload []byte) TaskSuggestionPayload {
