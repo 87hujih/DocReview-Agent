@@ -17,6 +17,7 @@ import (
 )
 
 const retrieverLimit = 5
+const failurePersistenceTimeout = 5 * time.Second
 
 // Orchestrator 负责驱动任务的顶层业务编排。
 type Orchestrator struct {
@@ -366,21 +367,24 @@ func (o *Orchestrator) transitionTask(ctx context.Context, task *postgres.Task, 
 }
 
 func (o *Orchestrator) failTask(ctx context.Context, task *postgres.Task, step *postgres.TaskStep, cause error) {
+	cleanupCtx, cancel := failureContext(ctx)
+	defer cancel()
+
 	if step != nil {
 		errorMessage := cause.Error()
-		_ = o.taskRepo.UpdateStep(ctx, step.ID, "failed", &errorMessage)
+		_ = o.taskRepo.UpdateStep(cleanupCtx, step.ID, "failed", &errorMessage)
 		step.Status = "failed"
 		step.ErrorMessage = &errorMessage
-		o.recordStepEvent(ctx, task, step, "error", "step.failed", "步骤执行失败")
+		o.recordStepEvent(cleanupCtx, task, step, "error", "step.failed", "步骤执行失败")
 	}
 
 	errorMessage := cause.Error()
 	if err := models.Transition(task.Status, models.StatusFailed); err == nil {
 		from := task.Status
-		_ = o.taskRepo.UpdateStatus(ctx, task.ID, models.StatusFailed, &errorMessage)
+		_ = o.taskRepo.UpdateStatus(cleanupCtx, task.ID, models.StatusFailed, &errorMessage)
 		task.Status = models.StatusFailed
 		task.ErrorMessage = &errorMessage
-		o.recordEvent(ctx, taskevents.RecordInput{
+		o.recordEvent(cleanupCtx, taskevents.RecordInput{
 			TaskID:    task.ID,
 			Source:    "orchestrator",
 			Level:     "error",
@@ -393,6 +397,14 @@ func (o *Orchestrator) failTask(ctx context.Context, task *postgres.Task, step *
 			},
 		})
 	}
+}
+
+func failureContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		return context.WithTimeout(context.Background(), failurePersistenceTimeout)
+	}
+
+	return context.WithTimeout(context.WithoutCancel(parent), failurePersistenceTimeout)
 }
 
 func (o *Orchestrator) recordStepEvent(

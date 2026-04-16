@@ -77,6 +77,93 @@ func TestOrchestratorRecordsCoreTaskEvents(t *testing.T) {
 	}
 }
 
+func TestOrchestratorMarksTaskFailedWhenExecutionContextExpires(t *testing.T) {
+	pool := newWorkflowTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	eventService := taskevents.New(eventRepo)
+
+	ctx := workflowTestContext(t)
+	resource, err := resourceRepo.Create(ctx, "编排超时失败测试-"+workflowUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		workflowCleanupResource(t, pool, resource.ID)
+	})
+
+	if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 项目介绍\n原始内容", "original"); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	task, err := taskRepo.Create(ctx, resource.ID, "请把标题改成项目介绍")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	orchestrator := New(
+		taskRepo,
+		resourceRepo,
+		approvalRepo,
+		blockingPlannerAgent{},
+		fakeReviewerAgent{},
+		fakeEditorAgent{},
+		fakeRetrieverService{},
+		eventService,
+		0,
+	)
+
+	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	orchestrator.Orchestrate(runCtx, task)
+
+	verifyCtx := workflowTestContext(t)
+	storedTask, err := taskRepo.GetByID(verifyCtx, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if storedTask == nil {
+		t.Fatal("expected stored task")
+	}
+	if storedTask.Status != models.StatusFailed {
+		t.Fatalf("expected task status %q, got %q", models.StatusFailed, storedTask.Status)
+	}
+	if storedTask.ErrorMessage == nil || !strings.Contains(*storedTask.ErrorMessage, context.DeadlineExceeded.Error()) {
+		t.Fatalf("expected task error to contain %q, got %v", context.DeadlineExceeded.Error(), storedTask.ErrorMessage)
+	}
+
+	steps, err := taskRepo.GetSteps(verifyCtx, task.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(steps))
+	}
+	if steps[0].Status != "failed" {
+		t.Fatalf("expected planner step failed, got %q", steps[0].Status)
+	}
+	if steps[0].ErrorMessage == nil || !strings.Contains(*steps[0].ErrorMessage, context.DeadlineExceeded.Error()) {
+		t.Fatalf("expected step error to contain %q, got %v", context.DeadlineExceeded.Error(), steps[0].ErrorMessage)
+	}
+
+	events, err := eventRepo.ListByTask(verifyCtx, task.ID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+
+	eventTypes := make([]string, 0, len(events))
+	for _, event := range events {
+		eventTypes = append(eventTypes, event.EventType)
+	}
+	for _, expected := range []string{"step.failed", "task.status_changed"} {
+		if !slices.Contains(eventTypes, expected) {
+			t.Fatalf("expected event %q in %v", expected, eventTypes)
+		}
+	}
+}
+
 type fakePlannerAgent struct{}
 
 func (fakePlannerAgent) Plan(context.Context, string, string, string) (*planner.PlanResult, error) {
@@ -85,6 +172,13 @@ func (fakePlannerAgent) Plan(context.Context, string, string, string) (*planner.
 		SearchQueries: []string{"考勤"},
 		FocusSections: []string{"考勤"},
 	}, nil
+}
+
+type blockingPlannerAgent struct{}
+
+func (blockingPlannerAgent) Plan(ctx context.Context, _ string, _ string, _ string) (*planner.PlanResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 type fakeReviewerAgent struct{}
