@@ -63,6 +63,13 @@ type uploadedFileRepository interface {
 	UpdateResourceID(ctx context.Context, fileID string, resourceID string) error
 }
 
+type sessionContextProjector interface {
+	InitSession(ctx context.Context, sessionID string) error
+	ProjectSessionFileReady(ctx context.Context, projection SessionFileReadyProjection) error
+	ProjectTaskSuggestionCreated(ctx context.Context, projection TaskSuggestionProjection) error
+	ProjectTaskCreated(ctx context.Context, projection TaskCreatedProjection) error
+}
+
 // ServiceOption 允许按需注入上传原文件存储等扩展能力。
 type ServiceOption func(*Service)
 
@@ -75,6 +82,7 @@ type Service struct {
 	tasks         taskCreator
 	fileStore     uploadedFileStore
 	uploadedFiles uploadedFileRepository
+	projector     sessionContextProjector
 }
 
 // NewService 构造助手领域服务。
@@ -108,6 +116,13 @@ func WithUploadedFileStorage(store uploadedFileStore, repo uploadedFileRepositor
 	return func(service *Service) {
 		service.fileStore = store
 		service.uploadedFiles = repo
+	}
+}
+
+// WithSessionContextProjector 为 assistant service 注入上下文快照投影器。
+func WithSessionContextProjector(projector sessionContextProjector) ServiceOption {
+	return func(service *Service) {
+		service.projector = projector
 	}
 }
 
@@ -153,6 +168,12 @@ func (s *Service) StartConversation(ctx context.Context, content string) (*Conve
 	if err != nil {
 		return nil, err
 	}
+	if err := s.initSessionSnapshot(ctx, session.ID); err != nil {
+		return nil, err
+	}
+	if err := s.projectPersistedMessages(ctx, session.ID, messages); err != nil {
+		return nil, err
+	}
 
 	return &ConversationResult{
 		Session:  *session,
@@ -194,6 +215,9 @@ func (s *Service) AppendMessage(ctx context.Context, sessionID string, content s
 	if err != nil {
 		return nil, err
 	}
+	if err := s.projectPersistedMessages(ctx, sessionID, messages); err != nil {
+		return nil, err
+	}
 
 	updatedSession, err := s.repo.GetSessionByID(ctx, sessionID)
 	if err != nil {
@@ -223,6 +247,9 @@ func (s *Service) StartConversationStream(ctx context.Context, content string, e
 
 	session, _, err := s.repo.CreateSessionWithMessages(ctx, buildSessionTitle(trimmed), []postgres.AssistantMessageInput{userInput})
 	if err != nil {
+		return err
+	}
+	if err := s.initSessionSnapshot(ctx, session.ID); err != nil {
 		return err
 	}
 
@@ -318,6 +345,9 @@ func (s *Service) UploadFile(ctx context.Context, sessionID string, fileName str
 
 	messages, err := s.repo.AppendMessages(ctx, sessionID, appendInputs)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.projectPersistedMessages(ctx, sessionID, messages); err != nil {
 		return nil, err
 	}
 
@@ -454,6 +484,9 @@ func (s *Service) ConfirmTaskSuggestion(ctx context.Context, messageID string) (
 
 	messages, err := s.repo.AppendMessages(ctx, message.SessionID, []postgres.AssistantMessageInput{input})
 	if err != nil {
+		return nil, err
+	}
+	if err := s.projectPersistedMessages(ctx, message.SessionID, messages); err != nil {
 		return nil, err
 	}
 
@@ -829,6 +862,9 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 	if len(messages) == 0 {
 		return NewStreamError(StreamErrorCodeInternal, "助手暂时不可用，请稍后重试。", errors.New("assistant stream persisted no messages"))
 	}
+	if err := s.projectPersistedMessages(ctx, input.sessionID, messages); err != nil {
+		return err
+	}
 
 	if err := input.emit(StreamEvent{
 		Type:    StreamEventMessageCompleted,
@@ -847,6 +883,72 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 			Message: &messages[index],
 		}); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) initSessionSnapshot(ctx context.Context, sessionID string) error {
+	if s.projector == nil {
+		return nil
+	}
+
+	return s.projector.InitSession(ctx, sessionID)
+}
+
+func (s *Service) projectPersistedMessages(ctx context.Context, sessionID string, messages []postgres.AssistantMessage) error {
+	if s.projector == nil {
+		return nil
+	}
+
+	for _, message := range messages {
+		switch message.Kind {
+		case KindSessionFile:
+			payload, err := decodeSessionFile(message.Payload)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(payload.ResourceID) == "" || strings.TrimSpace(payload.Status) != "ready" {
+				continue
+			}
+			if err := s.projector.ProjectSessionFileReady(ctx, SessionFileReadyProjection{
+				SessionID:       sessionID,
+				ResourceID:      payload.ResourceID,
+				ResourceTitle:   payload.ResourceTitle,
+				ResourceSource:  payload.SourceType,
+				SourceMessageID: message.ID,
+			}); err != nil {
+				return err
+			}
+		case KindTaskSuggestion:
+			payload, err := decodeTaskSuggestion(message.Payload)
+			if err != nil {
+				return err
+			}
+			if err := s.projector.ProjectTaskSuggestionCreated(ctx, TaskSuggestionProjection{
+				SessionID:   sessionID,
+				MessageID:   message.ID,
+				Instruction: payload.Instruction,
+			}); err != nil {
+				return err
+			}
+		case KindTaskCreated:
+			payload, err := unmarshalTaskCreatedPayload(message.Payload)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(payload.TaskID) == "" {
+				continue
+			}
+			if err := s.projector.ProjectTaskCreated(ctx, TaskCreatedProjection{
+				SessionID:       sessionID,
+				TaskID:          payload.TaskID,
+				Status:          payload.Status,
+				SourceMessageID: payload.SuggestionMessageID,
+			}); err != nil {
+				return err
+			}
 		}
 	}
 

@@ -15,6 +15,9 @@ type sessionContextSnapshotProjectorRepo interface {
 	UpsertPendingTaskSuggestion(ctx context.Context, params postgres.UpsertPendingTaskSuggestionParams) error
 	UpsertLatestTask(ctx context.Context, params postgres.UpsertLatestTaskParams) error
 	ClearPendingTaskSuggestion(ctx context.Context, sessionID string) error
+}
+
+type sessionContextSnapshotTaskStatusRepo interface {
 	UpdateLatestTaskStatusBySourceMessageID(ctx context.Context, sourceMessageID string, status string) error
 }
 
@@ -44,12 +47,18 @@ type TaskCreatedProjection struct {
 
 // SessionContextProjector 负责把结构化事件折叠为会话上下文快照。
 type SessionContextProjector struct {
-	repo sessionContextSnapshotProjectorRepo
+	repo           sessionContextSnapshotProjectorRepo
+	taskStatusRepo sessionContextSnapshotTaskStatusRepo
 }
 
 // NewSessionContextProjector 构造会话上下文投影器。
 func NewSessionContextProjector(repo sessionContextSnapshotProjectorRepo) *SessionContextProjector {
-	return &SessionContextProjector{repo: repo}
+	projector := &SessionContextProjector{repo: repo}
+	if taskStatusRepo, ok := repo.(sessionContextSnapshotTaskStatusRepo); ok {
+		projector.taskStatusRepo = taskStatusRepo
+	}
+
+	return projector
 }
 
 // InitSession 初始化一条空快照。
@@ -132,8 +141,11 @@ func (p *SessionContextProjector) ProjectTaskStatusChanged(ctx context.Context, 
 	if strings.TrimSpace(status) == "" {
 		return fmt.Errorf("task status 不能为空")
 	}
+	if p.taskStatusRepo == nil {
+		return nil
+	}
 
-	return p.repo.UpdateLatestTaskStatusBySourceMessageID(ctx, strings.TrimSpace(*sourceMessageID), strings.TrimSpace(status))
+	return p.taskStatusRepo.UpdateLatestTaskStatusBySourceMessageID(ctx, strings.TrimSpace(*sourceMessageID), strings.TrimSpace(status))
 }
 
 func optionalStringPointer(value string) *string {
