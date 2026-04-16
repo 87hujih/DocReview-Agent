@@ -11,6 +11,7 @@ import (
 
 	"agent_project/apps/server/internal/agent/editor"
 	"agent_project/apps/server/internal/agent/planner"
+	"agent_project/apps/server/internal/assistant"
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/postgres"
@@ -56,6 +57,7 @@ func TestOrchestratorRecordsCoreTaskEvents(t *testing.T) {
 		fakeRetrieverService{},
 		eventService,
 		0, // use default contextMaxRunes
+		nil,
 	)
 
 	orchestrator.Orchestrate(ctx, task)
@@ -112,6 +114,7 @@ func TestOrchestratorMarksTaskFailedWhenExecutionContextExpires(t *testing.T) {
 		fakeRetrieverService{},
 		eventService,
 		0,
+		nil,
 	)
 
 	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -164,6 +167,173 @@ func TestOrchestratorMarksTaskFailedWhenExecutionContextExpires(t *testing.T) {
 	}
 }
 
+func TestOrchestratorProjectsSnapshotStatusTransitions(t *testing.T) {
+	t.Run("awaiting approval", func(t *testing.T) {
+		pool := newWorkflowTestPool(t)
+		ctx := workflowTestContext(t)
+		resourceRepo := postgres.NewResourceRepo(pool)
+		taskRepo := postgres.NewTaskRepo(pool)
+		approvalRepo := postgres.NewApprovalRepo(pool)
+		eventRepo := postgres.NewTaskEventRepo(pool)
+		assistantRepo := postgres.NewAssistantRepo(pool)
+		snapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
+		projector := assistant.NewSessionContextProjector(snapshotRepo)
+		eventService := taskevents.New(eventRepo)
+
+		resource, err := resourceRepo.Create(ctx, "快照等待审批-"+workflowUniqueSuffix(), "upload")
+		if err != nil {
+			t.Fatalf("create resource: %v", err)
+		}
+		t.Cleanup(func() {
+			workflowCleanupResource(t, pool, resource.ID)
+		})
+		if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 考勤\n原始条款", "original"); err != nil {
+			t.Fatalf("create version: %v", err)
+		}
+
+		session, task, suggestionMessageID := seedWorkflowAssistantTask(t, ctx, assistantRepo, snapshotRepo, taskRepo, resource.ID, "请审阅考勤条款")
+		t.Cleanup(func() {
+			if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+				t.Fatalf("cleanup session: %v", err)
+			}
+		})
+
+		orchestrator := New(
+			taskRepo,
+			resourceRepo,
+			approvalRepo,
+			fakePlannerAgent{},
+			fakeReviewerAgent{},
+			fakeEditorAgent{},
+			fakeRetrieverService{},
+			eventService,
+			0,
+			projector,
+		)
+
+		orchestrator.Orchestrate(ctx, task)
+
+		snapshot, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+		if err != nil {
+			t.Fatalf("get snapshot: %v", err)
+		}
+		if snapshot == nil || snapshot.LatestTaskStatus == nil || *snapshot.LatestTaskStatus != models.StatusAwaitingApproval {
+			t.Fatalf("expected snapshot latest_task_status %q, got %#v", models.StatusAwaitingApproval, snapshot)
+		}
+		if snapshot.LatestTaskSourceMessageID == nil || *snapshot.LatestTaskSourceMessageID != suggestionMessageID {
+			t.Fatalf("expected snapshot source message id %q, got %#v", suggestionMessageID, snapshot.LatestTaskSourceMessageID)
+		}
+	})
+
+	t.Run("completed no-change", func(t *testing.T) {
+		pool := newWorkflowTestPool(t)
+		ctx := workflowTestContext(t)
+		resourceRepo := postgres.NewResourceRepo(pool)
+		taskRepo := postgres.NewTaskRepo(pool)
+		approvalRepo := postgres.NewApprovalRepo(pool)
+		eventRepo := postgres.NewTaskEventRepo(pool)
+		assistantRepo := postgres.NewAssistantRepo(pool)
+		snapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
+		projector := assistant.NewSessionContextProjector(snapshotRepo)
+		eventService := taskevents.New(eventRepo)
+
+		resource, err := resourceRepo.Create(ctx, "快照无需修改-"+workflowUniqueSuffix(), "upload")
+		if err != nil {
+			t.Fatalf("create resource: %v", err)
+		}
+		t.Cleanup(func() {
+			workflowCleanupResource(t, pool, resource.ID)
+		})
+		if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 考勤\n原始条款", "original"); err != nil {
+			t.Fatalf("create version: %v", err)
+		}
+
+		session, task, _ := seedWorkflowAssistantTask(t, ctx, assistantRepo, snapshotRepo, taskRepo, resource.ID, "请确认这份文档无需修改")
+		t.Cleanup(func() {
+			if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+				t.Fatalf("cleanup session: %v", err)
+			}
+		})
+
+		orchestrator := New(
+			taskRepo,
+			resourceRepo,
+			approvalRepo,
+			fakePlannerAgent{},
+			fakeReviewerAgent{},
+			fakeNoChangeEditorAgent{},
+			fakeRetrieverService{},
+			eventService,
+			0,
+			projector,
+		)
+
+		orchestrator.Orchestrate(ctx, task)
+
+		snapshot, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+		if err != nil {
+			t.Fatalf("get snapshot: %v", err)
+		}
+		if snapshot == nil || snapshot.LatestTaskStatus == nil || *snapshot.LatestTaskStatus != models.StatusCompleted {
+			t.Fatalf("expected snapshot latest_task_status %q, got %#v", models.StatusCompleted, snapshot)
+		}
+	})
+
+	t.Run("failed", func(t *testing.T) {
+		pool := newWorkflowTestPool(t)
+		ctx := workflowTestContext(t)
+		resourceRepo := postgres.NewResourceRepo(pool)
+		taskRepo := postgres.NewTaskRepo(pool)
+		approvalRepo := postgres.NewApprovalRepo(pool)
+		eventRepo := postgres.NewTaskEventRepo(pool)
+		assistantRepo := postgres.NewAssistantRepo(pool)
+		snapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
+		projector := assistant.NewSessionContextProjector(snapshotRepo)
+		eventService := taskevents.New(eventRepo)
+
+		resource, err := resourceRepo.Create(ctx, "快照失败-"+workflowUniqueSuffix(), "upload")
+		if err != nil {
+			t.Fatalf("create resource: %v", err)
+		}
+		t.Cleanup(func() {
+			workflowCleanupResource(t, pool, resource.ID)
+		})
+		if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 考勤\n原始条款", "original"); err != nil {
+			t.Fatalf("create version: %v", err)
+		}
+
+		session, task, _ := seedWorkflowAssistantTask(t, ctx, assistantRepo, snapshotRepo, taskRepo, resource.ID, "请触发失败路径")
+		t.Cleanup(func() {
+			if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+				t.Fatalf("cleanup session: %v", err)
+			}
+		})
+
+		orchestrator := New(
+			taskRepo,
+			resourceRepo,
+			approvalRepo,
+			failingPlannerAgent{err: fmt.Errorf("planner boom")},
+			fakeReviewerAgent{},
+			fakeEditorAgent{},
+			fakeRetrieverService{},
+			eventService,
+			0,
+			projector,
+		)
+
+		orchestrator.Orchestrate(ctx, task)
+
+		snapshot, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+		if err != nil {
+			t.Fatalf("get snapshot: %v", err)
+		}
+		if snapshot == nil || snapshot.LatestTaskStatus == nil || *snapshot.LatestTaskStatus != models.StatusFailed {
+			t.Fatalf("expected snapshot latest_task_status %q, got %#v", models.StatusFailed, snapshot)
+		}
+	})
+}
+
 type fakePlannerAgent struct{}
 
 func (fakePlannerAgent) Plan(context.Context, string, string, string) (*planner.PlanResult, error) {
@@ -179,6 +349,14 @@ type blockingPlannerAgent struct{}
 func (blockingPlannerAgent) Plan(ctx context.Context, _ string, _ string, _ string) (*planner.PlanResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+type failingPlannerAgent struct {
+	err error
+}
+
+func (a failingPlannerAgent) Plan(context.Context, string, string, string) (*planner.PlanResult, error) {
+	return nil, a.err
 }
 
 type fakeReviewerAgent struct{}
@@ -202,6 +380,12 @@ func (fakeEditorAgent) Edit(context.Context, string, string, []citation.Citation
 			},
 		},
 	}, nil
+}
+
+type fakeNoChangeEditorAgent struct{}
+
+func (fakeNoChangeEditorAgent) Edit(context.Context, string, string, []citation.Citation) (*editor.DiffPreview, error) {
+	return &editor.DiffPreview{NoChange: true}, nil
 }
 
 type fakeRetrieverService struct{}
@@ -261,6 +445,58 @@ func workflowTestContext(t *testing.T) context.Context {
 
 func workflowUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+func seedWorkflowAssistantTask(
+	t *testing.T,
+	ctx context.Context,
+	assistantRepo *postgres.AssistantRepo,
+	snapshotRepo *postgres.SessionContextSnapshotRepo,
+	taskRepo *postgres.TaskRepo,
+	resourceID string,
+	instruction string,
+) (*postgres.AssistantSession, *postgres.Task, string) {
+	t.Helper()
+
+	session, _, err := assistantRepo.CreateSessionWithMessages(ctx, "workflow-snapshot-"+workflowUniqueSuffix(), nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := snapshotRepo.CreateEmpty(ctx, session.ID); err != nil {
+		t.Fatalf("create empty snapshot: %v", err)
+	}
+
+	suggestionPayload := fmt.Sprintf(`{"title":"建议创建任务","instruction":"%s","can_create":true,"action_label":"确认创建任务","resource_id":"%s","resource_label":"测试资源","status_message":"资源已明确，可以创建任务。"}`, instruction, resourceID)
+	messages, err := assistantRepo.AppendMessages(ctx, session.ID, []postgres.AssistantMessageInput{{
+		Role:    "assistant",
+		Kind:    "task_suggestion",
+		Payload: []byte(suggestionPayload),
+	}})
+	if err != nil {
+		t.Fatalf("append suggestion message: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected one suggestion message, got %d", len(messages))
+	}
+
+	task, created, err := taskRepo.CreateFromAssistantSuggestion(ctx, resourceID, instruction, messages[0].ID)
+	if err != nil {
+		t.Fatalf("create assistant task: %v", err)
+	}
+	if !created {
+		t.Fatal("expected assistant task to be newly created")
+	}
+
+	if err := snapshotRepo.UpsertLatestTask(ctx, postgres.UpsertLatestTaskParams{
+		SessionID:       session.ID,
+		TaskID:          task.ID,
+		Status:          task.Status,
+		SourceMessageID: &messages[0].ID,
+	}); err != nil {
+		t.Fatalf("seed latest task snapshot: %v", err)
+	}
+
+	return session, task, messages[0].ID
 }
 
 // --- validateDiffPreview 单元测试（2.4）---

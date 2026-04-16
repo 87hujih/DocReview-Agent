@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	executoragent "agent_project/apps/server/internal/agent/executor"
 	"agent_project/apps/server/internal/storage/postgres"
@@ -12,6 +13,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const snapshotProjectionTimeout = 5 * time.Second
+
+type taskStatusProjector interface {
+	ProjectTaskStatusChanged(ctx context.Context, sourceMessageID *string, taskID string, status string) error
+}
+
 // Worker 负责消费执行作业并推动任务完成。
 type Worker struct {
 	jobCh    chan struct{}
@@ -19,6 +26,7 @@ type Worker struct {
 	executor *executoragent.Executor
 	taskRepo *postgres.TaskRepo
 	eventSvc *taskevents.Service
+	projector taskStatusProjector
 }
 
 // New 构造 channel-based worker。
@@ -28,6 +36,7 @@ func New(
 	taskRepo *postgres.TaskRepo,
 	bufSize int,
 	eventService *taskevents.Service,
+	projector taskStatusProjector,
 ) *Worker {
 	if bufSize <= 0 {
 		bufSize = 1
@@ -39,6 +48,7 @@ func New(
 		executor: executor,
 		taskRepo: taskRepo,
 		eventSvc: eventService,
+		projector: projector,
 	}
 }
 
@@ -92,6 +102,8 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 		errorMessage := err.Error()
 		if finalizeErr := w.finalizeJobFailure(ctx, job, errorMessage, "执行作业执行失败"); finalizeErr != nil {
 			log.Printf("错误：原子收尾失败作业失败：job=%s err=%v", job.ID, finalizeErr)
+		} else {
+			w.projectTaskStatus(ctx, job.TaskID, "failed")
 		}
 		return
 	}
@@ -102,13 +114,17 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 		log.Printf("错误：%s job=%s", errorMessage, job.ID)
 		if finalizeErr := w.finalizeJobFailure(ctx, job, errorMessage, "执行作业落库失败"); finalizeErr != nil {
 			log.Printf("错误：回退作业到 failed 状态失败：job=%s err=%v", job.ID, finalizeErr)
+		} else {
+			w.projectTaskStatus(ctx, job.TaskID, "failed")
 		}
 		return
 	}
 
 	if result.JobStatus == "failed" {
+		w.projectTaskStatus(ctx, job.TaskID, "failed")
 		return
 	}
+	w.projectTaskStatus(ctx, job.TaskID, "completed")
 }
 
 func (w *Worker) finalizeJobSuccess(ctx context.Context, job *postgres.ExecutionJob, newVersionID string) error {
@@ -311,4 +327,33 @@ func dereferenceString(value *string) string {
 	}
 
 	return *value
+}
+
+func (w *Worker) projectTaskStatus(ctx context.Context, taskID string, status string) {
+	if w.projector == nil {
+		return
+	}
+
+	projectionCtx, cancel := projectionContext(ctx)
+	defer cancel()
+
+	task, err := w.taskRepo.GetByID(projectionCtx, taskID)
+	if err != nil {
+		log.Printf("警告：读取任务 source_message_id 失败，无法回写助手上下文快照：task=%s err=%v", taskID, err)
+		return
+	}
+	if task == nil {
+		return
+	}
+	if err := w.projector.ProjectTaskStatusChanged(projectionCtx, task.SourceMessageID, task.ID, status); err != nil {
+		log.Printf("警告：worker 回写助手上下文快照失败：task=%s status=%s err=%v", task.ID, status, err)
+	}
+}
+
+func projectionContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		return context.WithTimeout(context.Background(), snapshotProjectionTimeout)
+	}
+
+	return context.WithTimeout(context.WithoutCancel(parent), snapshotProjectionTimeout)
 }

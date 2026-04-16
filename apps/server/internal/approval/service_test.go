@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent_project/apps/server/internal/assistant"
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
@@ -59,7 +60,7 @@ func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 
 	jobCh := make(chan struct{}, 1)
 	eventService := taskevents.New(eventRepo)
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, jobCh, eventService)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, jobCh, eventService, nil)
 
 	updatedApproval, err := service.Approve(ctx, approvalRecord.ID)
 	if err != nil {
@@ -162,7 +163,7 @@ func TestRejectUpdatesApprovalAndTask(t *testing.T) {
 	}
 
 	eventService := taskevents.New(eventRepo)
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService, nil)
 	reason := "方案不完善"
 
 	updatedApproval, err := service.Reject(ctx, approvalRecord.ID, reason)
@@ -208,6 +209,128 @@ func TestRejectUpdatesApprovalAndTask(t *testing.T) {
 	}
 }
 
+func TestApproveProjectsExecutingTaskIntoContextSnapshot(t *testing.T) {
+	pool := newApprovalTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	assistantRepo := postgres.NewAssistantRepo(pool)
+	snapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
+	projector := assistant.NewSessionContextProjector(snapshotRepo)
+	ctx := approvalTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "审批快照通过-"+approvalUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := postgrescleanup.CleanupResourceTree(ctx, pool, resource.ID); err != nil {
+			t.Fatalf("cleanup approval resource %q: %v", resource.ID, err)
+		}
+	})
+
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	session, task, suggestionMessageID := seedApprovalAssistantTask(t, ctx, assistantRepo, snapshotRepo, taskRepo, resource.ID, "请批准修订方案")
+	t.Cleanup(func() {
+		if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup session: %v", err)
+		}
+	})
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
+		t.Fatalf("update task to awaiting approval: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+
+	eventService := taskevents.New(eventRepo)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService, projector)
+
+	if _, err := service.Approve(ctx, approvalRecord.ID); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	snapshot, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get snapshot: %v", err)
+	}
+	if snapshot == nil || snapshot.LatestTaskStatus == nil || *snapshot.LatestTaskStatus != models.StatusExecuting {
+		t.Fatalf("expected snapshot latest_task_status %q, got %#v", models.StatusExecuting, snapshot)
+	}
+	if snapshot.LatestTaskSourceMessageID == nil || *snapshot.LatestTaskSourceMessageID != suggestionMessageID {
+		t.Fatalf("expected snapshot source message id %q, got %#v", suggestionMessageID, snapshot.LatestTaskSourceMessageID)
+	}
+}
+
+func TestRejectProjectsFailedTaskIntoContextSnapshot(t *testing.T) {
+	pool := newApprovalTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	assistantRepo := postgres.NewAssistantRepo(pool)
+	snapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
+	projector := assistant.NewSessionContextProjector(snapshotRepo)
+	ctx := approvalTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "审批快照拒绝-"+approvalUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := postgrescleanup.CleanupResourceTree(ctx, pool, resource.ID); err != nil {
+			t.Fatalf("cleanup approval resource %q: %v", resource.ID, err)
+		}
+	})
+
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	session, task, suggestionMessageID := seedApprovalAssistantTask(t, ctx, assistantRepo, snapshotRepo, taskRepo, resource.ID, "请拒绝当前方案")
+	t.Cleanup(func() {
+		if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup session: %v", err)
+		}
+	})
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
+		t.Fatalf("update task to awaiting approval: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+
+	eventService := taskevents.New(eventRepo)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService, projector)
+
+	if _, err := service.Reject(ctx, approvalRecord.ID, "方案不完善"); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	snapshot, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get snapshot: %v", err)
+	}
+	if snapshot == nil || snapshot.LatestTaskStatus == nil || *snapshot.LatestTaskStatus != models.StatusFailed {
+		t.Fatalf("expected snapshot latest_task_status %q, got %#v", models.StatusFailed, snapshot)
+	}
+	if snapshot.LatestTaskSourceMessageID == nil || *snapshot.LatestTaskSourceMessageID != suggestionMessageID {
+		t.Fatalf("expected snapshot source message id %q, got %#v", suggestionMessageID, snapshot.LatestTaskSourceMessageID)
+	}
+}
+
 func TestApproveCopiesBaseVersionIDToJob(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -244,7 +367,7 @@ func TestApproveCopiesBaseVersionIDToJob(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), nil, nil)
 	if _, err := service.Approve(ctx, approvalRecord.ID); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -296,7 +419,7 @@ func TestApproveRejectsLegacyPendingApprovalWithoutBaseVersion(t *testing.T) {
 	}
 	clearApprovalBaseVersionID(t, ctx, pool, approvalRecord.ID)
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), nil, nil)
 	if _, err := service.Approve(ctx, approvalRecord.ID); err == nil {
 		t.Fatal("expected approve to fail when pending approval is missing base_version_id")
 	} else if !strings.Contains(err.Error(), "base_version_id") {
@@ -348,7 +471,7 @@ func TestApproveAlreadyDecidedReturnsError(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil)
 	if _, err := service.Approve(ctx, approvalRecord.ID); err != nil {
 		t.Fatalf("first approve: %v", err)
 	}
@@ -394,7 +517,7 @@ func TestApproveConcurrentOnlyOneSucceeds(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil)
 	startCh := make(chan struct{})
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -482,7 +605,7 @@ func TestApproveAndRejectConcurrentOnlyOneSucceeds(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil)
 	startCh := make(chan struct{})
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -602,7 +725,7 @@ func TestGetApprovalReturnsRecord(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, nil, nil, nil)
 
 	found, err := service.GetApproval(ctx, approvalRecord.ID)
 	if err != nil {
@@ -647,7 +770,7 @@ func TestGetJobReturnsRecord(t *testing.T) {
 		t.Fatalf("create job: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, nil, nil, nil)
 
 	found, err := service.GetJob(ctx, jobRecord.ID)
 	if err != nil {
@@ -692,4 +815,56 @@ func approvalTestContext(t *testing.T) context.Context {
 
 func approvalUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+func seedApprovalAssistantTask(
+	t *testing.T,
+	ctx context.Context,
+	assistantRepo *postgres.AssistantRepo,
+	snapshotRepo *postgres.SessionContextSnapshotRepo,
+	taskRepo *postgres.TaskRepo,
+	resourceID string,
+	instruction string,
+) (*postgres.AssistantSession, *postgres.Task, string) {
+	t.Helper()
+
+	session, _, err := assistantRepo.CreateSessionWithMessages(ctx, "approval-snapshot-"+approvalUniqueSuffix(), nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := snapshotRepo.CreateEmpty(ctx, session.ID); err != nil {
+		t.Fatalf("create empty snapshot: %v", err)
+	}
+
+	payload := fmt.Sprintf(`{"title":"建议创建任务","instruction":"%s","can_create":true,"action_label":"确认创建任务","resource_id":"%s","resource_label":"测试资源","status_message":"资源已明确，可以创建任务。"}`, instruction, resourceID)
+	messages, err := assistantRepo.AppendMessages(ctx, session.ID, []postgres.AssistantMessageInput{{
+		Role:    "assistant",
+		Kind:    "task_suggestion",
+		Payload: []byte(payload),
+	}})
+	if err != nil {
+		t.Fatalf("append suggestion message: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected one suggestion message, got %d", len(messages))
+	}
+
+	task, created, err := taskRepo.CreateFromAssistantSuggestion(ctx, resourceID, instruction, messages[0].ID)
+	if err != nil {
+		t.Fatalf("create assistant task: %v", err)
+	}
+	if !created {
+		t.Fatal("expected assistant task to be newly created")
+	}
+
+	if err := snapshotRepo.UpsertLatestTask(ctx, postgres.UpsertLatestTaskParams{
+		SessionID:       session.ID,
+		TaskID:          task.ID,
+		Status:          task.Status,
+		SourceMessageID: &messages[0].ID,
+	}); err != nil {
+		t.Fatalf("seed latest task snapshot: %v", err)
+	}
+
+	return session, task, messages[0].ID
 }

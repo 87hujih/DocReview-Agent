@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,6 +30,12 @@ var (
 	ErrJobNotFound = errors.New("执行作业不存在")
 )
 
+const snapshotProjectionTimeout = 5 * time.Second
+
+type taskStatusProjector interface {
+	ProjectTaskStatusChanged(ctx context.Context, sourceMessageID *string, taskID string, status string) error
+}
+
 // Service 负责审批通过/拒绝时的业务协调。
 type Service struct {
 	pool         *pgxpool.Pool
@@ -37,6 +44,7 @@ type Service struct {
 	taskRepo     *postgres.TaskRepo
 	jobCh        chan<- struct{}
 	eventService *taskevents.Service
+	projector    taskStatusProjector
 }
 
 // NewService 构造审批服务。
@@ -47,6 +55,7 @@ func NewService(
 	taskRepo *postgres.TaskRepo,
 	jobCh chan<- struct{},
 	eventService *taskevents.Service,
+	projector taskStatusProjector,
 ) *Service {
 	return &Service{
 		pool:         pool,
@@ -55,6 +64,7 @@ func NewService(
 		taskRepo:     taskRepo,
 		jobCh:        jobCh,
 		eventService: eventService,
+		projector:    projector,
 	}
 }
 
@@ -172,6 +182,7 @@ func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.App
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	s.projectTaskStatus(ctx, task, models.StatusExecuting)
 
 	s.enqueueJob()
 
@@ -243,8 +254,30 @@ func (s *Service) Reject(ctx context.Context, approvalID string, reason string) 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	s.projectTaskStatus(ctx, task, models.StatusFailed)
 
 	return updatedApproval, nil
+}
+
+func (s *Service) projectTaskStatus(ctx context.Context, task *postgres.Task, status string) {
+	if s.projector == nil || task == nil {
+		return
+	}
+
+	projectionCtx, cancel := projectionContext(ctx)
+	defer cancel()
+
+	if err := s.projector.ProjectTaskStatusChanged(projectionCtx, task.SourceMessageID, task.ID, status); err != nil {
+		log.Printf("警告：审批链回写助手上下文快照失败：task=%s status=%s err=%v", task.ID, status, err)
+	}
+}
+
+func projectionContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		return context.WithTimeout(context.Background(), snapshotProjectionTimeout)
+	}
+
+	return context.WithTimeout(context.WithoutCancel(parent), snapshotProjectionTimeout)
 }
 
 func (s *Service) loadPendingApprovalTask(ctx context.Context, approvalID string, targetStatus string) (*postgres.Approval, *postgres.Task, error) {
