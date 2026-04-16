@@ -96,11 +96,7 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
 
       const requestedSessionId = initialSessionIdRef.current;
       initialSessionIdRef.current = null;
-      if (historyResult.status !== "fulfilled" || requestedSessionId === null) {
-        return;
-      }
-      if (!loadedSessions.some((session) => session.id === requestedSessionId)) {
-        replaceSessionQuery(null);
+      if (requestedSessionId === null) {
         return;
       }
 

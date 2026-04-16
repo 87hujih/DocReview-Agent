@@ -184,6 +184,47 @@ describe("AssistantShell", () => {
     expect(await screen.findByText("这是指定会话里的历史消息")).toBeInTheDocument();
   });
 
+  it("loads target session from session query even when history list does not include it yet", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([
+      {
+        created_at: "2026-04-10T09:00:00Z",
+        id: "session-other",
+        last_message_at: "2026-04-10T09:30:00Z",
+        title: "另一个会话",
+        updated_at: "2026-04-10T09:30:00Z"
+      }
+    ]);
+    mockedGetAssistantSession.mockResolvedValue({
+      messages: [
+        {
+          created_at: "2026-04-10T10:10:00Z",
+          id: "message-1",
+          kind: "text",
+          payload: {
+            content: "这是需要恢复的原会话"
+          },
+          role: "assistant",
+          sequence_no: 1
+        }
+      ],
+      session: {
+        created_at: "2026-04-10T10:00:00Z",
+        id: "session-1",
+        last_message_at: "2026-04-10T10:30:00Z",
+        title: "昨天整理学生守则的思路",
+        updated_at: "2026-04-10T10:30:00Z"
+      }
+    });
+
+    renderAssistantShell("/?session=session-1");
+
+    await waitFor(() => {
+      expect(mockedGetAssistantSession).toHaveBeenCalledWith("session-1");
+    });
+    expect(await screen.findByText("这是需要恢复的原会话")).toBeInTheDocument();
+    expect(window.location.search).toBe("?session=session-1");
+  });
+
   it("collapses and restores the whole left rail instead of only hiding assistant history", async () => {
     mockedGetAssistantSessions.mockResolvedValue([
       {
