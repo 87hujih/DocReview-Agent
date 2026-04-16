@@ -229,7 +229,7 @@ MVP 最终应至少包含以下页面：
 ## 相关文档
 
 - CI/CD 部署配置详见 `deploy/` 目录和 `.github/workflows/`
-- Docker Compose 配置详见 `docker-compose.yml`
+
 
 ## 当前说明
 
