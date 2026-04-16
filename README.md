@@ -44,6 +44,11 @@ pwsh -File scripts/dev/start-local.ps1
 # http://127.0.0.1:3000
 ```
 
+> `start-local.ps1` 现在会额外托管本地 Apache Tika Server。
+> 当 `.env` 使用 `DOCUMENT_PARSER=tika` 且 `TIKA_URL=http://127.0.0.1:9998` 时，
+> 脚本会自动启动 / 复用 `docker compose` 里的 `tika` 服务；
+> `stop-local.ps1` 会一并停止该服务。
+
 <<<<<<< feat/task-event-chain-consistency
 > 如果使用远程或已有的 PostgreSQL 实例，跳过步骤 3，直接在 `.env` 中配置 `DATABASE_URL` 即可。数据库需要预装 `pgvector` 和 `pg_trgm` 扩展，迁移脚本会自动创建。
 >
