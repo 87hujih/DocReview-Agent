@@ -54,6 +54,15 @@ type resourceCitationRetriever interface {
 	SearchByResource(ctx context.Context, resourceID string, query string, limit int) ([]citation.Citation, error)
 }
 
+type replyContextLoader interface {
+	LoadForReply(
+		ctx context.Context,
+		sessionID string,
+		history []postgres.AssistantMessage,
+		currentMessage string,
+	) (*ReplyContext, error)
+}
+
 type uploadedFileStore interface {
 	Save(ctx context.Context, originalName string, content []byte) (*filestore.StoredFile, error)
 }
@@ -82,6 +91,7 @@ type Service struct {
 	tasks         taskCreator
 	fileStore     uploadedFileStore
 	uploadedFiles uploadedFileRepository
+	contextLoader replyContextLoader
 	projector     sessionContextProjector
 }
 
@@ -108,6 +118,10 @@ func NewService(
 		}
 	}
 
+	if service.contextLoader == nil {
+		service.contextLoader = NewContextLoader(snapshotReaderFromProjector(service.projector), service.retriever)
+	}
+
 	return service
 }
 
@@ -116,6 +130,13 @@ func WithUploadedFileStorage(store uploadedFileStore, repo uploadedFileRepositor
 	return func(service *Service) {
 		service.fileStore = store
 		service.uploadedFiles = repo
+	}
+}
+
+// WithReplyContextLoader 为 assistant service 注入回复上下文装载器。
+func WithReplyContextLoader(loader replyContextLoader) ServiceOption {
+	return func(service *Service) {
+		service.contextLoader = loader
 	}
 }
 
@@ -159,7 +180,7 @@ func (s *Service) StartConversation(ctx context.Context, content string) (*Conve
 		return nil, ErrMessageRequired
 	}
 
-	inputs, err := s.buildReplyInputs(ctx, nil, trimmed, nil)
+	inputs, err := s.buildReplyInputs(ctx, "", nil, trimmed)
 	if err != nil {
 		return nil, err
 	}
@@ -201,12 +222,7 @@ func (s *Service) AppendMessage(ctx context.Context, sessionID string, content s
 		return nil, err
 	}
 
-	resourceContext, err := latestResourceFromMessages(history)
-	if err != nil {
-		return nil, err
-	}
-
-	inputs, err := s.buildReplyInputs(ctx, history, trimmed, resourceContext)
+	inputs, err := s.buildReplyInputs(ctx, sessionID, history, trimmed)
 	if err != nil {
 		return nil, err
 	}
@@ -287,11 +303,6 @@ func (s *Service) AppendMessageStream(ctx context.Context, sessionID string, con
 		return err
 	}
 
-	resourceContext, err := latestResourceFromMessages(history)
-	if err != nil {
-		return err
-	}
-
 	userInput, err := buildUserTextInput(trimmed)
 	if err != nil {
 		return err
@@ -305,7 +316,6 @@ func (s *Service) AppendMessageStream(ctx context.Context, sessionID string, con
 		content:   trimmed,
 		emit:      emit,
 		history:   history,
-		resource:  resourceContext,
 		sessionID: sessionID,
 	})
 }
@@ -512,9 +522,9 @@ func (s *Service) DeleteSession(ctx context.Context, sessionID string) (bool, er
 
 func (s *Service) buildReplyInputs(
 	ctx context.Context,
+	sessionID string,
 	history []postgres.AssistantMessage,
 	content string,
-	resource *resourceContext,
 ) ([]postgres.AssistantMessageInput, error) {
 	userInput, err := buildUserTextInput(content)
 	if err != nil {
@@ -525,22 +535,23 @@ func (s *Service) buildReplyInputs(
 		return nil, errors.New("助手对话模型未配置")
 	}
 
-	citations, err := s.loadResourceCitations(ctx, resource, content)
+	replyContext, err := s.loadReplyContext(ctx, sessionID, history, content)
 	if err != nil {
 		return nil, err
 	}
 
 	reply, err := s.responder.Reply(ctx, ChatCompletionInput{
-		Citations: citations,
-		History:   history,
+		Snapshot:  replyContext.Snapshot,
+		Citations: replyContext.Citations,
+		History:   replyContext.History,
 		Message:   content,
-		Resource:  resource,
+		Resource:  replyContext.ActiveResource,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	assistantInputs, err := buildAssistantReplyInputs(content, reply, resource)
+	assistantInputs, err := buildAssistantReplyInputs(content, reply, replyContext.ActiveResource)
 	if err != nil {
 		return nil, err
 	}
@@ -750,23 +761,6 @@ func resolveTaskInstruction(content string, modelInstruction *string) string {
 	return ""
 }
 
-func (s *Service) loadResourceCitations(
-	ctx context.Context,
-	resource *resourceContext,
-	query string,
-) ([]citation.Citation, error) {
-	if s.retriever == nil || resource == nil {
-		return nil, nil
-	}
-
-	trimmedQuery := strings.TrimSpace(query)
-	if trimmedQuery == "" {
-		return nil, nil
-	}
-
-	return s.retriever.SearchByResource(ctx, resource.ID, trimmedQuery, 4)
-}
-
 func hasTaskIntent(content string) bool {
 	keywords := []string{"审阅", "修改", "检查", "优化", "修订", "总结", "整理"}
 	for _, keyword := range keywords {
@@ -786,7 +780,6 @@ type streamAssistantReplyInput struct {
 	content   string
 	emit      func(StreamEvent) error
 	history   []postgres.AssistantMessage
-	resource  *resourceContext
 	sessionID string
 }
 
@@ -795,16 +788,17 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		return errors.New("助手对话模型未配置")
 	}
 
-	citations, err := s.loadResourceCitations(ctx, input.resource, input.content)
+	replyContext, err := s.loadReplyContext(ctx, input.sessionID, input.history, input.content)
 	if err != nil {
 		return err
 	}
 
 	stream, err := s.responder.Stream(ctx, ChatCompletionInput{
-		Citations: citations,
-		History:   input.history,
+		Snapshot:  replyContext.Snapshot,
+		Citations: replyContext.Citations,
+		History:   replyContext.History,
 		Message:   input.content,
-		Resource:  input.resource,
+		Resource:  replyContext.ActiveResource,
 	})
 	if err != nil {
 		return mapAssistantStreamError(err)
@@ -850,7 +844,7 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		}
 	}
 
-	assistantInputs, err := buildAssistantReplyInputs(input.content, result, input.resource)
+	assistantInputs, err := buildAssistantReplyInputs(input.content, result, replyContext.ActiveResource)
 	if err != nil {
 		return NewStreamError(StreamErrorCodeEmptyReply, "本轮没有生成可展示内容。", err)
 	}
@@ -970,4 +964,26 @@ func mapAssistantStreamError(err error) error {
 	default:
 		return NewStreamError(StreamErrorCodeStreamFailed, "助手流式回复失败，请重试。", err)
 	}
+}
+
+func (s *Service) loadReplyContext(
+	ctx context.Context,
+	sessionID string,
+	history []postgres.AssistantMessage,
+	currentMessage string,
+) (*ReplyContext, error) {
+	if s.contextLoader == nil {
+		s.contextLoader = NewContextLoader(snapshotReaderFromProjector(s.projector), s.retriever)
+	}
+
+	return s.contextLoader.LoadForReply(ctx, sessionID, history, currentMessage)
+}
+
+func snapshotReaderFromProjector(projector sessionContextProjector) sessionContextSnapshotReader {
+	concrete, ok := projector.(*SessionContextProjector)
+	if !ok || concrete == nil {
+		return nil
+	}
+
+	return concrete.repo
 }

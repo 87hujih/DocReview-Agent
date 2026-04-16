@@ -56,6 +56,7 @@ type chatStreamResultProvider interface {
 
 // ChatCompletionInput 描述一次助手回复所需的会话上下文。
 type ChatCompletionInput struct {
+	Snapshot  *SessionContextSnapshot
 	Citations []citation.Citation
 	History   []postgres.AssistantMessage
 	Message   string
@@ -235,9 +236,13 @@ func buildSystemPrompt(input ChatCompletionInput) string {
 func buildRuntimeContext(input ChatCompletionInput) string {
 	var sections []string
 
+	if snapshotProjection := buildSnapshotProjection(input.Snapshot); snapshotProjection != "" {
+		sections = append(sections, snapshotProjection)
+	}
+
 	if input.Resource != nil {
 		sections = append(sections, fmt.Sprintf(
-			"当前最近可用资源：标题=%s；来源=%s；资源ID=%s。",
+			"本轮检索所用资源：标题=%s；来源=%s；资源ID=%s。",
 			input.Resource.Title,
 			input.Resource.Source,
 			input.Resource.ID,
@@ -261,6 +266,65 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 	}
 
 	return strings.Join(sections, "\n\n")
+}
+
+func buildSnapshotProjection(snapshot *SessionContextSnapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+
+	lines := []string{"当前会话快照："}
+	if snapshot.ActiveResource != nil {
+		lines = append(lines, fmt.Sprintf(
+			"- 当前活跃资源：%s（来源=%s，资源ID=%s）。",
+			snapshot.ActiveResource.Title,
+			snapshot.ActiveResource.SourceType,
+			snapshot.ActiveResource.ID,
+		))
+	} else {
+		lines = append(lines, "- 当前活跃资源：未记录。")
+	}
+
+	if snapshot.PendingTaskSuggestion != nil {
+		lines = append(lines, fmt.Sprintf(
+			"- 待确认任务建议：%s（消息ID=%s）。",
+			snapshot.PendingTaskSuggestion.Instruction,
+			snapshot.PendingTaskSuggestion.MessageID,
+		))
+	} else {
+		lines = append(lines, "- 待确认任务建议：无。")
+	}
+
+	if snapshot.LatestTask != nil {
+		lines = append(lines, fmt.Sprintf(
+			"- 最近真实任务：ID=%s；状态=%s。",
+			snapshot.LatestTask.ID,
+			snapshot.LatestTask.Status,
+		))
+	} else {
+		lines = append(lines, "- 最近真实任务：无。")
+	}
+
+	if len(snapshot.ConfirmedConstraints) > 0 {
+		parts := make([]string, 0, len(snapshot.ConfirmedConstraints))
+		for _, constraint := range snapshot.ConfirmedConstraints {
+			label := strings.TrimSpace(constraint.Label)
+			value := strings.TrimSpace(constraint.Value)
+			if label == "" || value == "" {
+				continue
+			}
+			parts = append(parts, label+"="+value)
+		}
+		if len(parts) > 0 {
+			lines = append(lines, "- 已确认约束："+strings.Join(parts, "；"))
+		}
+	}
+
+	if snapshot.RollingSummary != nil && strings.TrimSpace(*snapshot.RollingSummary) != "" {
+		lines = append(lines, "- 已有滚动摘要："+strings.TrimSpace(*snapshot.RollingSummary))
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func buildHistoryMessages(history []postgres.AssistantMessage) []*schema.Message {
