@@ -197,34 +197,9 @@ func (r *AssistantRepo) AppendMessages(ctx context.Context, sessionID string, in
 		_ = tx.Rollback(ctx)
 	}()
 
-	var lockedSessionID string
-	if err := tx.QueryRow(ctx, `
-		SELECT id
-		FROM assistant_sessions
-		WHERE id = $1
-		FOR UPDATE
-	`, sessionID).Scan(&lockedSessionID); err != nil {
-		return nil, err
-	}
-
-	var currentMaxSequence int
-	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(MAX(sequence_no), 0)
-		FROM assistant_messages
-		WHERE session_id = $1
-	`, sessionID).Scan(&currentMaxSequence); err != nil {
-		return nil, err
-	}
-
-	messages, lastMessageAt, err := insertAssistantMessages(ctx, tx, sessionID, currentMaxSequence, inputs)
+	messages, err := appendAssistantMessagesTx(ctx, tx, sessionID, inputs)
 	if err != nil {
 		return nil, err
-	}
-
-	if !lastMessageAt.IsZero() {
-		if _, err := updateAssistantSessionTimestamp(ctx, tx, sessionID, lastMessageAt); err != nil {
-			return nil, err
-		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -272,6 +247,49 @@ func insertAssistantMessages(
 	}
 
 	return messages, lastMessageAt, nil
+}
+
+func appendAssistantMessagesTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	sessionID string,
+	inputs []AssistantMessageInput,
+) ([]AssistantMessage, error) {
+	if len(inputs) == 0 {
+		return []AssistantMessage{}, nil
+	}
+
+	var lockedSessionID string
+	if err := tx.QueryRow(ctx, `
+		SELECT id
+		FROM assistant_sessions
+		WHERE id = $1
+		FOR UPDATE
+	`, sessionID).Scan(&lockedSessionID); err != nil {
+		return nil, err
+	}
+
+	var currentMaxSequence int
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(MAX(sequence_no), 0)
+		FROM assistant_messages
+		WHERE session_id = $1
+	`, sessionID).Scan(&currentMaxSequence); err != nil {
+		return nil, err
+	}
+
+	messages, lastMessageAt, err := insertAssistantMessages(ctx, tx, sessionID, currentMaxSequence, inputs)
+	if err != nil {
+		return nil, err
+	}
+
+	if !lastMessageAt.IsZero() {
+		if _, err := updateAssistantSessionTimestamp(ctx, tx, sessionID, lastMessageAt); err != nil {
+			return nil, err
+		}
+	}
+
+	return messages, nil
 }
 
 func updateAssistantSessionTimestamp(ctx context.Context, tx pgx.Tx, sessionID string, timestamp time.Time) (AssistantSession, error) {

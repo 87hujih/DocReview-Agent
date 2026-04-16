@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import { getFileDownloadURL } from "../../lib/api/files";
+import { formatStatusLabel } from "../../lib/terminal";
 import type { AssistantRenderableMessage } from "../../lib/assistant/types";
 import styles from "./assistant-message-list.module.css";
 
@@ -95,7 +96,32 @@ export function AssistantMessageList({
                 </time>
               </div>
               <h3 className={styles.cardTitle}>{message.payload.instruction}</h3>
-              <p className={styles.cardMeta}>任务状态：{message.payload.status}</p>
+              <p className={styles.cardMeta}>任务状态：{formatStatusLabel(message.payload.status)}</p>
+              <Link className={styles.linkButton} href={message.payload.detail_url}>
+                打开任务详情
+              </Link>
+            </section>
+          );
+        }
+
+        if (message.kind === "task_status") {
+          return (
+            <section key={message.id} className={styles.card}>
+              <div className={styles.labelRow}>
+                <p className={styles.cardLabel}>任务结果</p>
+                <time className={styles.timestamp} dateTime={message.created_at}>
+                  {formatTime(message.created_at)}
+                </time>
+              </div>
+              <h3 className={styles.cardTitle}>{message.payload.title}</h3>
+              <p className={styles.cardBody}>{message.payload.instruction}</p>
+              <p className={styles.cardMeta}>任务状态：{formatStatusLabel(message.payload.status)}</p>
+              <p className={styles.cardStatus}>{message.payload.status_message}</p>
+              {message.payload.result_url ? (
+                <Link className={styles.linkButton} href={message.payload.result_url}>
+                  查看修订结果
+                </Link>
+              ) : null}
               <Link className={styles.linkButton} href={message.payload.detail_url}>
                 打开任务详情
               </Link>

@@ -66,7 +66,8 @@ export function getStatusTone(status?: string | null): "default" | "success" | "
 }
 
 export function isTerminalStatus(status?: string | null): boolean {
-  return status === "completed" || status === "failed";
+  const normalized = (status || "").trim().toLowerCase();
+  return normalized === "completed" || normalized === "failed";
 }
 
 export function toIsoSeconds(value?: Date | string | null): string {

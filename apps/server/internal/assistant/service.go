@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"agent_project/apps/server/internal/knowledge/citation"
@@ -481,7 +482,7 @@ func (s *Service) ConfirmTaskSuggestion(ctx context.Context, messageID string) (
 	}
 
 	input, err := buildMessageInput(RoleAssistant, KindTaskCreated, TaskCreatedPayload{
-		DetailURL:           "/tasks/" + task.ID,
+		DetailURL:           buildTaskDetailURL(task.ID, message.SessionID),
 		Instruction:         task.Instruction,
 		ResourceID:          task.ResourceID,
 		Status:              task.Status,
@@ -774,6 +775,27 @@ func hasTaskIntent(content string) bool {
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+func buildTaskDetailURL(taskID string, sessionID string) string {
+	return buildSessionAwareURL("/tasks/"+taskID, sessionID)
+}
+
+func buildResourceDetailURL(resourceID string, sessionID string) string {
+	return buildSessionAwareURL("/resources/"+resourceID, sessionID)
+}
+
+func buildSessionAwareURL(path string, sessionID string) string {
+	values := url.Values{}
+	if strings.TrimSpace(sessionID) != "" {
+		values.Set("session", sessionID)
+	}
+
+	if encoded := values.Encode(); encoded != "" {
+		return path + "?" + encoded
+	}
+
+	return path
 }
 
 type streamAssistantReplyInput struct {

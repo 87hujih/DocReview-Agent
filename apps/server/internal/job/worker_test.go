@@ -83,7 +83,7 @@ func TestWorkerProcessesJob(t *testing.T) {
 	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
 	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
 	eventService := taskevents.New(eventRepo)
-	worker := New(jobRepo, exec, taskRepo, 1, eventService, nil)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService, nil, nil)
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -207,7 +207,7 @@ func TestWorkerMarksTaskFailedWhenExecutionFails(t *testing.T) {
 	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
 	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
 	eventService := taskevents.New(eventRepo)
-	worker := New(jobRepo, exec, taskRepo, 1, eventService, nil)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService, nil, nil)
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -336,7 +336,7 @@ func TestWorkerProcessesJobProjectsCompletedSnapshot(t *testing.T) {
 	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
 	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
 	eventService := taskevents.New(eventRepo)
-	worker := New(jobRepo, exec, taskRepo, 1, eventService, projector)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService, projector, nil)
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -430,7 +430,7 @@ func TestWorkerMarksTaskFailedProjectsFailedSnapshot(t *testing.T) {
 	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
 	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
 	eventService := taskevents.New(eventRepo)
-	worker := New(jobRepo, exec, taskRepo, 1, eventService, projector)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService, projector, nil)
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -462,6 +462,31 @@ func TestWorkerMarksTaskFailedProjectsFailedSnapshot(t *testing.T) {
 	}
 
 	t.Fatal("timed out waiting for worker to project failed snapshot")
+}
+
+func TestTaskStatusNotifierWorkerSyncsTerminalStatuses(t *testing.T) {
+	projector := &recordingJobProjector{}
+	notifier := &recordingJobNotifier{}
+	worker := New(nil, nil, nil, 1, nil, projector, notifier)
+	task := &postgres.Task{ID: "task-terminal-1"}
+
+	worker.syncTaskStatusSideEffects(context.Background(), task, models.StatusCompleted)
+	if len(projector.statuses) != 1 || projector.statuses[0] != models.StatusCompleted {
+		t.Fatalf("expected projector to record %q once, got %#v", models.StatusCompleted, projector.statuses)
+	}
+	if len(notifier.statuses) != 1 || notifier.statuses[0] != models.StatusCompleted {
+		t.Fatalf("expected notifier to record %q once, got %#v", models.StatusCompleted, notifier.statuses)
+	}
+
+	projector.statuses = nil
+	notifier.statuses = nil
+	worker.syncTaskStatusSideEffects(context.Background(), task, models.StatusExecuting)
+	if len(projector.statuses) != 1 || projector.statuses[0] != models.StatusExecuting {
+		t.Fatalf("expected projector to record %q once, got %#v", models.StatusExecuting, projector.statuses)
+	}
+	if len(notifier.statuses) != 0 {
+		t.Fatalf("expected notifier to ignore non-terminal status, got %#v", notifier.statuses)
+	}
 }
 
 func TestWorkerFailsLegacyJobWithoutBaseVersion(t *testing.T) {
@@ -530,7 +555,7 @@ func TestWorkerFailsLegacyJobWithoutBaseVersion(t *testing.T) {
 	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
 	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
 	eventService := taskevents.New(eventRepo)
-	worker := New(jobRepo, exec, taskRepo, 1, eventService, nil)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService, nil, nil)
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -653,4 +678,22 @@ func (jobEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error)
 	}
 
 	return vectors, nil
+}
+
+type recordingJobProjector struct {
+	statuses []string
+}
+
+func (r *recordingJobProjector) ProjectTaskStatusChanged(_ context.Context, _ *string, _ string, status string) error {
+	r.statuses = append(r.statuses, status)
+	return nil
+}
+
+type recordingJobNotifier struct {
+	statuses []string
+}
+
+func (r *recordingJobNotifier) Notify(_ context.Context, _ *postgres.Task, status string) error {
+	r.statuses = append(r.statuses, status)
+	return nil
 }

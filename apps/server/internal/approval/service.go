@@ -36,6 +36,10 @@ type taskStatusProjector interface {
 	ProjectTaskStatusChanged(ctx context.Context, sourceMessageID *string, taskID string, status string) error
 }
 
+type taskStatusNotifier interface {
+	Notify(ctx context.Context, task *postgres.Task, status string) error
+}
+
 // Service 负责审批通过/拒绝时的业务协调。
 type Service struct {
 	pool         *pgxpool.Pool
@@ -45,6 +49,7 @@ type Service struct {
 	jobCh        chan<- struct{}
 	eventService *taskevents.Service
 	projector    taskStatusProjector
+	notifier     taskStatusNotifier
 }
 
 // NewService 构造审批服务。
@@ -56,6 +61,7 @@ func NewService(
 	jobCh chan<- struct{},
 	eventService *taskevents.Service,
 	projector taskStatusProjector,
+	notifier taskStatusNotifier,
 ) *Service {
 	return &Service{
 		pool:         pool,
@@ -65,6 +71,7 @@ func NewService(
 		jobCh:        jobCh,
 		eventService: eventService,
 		projector:    projector,
+		notifier:     notifier,
 	}
 }
 
@@ -182,7 +189,7 @@ func (s *Service) Approve(ctx context.Context, approvalID string) (*postgres.App
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	s.projectTaskStatus(ctx, task, models.StatusExecuting)
+	s.syncTaskStatusSideEffects(ctx, task, models.StatusExecuting)
 
 	s.enqueueJob()
 
@@ -254,7 +261,7 @@ func (s *Service) Reject(ctx context.Context, approvalID string, reason string) 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	s.projectTaskStatus(ctx, task, models.StatusFailed)
+	s.syncTaskStatusSideEffects(ctx, task, models.StatusFailed)
 
 	return updatedApproval, nil
 }
@@ -270,6 +277,28 @@ func (s *Service) projectTaskStatus(ctx context.Context, task *postgres.Task, st
 	if err := s.projector.ProjectTaskStatusChanged(projectionCtx, task.SourceMessageID, task.ID, status); err != nil {
 		log.Printf("警告：审批链回写助手上下文快照失败：task=%s status=%s err=%v", task.ID, status, err)
 	}
+}
+
+func (s *Service) syncTaskStatusSideEffects(ctx context.Context, task *postgres.Task, status string) {
+	s.projectTaskStatus(ctx, task, status)
+	s.notifyTaskTerminalStatus(ctx, task, status)
+}
+
+func (s *Service) notifyTaskTerminalStatus(ctx context.Context, task *postgres.Task, status string) {
+	if s.notifier == nil || task == nil || !isTerminalTaskStatus(status) {
+		return
+	}
+
+	notificationCtx, cancel := projectionContext(ctx)
+	defer cancel()
+
+	if err := s.notifier.Notify(notificationCtx, task, status); err != nil {
+		log.Printf("警告：审批链回写助手终态消息失败：task=%s status=%s err=%v", task.ID, status, err)
+	}
+}
+
+func isTerminalTaskStatus(status string) bool {
+	return status == models.StatusCompleted || status == models.StatusFailed
 }
 
 func projectionContext(parent context.Context) (context.Context, context.CancelFunc) {

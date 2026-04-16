@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { CitationList } from "../../../components/citation-list";
@@ -23,12 +23,20 @@ import {
   type TaskStep
 } from "../../../lib/api/tasks";
 import { getResourceExportURL } from "../../../lib/api/resources";
-import { getErrorMessage, isTerminalStatus, toIsoSeconds, truncateId } from "../../../lib/terminal";
+import {
+  formatStatusLabel,
+  getErrorMessage,
+  isTerminalStatus,
+  toIsoSeconds,
+  truncateId
+} from "../../../lib/terminal";
 import styles from "./page.module.css";
 
 export default function TaskDetailPage() {
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const taskId = typeof params.id === "string" ? params.id : "";
+  const sessionId = normalizeSessionId(searchParams.get("session"));
 
   const [artifacts, setArtifacts] = useState<TaskArtifact[]>([]);
   const [artifactsError, setArtifactsError] = useState<string | null>(null);
@@ -191,10 +199,16 @@ export default function TaskDetailPage() {
   const citations = getCitationsArtifact(artifacts);
   const reviewSummary = getReviewSummaryArtifact(artifacts);
   const diffPreview = getDiffPreviewArtifact(artifacts);
-  const hasCompletedResult = task?.status === "completed" && task.resource_id.trim() !== "";
+  const isCompletedTask = task?.status === "completed";
+  const hasResultResource = isCompletedTask && Boolean(task?.resource_id.trim());
+  const assistantHref = buildAssistantSessionHref(sessionId);
+  const assistantLabel = sessionId ? "返回原会话" : "返回助手";
+  const resultHref =
+    hasResultResource && task ? withSessionQuery(`/resources/${task.resource_id}`, sessionId) : null;
   const showArtifactsPlaceholder =
-    artifactsLoaded && citations.length === 0 && !reviewSummary && !diffPreview;
+    artifactsLoaded && citations.length === 0 && !reviewSummary && !diffPreview && !isCompletedTask;
   const showErrorOnly = !isLoading && !task && Boolean(taskError);
+  const showTimeline = !showErrorOnly && (!isCompletedTask || steps.length > 0 || events.length > 0);
 
   return (
     <div className={styles.page}>
@@ -209,7 +223,7 @@ export default function TaskDetailPage() {
           <p className={styles.placeholder}>正在加载任务会话</p>
         ) : !showErrorOnly ? (
           <div className={styles.meta}>
-            <MetaRow label="任务状态" value={task ? task.status : "未知"} />
+            <MetaRow label="任务状态" value={formatStatusLabel(task?.status)} />
             <MetaRow label="id" value={task ? truncateId(task.id, 8, 4) : truncateId(taskId, 8, 4)} />
             <MetaRow label="资源 ID" value={task?.resource_id || "未知"} />
             <MetaRow label="创建时间" value={toIsoSeconds(task?.created_at)} />
@@ -219,25 +233,32 @@ export default function TaskDetailPage() {
         ) : null}
       </TerminalFrame>
 
-      {!showErrorOnly && hasCompletedResult ? (
+      {!showErrorOnly && isCompletedTask ? (
         <TerminalFrame
-          label="修订结果"
-          title="结果出口"
+          label="完成状态"
+          title="流程已完成"
         >
-          <p className={styles.resultText}>任务已完成，最终修订版本已写入资源库。</p>
+          <p className={styles.resultText}>任务流程已执行完成，可以返回助手继续下一步，或查看修订结果。</p>
           <div className={styles.resultActions}>
-            <Link className={styles.resultLink} href={`/resources/${task.resource_id}`}>
-              查看修订结果
+            <Link className={styles.resultLink} href={assistantHref}>
+              {assistantLabel}
             </Link>
-            <Link className={styles.resultLink} href={getResourceExportURL(task.resource_id)}>
-              下载修订结果
-            </Link>
+            {resultHref ? (
+              <Link className={styles.resultLink} href={resultHref}>
+                查看修订结果
+              </Link>
+            ) : null}
+            {hasResultResource ? (
+              <Link className={styles.resultLink} href={getResourceExportURL(task.resource_id)}>
+                下载修订结果
+              </Link>
+            ) : null}
           </div>
         </TerminalFrame>
       ) : null}
 
       {!showErrorOnly && eventsError ? <p className={styles.error}>事件流错误 &gt; {eventsError}</p> : null}
-      {!showErrorOnly ? <TaskTimeline events={events} steps={steps} /> : null}
+      {showTimeline ? <TaskTimeline events={events} steps={steps} /> : null}
 
       {!showErrorOnly && artifactsError ? <p className={styles.error}>产物错误 &gt; {artifactsError}</p> : null}
       {!showErrorOnly && citations.length > 0 ? <CitationList citations={citations} /> : null}
@@ -263,4 +284,25 @@ export default function TaskDetailPage() {
       ) : null}
     </div>
   );
+}
+
+function normalizeSessionId(value: string | null): string | null {
+  const normalized = (value || "").trim();
+  return normalized || null;
+}
+
+function buildAssistantSessionHref(sessionId: string | null): string {
+  if (!sessionId) {
+    return "/";
+  }
+
+  return `/?session=${encodeURIComponent(sessionId)}`;
+}
+
+function withSessionQuery(pathname: string, sessionId: string | null): string {
+  if (!sessionId) {
+    return pathname;
+  }
+
+  return `${pathname}?session=${encodeURIComponent(sessionId)}`;
 }

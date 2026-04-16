@@ -44,16 +44,20 @@ const mockedUploadAssistantFile = vi.mocked(uploadAssistantFile);
 const mockedConfirmAssistantTaskSuggestion = vi.mocked(confirmAssistantTaskSuggestion);
 const mockedDeleteAssistantSession = vi.mocked(deleteAssistantSession);
 
-function renderAssistantShell() {
+function renderAssistantShell(url = "/") {
+  window.history.replaceState({}, "", url);
+  const initialSessionId = new URL(window.location.href).searchParams.get("session");
+
   return render(
     <AppChrome>
-      <AssistantShell />
+      <AssistantShell initialSessionId={initialSessionId} />
     </AppChrome>
   );
 }
 
 describe("AssistantShell", () => {
   beforeEach(() => {
+    window.history.replaceState({}, "", "/");
     mockedGetAssistantSessions.mockReset();
     mockedGetAssistantSession.mockReset();
     mockedGetAssistantCapabilities.mockReset();
@@ -138,6 +142,46 @@ describe("AssistantShell", () => {
       expect(screen.getByText("昨天整理学生守则的思路")).toBeInTheDocument();
     });
     expect(screen.getByText("有什么可以帮到你？")).toBeInTheDocument();
+  });
+
+  it("loads target session from session query on first render", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([
+      {
+        created_at: "2026-04-10T10:00:00Z",
+        id: "session-1",
+        last_message_at: "2026-04-10T10:30:00Z",
+        title: "昨天整理学生守则的思路",
+        updated_at: "2026-04-10T10:30:00Z"
+      }
+    ]);
+    mockedGetAssistantSession.mockResolvedValue({
+      messages: [
+        {
+          created_at: "2026-04-10T10:10:00Z",
+          id: "message-1",
+          kind: "text",
+          payload: {
+            content: "这是指定会话里的历史消息"
+          },
+          role: "assistant",
+          sequence_no: 1
+        }
+      ],
+      session: {
+        created_at: "2026-04-10T10:00:00Z",
+        id: "session-1",
+        last_message_at: "2026-04-10T10:30:00Z",
+        title: "昨天整理学生守则的思路",
+        updated_at: "2026-04-10T10:30:00Z"
+      }
+    });
+
+    renderAssistantShell("/?session=session-1");
+
+    await waitFor(() => {
+      expect(mockedGetAssistantSession).toHaveBeenCalledWith("session-1");
+    });
+    expect(await screen.findByText("这是指定会话里的历史消息")).toBeInTheDocument();
   });
 
   it("collapses and restores the whole left rail instead of only hiding assistant history", async () => {
@@ -293,6 +337,94 @@ describe("AssistantShell", () => {
     await waitFor(() => {
       expect(screen.getByText("昨天那条历史消息")).toBeInTheDocument();
     });
+  });
+
+  it("updates session query after selecting a history item", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([
+      {
+        created_at: "2026-04-10T10:00:00Z",
+        id: "session-1",
+        last_message_at: "2026-04-10T10:30:00Z",
+        title: "昨天整理学生守则的思路",
+        updated_at: "2026-04-10T10:30:00Z"
+      }
+    ]);
+    mockedGetAssistantSession.mockResolvedValue({
+      messages: [
+        {
+          created_at: "2026-04-10T10:10:00Z",
+          id: "message-1",
+          kind: "text",
+          payload: {
+            content: "昨天那条历史消息"
+          },
+          role: "assistant",
+          sequence_no: 1
+        }
+      ],
+      session: {
+        created_at: "2026-04-10T10:00:00Z",
+        id: "session-1",
+        last_message_at: "2026-04-10T10:30:00Z",
+        title: "昨天整理学生守则的思路",
+        updated_at: "2026-04-10T10:30:00Z"
+      }
+    });
+
+    renderAssistantShell();
+
+    fireEvent.click(await screen.findByRole("button", { name: "打开会话 昨天整理学生守则的思路" }));
+
+    await waitFor(() => {
+      expect(mockedGetAssistantSession).toHaveBeenCalledWith("session-1");
+    });
+    expect(window.location.search).toBe("?session=session-1");
+  });
+
+  it("clears session query after starting a new conversation", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([
+      {
+        created_at: "2026-04-10T10:00:00Z",
+        id: "session-1",
+        last_message_at: "2026-04-10T10:30:00Z",
+        title: "昨天整理学生守则的思路",
+        updated_at: "2026-04-10T10:30:00Z"
+      }
+    ]);
+    mockedGetAssistantSession.mockResolvedValue({
+      messages: [
+        {
+          created_at: "2026-04-10T10:10:00Z",
+          id: "message-1",
+          kind: "text",
+          payload: {
+            content: "这是指定会话里的历史消息"
+          },
+          role: "assistant",
+          sequence_no: 1
+        }
+      ],
+      session: {
+        created_at: "2026-04-10T10:00:00Z",
+        id: "session-1",
+        last_message_at: "2026-04-10T10:30:00Z",
+        title: "昨天整理学生守则的思路",
+        updated_at: "2026-04-10T10:30:00Z"
+      }
+    });
+
+    renderAssistantShell("/?session=session-1");
+
+    await waitFor(() => {
+      expect(mockedGetAssistantSession).toHaveBeenCalledWith("session-1");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "新对话" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("有什么可以帮到你？")).toBeInTheDocument();
+    });
+    expect(window.location.search).toBe("");
   });
 
   it("stops generation and shows a stopped-turn message", async () => {

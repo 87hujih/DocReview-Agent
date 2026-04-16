@@ -123,12 +123,12 @@ func TestUploadApproveExecuteAndExportFlow(t *testing.T) {
 
 	versionIndexer := indexer.NewService(resourceRepo, flowEmbedder{})
 	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
-	worker := job.New(jobRepo, exec, taskRepo, 1, taskevents.New(eventRepo), nil)
+	worker := job.New(jobRepo, exec, taskRepo, 1, taskevents.New(eventRepo), nil, nil)
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	worker.Start(workerCtx, 1)
 
-	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), taskevents.New(eventRepo), nil)
+	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), taskevents.New(eventRepo), nil, nil)
 	if _, err := approvalService.Approve(ctx, approvalRecord.ID); err != nil {
 		t.Fatalf("approve task: %v", err)
 	}

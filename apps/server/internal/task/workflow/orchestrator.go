@@ -31,6 +31,7 @@ type Orchestrator struct {
 	eventService    *taskevents.Service
 	contextMaxRunes int
 	projector       taskStatusProjector
+	notifier        taskStatusNotifier
 }
 
 type plannerRunner interface {
@@ -53,6 +54,10 @@ type taskStatusProjector interface {
 	ProjectTaskStatusChanged(ctx context.Context, sourceMessageID *string, taskID string, status string) error
 }
 
+type taskStatusNotifier interface {
+	Notify(ctx context.Context, task *postgres.Task, status string) error
+}
+
 // New 构造任务编排器。contextMaxRunes 限制传给审阅和编辑代理的上下文字符数（≤0 使用 24000 默认值）。
 func New(
 	taskRepo *postgres.TaskRepo,
@@ -65,6 +70,7 @@ func New(
 	eventService *taskevents.Service,
 	contextMaxRunes int,
 	projector taskStatusProjector,
+	notifier taskStatusNotifier,
 ) *Orchestrator {
 	return &Orchestrator{
 		taskRepo:        taskRepo,
@@ -77,6 +83,7 @@ func New(
 		eventService:    eventService,
 		contextMaxRunes: contextMaxRunes,
 		projector:       projector,
+		notifier:        notifier,
 	}
 }
 
@@ -286,7 +293,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		if err := o.transitionTask(ctx, task, models.StatusCompleted, nil); err != nil {
 			o.failTask(ctx, task, nil, err)
 		}
-		o.projectTaskStatus(ctx, task, models.StatusCompleted)
+		o.syncTaskStatusSideEffects(ctx, task, models.StatusCompleted)
 		return
 	}
 
@@ -405,7 +412,7 @@ func (o *Orchestrator) failTask(ctx context.Context, task *postgres.Task, step *
 				"to_status":     models.StatusFailed,
 			},
 		})
-		o.projectTaskStatus(cleanupCtx, task, models.StatusFailed)
+		o.syncTaskStatusSideEffects(cleanupCtx, task, models.StatusFailed)
 	}
 }
 
@@ -427,6 +434,28 @@ func (o *Orchestrator) projectTaskStatus(ctx context.Context, task *postgres.Tas
 	if err := o.projector.ProjectTaskStatusChanged(projectionCtx, task.SourceMessageID, task.ID, status); err != nil {
 		log.Printf("警告：回写助手上下文快照失败：task=%s status=%s err=%v", task.ID, status, err)
 	}
+}
+
+func (o *Orchestrator) syncTaskStatusSideEffects(ctx context.Context, task *postgres.Task, status string) {
+	o.projectTaskStatus(ctx, task, status)
+	o.notifyTaskTerminalStatus(ctx, task, status)
+}
+
+func (o *Orchestrator) notifyTaskTerminalStatus(ctx context.Context, task *postgres.Task, status string) {
+	if o.notifier == nil || task == nil || !isTerminalTaskStatus(status) {
+		return
+	}
+
+	notificationCtx, cancel := failureContext(ctx)
+	defer cancel()
+
+	if err := o.notifier.Notify(notificationCtx, task, status); err != nil {
+		log.Printf("警告：任务终态回写助手会话失败：task=%s status=%s err=%v", task.ID, status, err)
+	}
+}
+
+func isTerminalTaskStatus(status string) bool {
+	return status == models.StatusCompleted || status == models.StatusFailed
 }
 
 func (o *Orchestrator) recordStepEvent(

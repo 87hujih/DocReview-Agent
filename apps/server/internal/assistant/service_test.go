@@ -695,6 +695,54 @@ func TestConfirmTaskSuggestionCreatesTaskCreatedMessage(t *testing.T) {
 	}
 }
 
+func TestConfirmTaskSuggestionTaskCreatedDetailURLIncludesSessionQuery(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("student-manual")
+	resourceID := "resource-1"
+
+	suggestionMessage := repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-suggestion",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindTaskSuggestion,
+		SequenceNo: 1,
+		Payload: mustJSON(t, TaskSuggestionPayload{
+			ActionLabel:   "确认创建任务",
+			CanCreate:     true,
+			Instruction:   "请修订第二章",
+			ResourceID:    &resourceID,
+			ResourceLabel: "学生手册 · upload",
+			StatusMessage: "资源已明确，可以创建任务。",
+			Title:         "建议创建任务",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{
+		result: &postgres.Task{
+			ID:          "task-1",
+			ResourceID:  resourceID,
+			Instruction: "请修订第二章",
+			Status:      "pending",
+		},
+	}, &fakeChatResponder{}, nil)
+
+	result, err := service.ConfirmTaskSuggestion(context.Background(), suggestionMessage.ID)
+	if err != nil {
+		t.Fatalf("confirm task suggestion: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 appended message, got %d", len(result.Messages))
+	}
+
+	createdPayload := decodeTaskCreatedPayload(t, result.Messages[0].Payload)
+	expectedURL := "/tasks/task-1?session=" + session.ID
+	if createdPayload.DetailURL != expectedURL {
+		t.Fatalf("expected detail url %q, got %q", expectedURL, createdPayload.DetailURL)
+	}
+}
+
 func TestConfirmTaskSuggestionProjectsLatestTaskIntoSnapshot(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")

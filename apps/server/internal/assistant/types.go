@@ -14,6 +14,7 @@ const (
 	KindSessionFile    = "session_file"
 	KindSystem         = "system"
 	KindTaskCreated    = "task_created"
+	KindTaskStatus     = "task_status"
 	KindTaskSuggestion = "task_suggestion"
 	KindText           = "text"
 )
@@ -151,6 +152,18 @@ type TaskCreatedPayload struct {
 	Status              string `json:"status"`
 	SuggestionMessageID string `json:"suggestion_message_id"`
 	TaskID              string `json:"task_id"`
+}
+
+// TaskStatusPayload 表示任务终态回写到会话后的结构化消息。
+type TaskStatusPayload struct {
+	DetailURL     string `json:"detail_url"`
+	Instruction   string `json:"instruction"`
+	ResourceID    string `json:"resource_id"`
+	ResultURL     string `json:"result_url,omitempty"`
+	Status        string `json:"status"`
+	StatusMessage string `json:"status_message"`
+	TaskID        string `json:"task_id"`
+	Title         string `json:"title"`
 }
 
 // SessionFilePayload 表示当前会话中一个已导入资源库的文件。

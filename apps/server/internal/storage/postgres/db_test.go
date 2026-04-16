@@ -49,6 +49,7 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 		"resource_chunks",
 		"assistant_sessions",
 		"assistant_messages",
+		"assistant_task_notifications",
 		"session_context_snapshots",
 		"tasks",
 		"task_steps",
@@ -255,6 +256,54 @@ func TestMigrationAddsExecutionChainBaseVersionColumns(t *testing.T) {
 		if column.IsNullable != expectedNullable {
 			t.Fatalf("expected %s nullable=%s, got %s", key, expectedNullable, column.IsNullable)
 		}
+	}
+}
+
+func TestMigrationCreatesAssistantTaskNotificationsTable(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	var tableCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM information_schema.tables
+		WHERE table_schema = current_schema()
+		  AND table_name = 'assistant_task_notifications'
+	`).Scan(&tableCount); err != nil {
+		t.Fatalf("query assistant_task_notifications table: %v", err)
+	}
+	if tableCount != 1 {
+		t.Fatalf("expected assistant_task_notifications table to exist once, got %d", tableCount)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT kcu.column_name
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu
+		  ON tc.constraint_name = kcu.constraint_name
+		 AND tc.table_schema = kcu.table_schema
+		WHERE tc.table_schema = current_schema()
+		  AND tc.table_name = 'assistant_task_notifications'
+		  AND tc.constraint_type = 'PRIMARY KEY'
+		ORDER BY kcu.ordinal_position
+	`)
+	if err != nil {
+		t.Fatalf("query assistant_task_notifications primary key: %v", err)
+	}
+	defer rows.Close()
+
+	pkColumns, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collect assistant_task_notifications primary key columns: %v", err)
+	}
+
+	expectedColumns := []string{"task_id", "status"}
+	if !reflect.DeepEqual(pkColumns, expectedColumns) {
+		t.Fatalf("expected assistant_task_notifications primary key columns %v, got %v", expectedColumns, pkColumns)
 	}
 }
 

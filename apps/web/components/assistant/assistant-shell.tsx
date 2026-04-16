@@ -34,13 +34,17 @@ import styles from "./assistant-shell.module.css";
 type HistoryStatus = "history_error" | "history_ready" | "loading_history";
 type TurnStatus = "confirming_task" | "idle" | "loading_conversation" | "stopping" | "streaming" | "uploading_file";
 
+type AssistantShellProps = {
+  initialSessionId?: string | null;
+};
+
 const FALLBACK_UPLOAD_CAPABILITIES: AssistantUploadCapabilities = {
   accept: ".md,.txt",
   hint: "支持 md、txt",
   supported_extensions: [".md", ".txt"]
 };
 
-export function AssistantShell() {
+export function AssistantShell({ initialSessionId = null }: AssistantShellProps) {
   const { railCollapsed, setRailCollapsed } = useAppChrome();
   const [sessions, setSessions] = useState<AssistantSession[]>([]);
   const [currentSession, setCurrentSession] = useState<AssistantSession | null>(null);
@@ -54,6 +58,7 @@ export function AssistantShell() {
   const [historyHost, setHistoryHost] = useState<HTMLElement | null>(null);
   const [uploadCapabilities, setUploadCapabilities] = useState<AssistantUploadCapabilities>(FALLBACK_UPLOAD_CAPABILITIES);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const initialSessionIdRef = useRef(normalizeSessionId(initialSessionId));
   const localMessageCounterRef = useRef(0);
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
   const turnTokenRef = useRef(0);
@@ -70,9 +75,11 @@ export function AssistantShell() {
         return;
       }
 
+      const loadedSessions = historyResult.status === "fulfilled" ? historyResult.value : [];
+
       startTransition(() => {
         if (historyResult.status === "fulfilled") {
-          setSessions(historyResult.value);
+          setSessions(loadedSessions);
           setHistoryError(null);
           setHistoryStatus("history_ready");
         } else {
@@ -86,6 +93,49 @@ export function AssistantShell() {
           setUploadCapabilities(FALLBACK_UPLOAD_CAPABILITIES);
         }
       });
+
+      const requestedSessionId = initialSessionIdRef.current;
+      initialSessionIdRef.current = null;
+      if (historyResult.status !== "fulfilled" || requestedSessionId === null) {
+        return;
+      }
+      if (!loadedSessions.some((session) => session.id === requestedSessionId)) {
+        replaceSessionQuery(null);
+        return;
+      }
+
+      startTransition(() => {
+        setActionNotice(null);
+        setTurnStatus("loading_conversation");
+      });
+
+      try {
+        const result = await getAssistantSession(requestedSessionId);
+        if (!active) {
+          return;
+        }
+
+        replaceSessionQuery(result.session.id);
+        startTransition(() => {
+          setCurrentSession(result.session);
+          setMessages(result.messages);
+          setSessions((current) => upsertSession(current.length > 0 ? current : loadedSessions, result.session));
+          setStickToBottom(true);
+          setTurnStatus("idle");
+        });
+      } catch {
+        if (!active) {
+          return;
+        }
+
+        replaceSessionQuery(null);
+        startTransition(() => {
+          setCurrentSession(null);
+          setMessages([]);
+          setStickToBottom(true);
+          setTurnStatus("idle");
+        });
+      }
     }
 
     void loadInitialData();
@@ -138,6 +188,7 @@ export function AssistantShell() {
     invalidateCurrentTurn(turnTokenRef);
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
+    replaceSessionQuery(null);
     startTransition(() => {
       setCurrentSession(null);
       setMessages([]);
@@ -158,6 +209,7 @@ export function AssistantShell() {
 
     try {
       const result = await getAssistantSession(sessionId);
+      replaceSessionQuery(result.session.id);
       setCurrentSession(result.session);
       setMessages(result.messages);
       setStickToBottom(true);
@@ -207,6 +259,7 @@ export function AssistantShell() {
       switch (event.type) {
         case "session_created":
           sessionSnapshot = event.session;
+          replaceSessionQuery(event.session.id);
           startTransition(() => {
             setCurrentSession(event.session);
             setSessions((current) => upsertSession(current, event.session));
@@ -595,4 +648,29 @@ function buildUploadHintFromExtensions(supportedExtensions: string[]): string {
   }
 
   return `支持 ${supportedExtensions.map((extension) => extension.replace(/^\./, "")).join("、")}`;
+}
+
+function normalizeSessionId(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+function replaceSessionQuery(sessionId: string | null) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  if (sessionId) {
+    url.searchParams.set("session", sessionId);
+  } else {
+    url.searchParams.delete("session");
+  }
+
+  const nextURL = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(window.history.state, "", nextURL || "/");
 }

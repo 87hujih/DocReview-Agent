@@ -58,6 +58,7 @@ func TestOrchestratorRecordsCoreTaskEvents(t *testing.T) {
 		eventService,
 		0, // use default contextMaxRunes
 		nil,
+		nil,
 	)
 
 	orchestrator.Orchestrate(ctx, task)
@@ -114,6 +115,7 @@ func TestOrchestratorMarksTaskFailedWhenExecutionContextExpires(t *testing.T) {
 		fakeRetrieverService{},
 		eventService,
 		0,
+		nil,
 		nil,
 	)
 
@@ -209,6 +211,7 @@ func TestOrchestratorProjectsSnapshotStatusTransitions(t *testing.T) {
 			eventService,
 			0,
 			projector,
+			nil,
 		)
 
 		orchestrator.Orchestrate(ctx, task)
@@ -266,6 +269,7 @@ func TestOrchestratorProjectsSnapshotStatusTransitions(t *testing.T) {
 			eventService,
 			0,
 			projector,
+			nil,
 		)
 
 		orchestrator.Orchestrate(ctx, task)
@@ -320,6 +324,7 @@ func TestOrchestratorProjectsSnapshotStatusTransitions(t *testing.T) {
 			eventService,
 			0,
 			projector,
+			nil,
 		)
 
 		orchestrator.Orchestrate(ctx, task)
@@ -332,6 +337,43 @@ func TestOrchestratorProjectsSnapshotStatusTransitions(t *testing.T) {
 			t.Fatalf("expected snapshot latest_task_status %q, got %#v", models.StatusFailed, snapshot)
 		}
 	})
+}
+
+func TestTaskStatusNotifierOrchestratorSyncsTerminalStatuses(t *testing.T) {
+	task := &postgres.Task{ID: "task-terminal-1"}
+	projector := &recordingWorkflowProjector{}
+	notifier := &recordingWorkflowNotifier{}
+	orchestrator := New(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		0,
+		projector,
+		notifier,
+	)
+
+	orchestrator.syncTaskStatusSideEffects(context.Background(), task, models.StatusCompleted)
+	if len(projector.statuses) != 1 || projector.statuses[0] != models.StatusCompleted {
+		t.Fatalf("expected projector to record %q once, got %#v", models.StatusCompleted, projector.statuses)
+	}
+	if len(notifier.statuses) != 1 || notifier.statuses[0] != models.StatusCompleted {
+		t.Fatalf("expected notifier to record %q once, got %#v", models.StatusCompleted, notifier.statuses)
+	}
+
+	projector.statuses = nil
+	notifier.statuses = nil
+	orchestrator.syncTaskStatusSideEffects(context.Background(), task, models.StatusAwaitingApproval)
+	if len(projector.statuses) != 1 || projector.statuses[0] != models.StatusAwaitingApproval {
+		t.Fatalf("expected projector to record %q once, got %#v", models.StatusAwaitingApproval, projector.statuses)
+	}
+	if len(notifier.statuses) != 0 {
+		t.Fatalf("expected notifier to ignore non-terminal status, got %#v", notifier.statuses)
+	}
 }
 
 type fakePlannerAgent struct{}
@@ -399,6 +441,24 @@ func (fakeRetrieverService) SearchByResource(context.Context, string, string, in
 			Snippet:      "考勤条款原文",
 		},
 	}, nil
+}
+
+type recordingWorkflowProjector struct {
+	statuses []string
+}
+
+func (r *recordingWorkflowProjector) ProjectTaskStatusChanged(_ context.Context, _ *string, _ string, status string) error {
+	r.statuses = append(r.statuses, status)
+	return nil
+}
+
+type recordingWorkflowNotifier struct {
+	statuses []string
+}
+
+func (r *recordingWorkflowNotifier) Notify(_ context.Context, _ *postgres.Task, status string) error {
+	r.statuses = append(r.statuses, status)
+	return nil
 }
 
 func newWorkflowTestPool(t *testing.T) *pgxpool.Pool {

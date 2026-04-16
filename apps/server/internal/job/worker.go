@@ -19,14 +19,19 @@ type taskStatusProjector interface {
 	ProjectTaskStatusChanged(ctx context.Context, sourceMessageID *string, taskID string, status string) error
 }
 
+type taskStatusNotifier interface {
+	Notify(ctx context.Context, task *postgres.Task, status string) error
+}
+
 // Worker 负责消费执行作业并推动任务完成。
 type Worker struct {
-	jobCh    chan struct{}
-	jobRepo  *postgres.JobRepo
-	executor *executoragent.Executor
-	taskRepo *postgres.TaskRepo
-	eventSvc *taskevents.Service
+	jobCh     chan struct{}
+	jobRepo   *postgres.JobRepo
+	executor  *executoragent.Executor
+	taskRepo  *postgres.TaskRepo
+	eventSvc  *taskevents.Service
 	projector taskStatusProjector
+	notifier  taskStatusNotifier
 }
 
 // New 构造 channel-based worker。
@@ -37,18 +42,20 @@ func New(
 	bufSize int,
 	eventService *taskevents.Service,
 	projector taskStatusProjector,
+	notifier taskStatusNotifier,
 ) *Worker {
 	if bufSize <= 0 {
 		bufSize = 1
 	}
 
 	return &Worker{
-		jobCh:    make(chan struct{}, bufSize),
-		jobRepo:  jobRepo,
-		executor: executor,
-		taskRepo: taskRepo,
-		eventSvc: eventService,
+		jobCh:     make(chan struct{}, bufSize),
+		jobRepo:   jobRepo,
+		executor:  executor,
+		taskRepo:  taskRepo,
+		eventSvc:  eventService,
 		projector: projector,
+		notifier:  notifier,
 	}
 }
 
@@ -103,7 +110,7 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 		if finalizeErr := w.finalizeJobFailure(ctx, job, errorMessage, "执行作业执行失败"); finalizeErr != nil {
 			log.Printf("错误：原子收尾失败作业失败：job=%s err=%v", job.ID, finalizeErr)
 		} else {
-			w.projectTaskStatus(ctx, job.TaskID, "failed")
+			w.syncTaskStatusSideEffectsByTaskID(ctx, job.TaskID, "failed")
 		}
 		return
 	}
@@ -115,16 +122,16 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 		if finalizeErr := w.finalizeJobFailure(ctx, job, errorMessage, "执行作业落库失败"); finalizeErr != nil {
 			log.Printf("错误：回退作业到 failed 状态失败：job=%s err=%v", job.ID, finalizeErr)
 		} else {
-			w.projectTaskStatus(ctx, job.TaskID, "failed")
+			w.syncTaskStatusSideEffectsByTaskID(ctx, job.TaskID, "failed")
 		}
 		return
 	}
 
 	if result.JobStatus == "failed" {
-		w.projectTaskStatus(ctx, job.TaskID, "failed")
+		w.syncTaskStatusSideEffectsByTaskID(ctx, job.TaskID, "failed")
 		return
 	}
-	w.projectTaskStatus(ctx, job.TaskID, "completed")
+	w.syncTaskStatusSideEffectsByTaskID(ctx, job.TaskID, "completed")
 }
 
 func (w *Worker) finalizeJobSuccess(ctx context.Context, job *postgres.ExecutionJob, newVersionID string) error {
@@ -329,8 +336,11 @@ func dereferenceString(value *string) string {
 	return *value
 }
 
-func (w *Worker) projectTaskStatus(ctx context.Context, taskID string, status string) {
-	if w.projector == nil {
+func (w *Worker) syncTaskStatusSideEffectsByTaskID(ctx context.Context, taskID string, status string) {
+	if w.projector == nil && w.notifier == nil {
+		return
+	}
+	if w.taskRepo == nil {
 		return
 	}
 
@@ -345,9 +355,36 @@ func (w *Worker) projectTaskStatus(ctx context.Context, taskID string, status st
 	if task == nil {
 		return
 	}
-	if err := w.projector.ProjectTaskStatusChanged(projectionCtx, task.SourceMessageID, task.ID, status); err != nil {
+	w.syncTaskStatusSideEffects(projectionCtx, task, status)
+}
+
+func (w *Worker) syncTaskStatusSideEffects(ctx context.Context, task *postgres.Task, status string) {
+	w.projectTaskStatus(ctx, task, status)
+	w.notifyTaskTerminalStatus(ctx, task, status)
+}
+
+func (w *Worker) projectTaskStatus(ctx context.Context, task *postgres.Task, status string) {
+	if w.projector == nil || task == nil {
+		return
+	}
+
+	if err := w.projector.ProjectTaskStatusChanged(ctx, task.SourceMessageID, task.ID, status); err != nil {
 		log.Printf("警告：worker 回写助手上下文快照失败：task=%s status=%s err=%v", task.ID, status, err)
 	}
+}
+
+func (w *Worker) notifyTaskTerminalStatus(ctx context.Context, task *postgres.Task, status string) {
+	if w.notifier == nil || task == nil || !isTerminalTaskStatus(status) {
+		return
+	}
+
+	if err := w.notifier.Notify(ctx, task, status); err != nil {
+		log.Printf("警告：worker 回写助手终态消息失败：task=%s status=%s err=%v", task.ID, status, err)
+	}
+}
+
+func isTerminalTaskStatus(status string) bool {
+	return status == "completed" || status == "failed"
 }
 
 func projectionContext(parent context.Context) (context.Context, context.CancelFunc) {

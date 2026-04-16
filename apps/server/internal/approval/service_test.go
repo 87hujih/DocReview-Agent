@@ -60,7 +60,7 @@ func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 
 	jobCh := make(chan struct{}, 1)
 	eventService := taskevents.New(eventRepo)
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, jobCh, eventService, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, jobCh, eventService, nil, nil)
 
 	updatedApproval, err := service.Approve(ctx, approvalRecord.ID)
 	if err != nil {
@@ -163,7 +163,7 @@ func TestRejectUpdatesApprovalAndTask(t *testing.T) {
 	}
 
 	eventService := taskevents.New(eventRepo)
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService, nil, nil)
 	reason := "方案不完善"
 
 	updatedApproval, err := service.Reject(ctx, approvalRecord.ID, reason)
@@ -252,7 +252,7 @@ func TestApproveProjectsExecutingTaskIntoContextSnapshot(t *testing.T) {
 	}
 
 	eventService := taskevents.New(eventRepo)
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService, projector)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService, projector, nil)
 
 	if _, err := service.Approve(ctx, approvalRecord.ID); err != nil {
 		t.Fatalf("approve: %v", err)
@@ -313,7 +313,7 @@ func TestRejectProjectsFailedTaskIntoContextSnapshot(t *testing.T) {
 	}
 
 	eventService := taskevents.New(eventRepo)
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService, projector)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), eventService, projector, nil)
 
 	if _, err := service.Reject(ctx, approvalRecord.ID, "方案不完善"); err != nil {
 		t.Fatalf("reject: %v", err)
@@ -328,6 +328,31 @@ func TestRejectProjectsFailedTaskIntoContextSnapshot(t *testing.T) {
 	}
 	if snapshot.LatestTaskSourceMessageID == nil || *snapshot.LatestTaskSourceMessageID != suggestionMessageID {
 		t.Fatalf("expected snapshot source message id %q, got %#v", suggestionMessageID, snapshot.LatestTaskSourceMessageID)
+	}
+}
+
+func TestTaskStatusNotifierApprovalServiceSyncsTerminalStatuses(t *testing.T) {
+	projector := &recordingApprovalProjector{}
+	notifier := &recordingApprovalNotifier{}
+	service := NewService(nil, nil, nil, nil, nil, nil, projector, notifier)
+	task := &postgres.Task{ID: "task-terminal-1"}
+
+	service.syncTaskStatusSideEffects(context.Background(), task, models.StatusFailed)
+	if len(projector.statuses) != 1 || projector.statuses[0] != models.StatusFailed {
+		t.Fatalf("expected projector to record %q once, got %#v", models.StatusFailed, projector.statuses)
+	}
+	if len(notifier.statuses) != 1 || notifier.statuses[0] != models.StatusFailed {
+		t.Fatalf("expected notifier to record %q once, got %#v", models.StatusFailed, notifier.statuses)
+	}
+
+	projector.statuses = nil
+	notifier.statuses = nil
+	service.syncTaskStatusSideEffects(context.Background(), task, models.StatusExecuting)
+	if len(projector.statuses) != 1 || projector.statuses[0] != models.StatusExecuting {
+		t.Fatalf("expected projector to record %q once, got %#v", models.StatusExecuting, projector.statuses)
+	}
+	if len(notifier.statuses) != 0 {
+		t.Fatalf("expected notifier to ignore non-terminal status, got %#v", notifier.statuses)
 	}
 }
 
@@ -367,7 +392,7 @@ func TestApproveCopiesBaseVersionIDToJob(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), nil, nil, nil)
 	if _, err := service.Approve(ctx, approvalRecord.ID); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -419,7 +444,7 @@ func TestApproveRejectsLegacyPendingApprovalWithoutBaseVersion(t *testing.T) {
 	}
 	clearApprovalBaseVersionID(t, ctx, pool, approvalRecord.ID)
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 1), nil, nil, nil)
 	if _, err := service.Approve(ctx, approvalRecord.ID); err == nil {
 		t.Fatal("expected approve to fail when pending approval is missing base_version_id")
 	} else if !strings.Contains(err.Error(), "base_version_id") {
@@ -471,7 +496,7 @@ func TestApproveAlreadyDecidedReturnsError(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil)
 	if _, err := service.Approve(ctx, approvalRecord.ID); err != nil {
 		t.Fatalf("first approve: %v", err)
 	}
@@ -517,7 +542,7 @@ func TestApproveConcurrentOnlyOneSucceeds(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil)
 	startCh := make(chan struct{})
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -605,7 +630,7 @@ func TestApproveAndRejectConcurrentOnlyOneSucceeds(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil)
 	startCh := make(chan struct{})
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -725,7 +750,7 @@ func TestGetApprovalReturnsRecord(t *testing.T) {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, nil, nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, nil, nil, nil, nil)
 
 	found, err := service.GetApproval(ctx, approvalRecord.ID)
 	if err != nil {
@@ -770,7 +795,7 @@ func TestGetJobReturnsRecord(t *testing.T) {
 		t.Fatalf("create job: %v", err)
 	}
 
-	service := NewService(pool, approvalRepo, jobRepo, taskRepo, nil, nil, nil)
+	service := NewService(pool, approvalRepo, jobRepo, taskRepo, nil, nil, nil, nil)
 
 	found, err := service.GetJob(ctx, jobRecord.ID)
 	if err != nil {
@@ -803,6 +828,24 @@ func clearApprovalBaseVersionID(t *testing.T, ctx context.Context, pool *pgxpool
 	`, approvalID); err != nil {
 		t.Fatalf("clear approval base_version_id: %v", err)
 	}
+}
+
+type recordingApprovalProjector struct {
+	statuses []string
+}
+
+func (r *recordingApprovalProjector) ProjectTaskStatusChanged(_ context.Context, _ *string, _ string, status string) error {
+	r.statuses = append(r.statuses, status)
+	return nil
+}
+
+type recordingApprovalNotifier struct {
+	statuses []string
+}
+
+func (r *recordingApprovalNotifier) Notify(_ context.Context, _ *postgres.Task, status string) error {
+	r.statuses = append(r.statuses, status)
+	return nil
 }
 
 func approvalTestContext(t *testing.T) context.Context {

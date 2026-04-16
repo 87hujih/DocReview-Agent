@@ -116,5 +116,79 @@ describe("AssistantMessageList", () => {
     expect(screen.getByRole("button", { name: "任务已创建" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "确认创建任务" })).not.toBeInTheDocument();
   });
+
+  it("renders completed task_status card with result action", () => {
+    render(
+      <AssistantMessageList
+        activeTaskSuggestionId={null}
+        messages={[
+          {
+            created_at: "2026-04-16T10:00:00Z",
+            id: "message-task-status",
+            kind: "task_status",
+            payload: {
+              detail_url: "/tasks/task-1?session=session-1",
+              instruction: "请修订第二章",
+              resource_id: "resource-1",
+              result_url: "/resources/resource-1?session=session-1",
+              status: "completed",
+              status_message: "最终修订版本已写入资源库，可以查看结果或继续对话。",
+              task_id: "task-1",
+              title: "任务已完成"
+            },
+            role: "assistant",
+            sequence_no: 1
+          } satisfies AssistantMessage
+        ]}
+        onConfirmTaskSuggestion={() => {}}
+      />
+    );
+
+    expect(screen.getByText("任务已完成")).toBeInTheDocument();
+    expect(screen.getByText("最终修订版本已写入资源库，可以查看结果或继续对话。")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看修订结果" })).toHaveAttribute(
+      "href",
+      "/resources/resource-1?session=session-1"
+    );
+    expect(screen.getByRole("link", { name: "打开任务详情" })).toHaveAttribute(
+      "href",
+      "/tasks/task-1?session=session-1"
+    );
+  });
+
+  it("renders failed task_status card with detail action only", () => {
+    render(
+      <AssistantMessageList
+        activeTaskSuggestionId={null}
+        messages={[
+          {
+            created_at: "2026-04-16T10:00:00Z",
+            id: "message-task-status",
+            kind: "task_status",
+            payload: {
+              detail_url: "/tasks/task-1?session=session-1",
+              instruction: "请修订第二章",
+              resource_id: "resource-1",
+              status: "failed",
+              status_message: "任务未能完成，请打开详情查看失败原因。",
+              task_id: "task-1",
+              title: "任务执行失败"
+            },
+            role: "assistant",
+            sequence_no: 1
+          } satisfies AssistantMessage
+        ]}
+        onConfirmTaskSuggestion={() => {}}
+      />
+    );
+
+    expect(screen.getByText("任务执行失败")).toBeInTheDocument();
+    expect(screen.getByText("任务未能完成，请打开详情查看失败原因。")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "打开任务详情" })).toHaveAttribute(
+      "href",
+      "/tasks/task-1?session=session-1"
+    );
+    expect(screen.queryByRole("link", { name: "查看修订结果" })).not.toBeInTheDocument();
+  });
 });
 

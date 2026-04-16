@@ -118,9 +118,11 @@ func main() {
 		log.Fatalf("原文件存储初始化失败：%v", err)
 	}
 	sessionContextProjector := assistant.NewSessionContextProjector(sessionContextSnapshotRepo)
+	assistantTaskNotificationRepo := postgres.NewAssistantTaskNotificationRepo(pool)
+	assistantTaskStatusNotifier := assistant.NewAssistantTaskStatusNotifier(assistantRepo, assistantTaskNotificationRepo)
 
 	exec := executor.New(taskRepo, resourceRepo, versionIndexer)
-	worker := job.New(jobRepo, exec, taskRepo, 100, eventService, sessionContextProjector)
+	worker := job.New(jobRepo, exec, taskRepo, 100, eventService, sessionContextProjector, assistantTaskStatusNotifier)
 	worker.Start(ctx, 3)
 
 	// 服务启动时补发所有未处理的 pending job 信号，防止重启后 job 永久搁置（B4）
@@ -140,7 +142,7 @@ func main() {
 	}
 
 	resourceHandler := handlers.NewResourceHandler(resourceRepo, retrieverService)
-	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService, cfg.TaskContextMaxRunes, sessionContextProjector)
+	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService, cfg.TaskContextMaxRunes, sessionContextProjector, assistantTaskStatusNotifier)
 	runner := workflow.NewOrchestratorRunner(
 		cfg.WorkflowWorkers,
 		cfg.WorkflowQueueSize,
@@ -152,7 +154,7 @@ func main() {
 	defer runner.Stop()
 	taskService := taskservice.New(taskRepo, resourceRepo, runner, eventService)
 	taskHandler := handlers.NewTaskHandler(taskService, taskRepo, eventRepo)
-	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService, sessionContextProjector)
+	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService, sessionContextProjector, assistantTaskStatusNotifier)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	assistantResponder, err := assistant.NewChatResponder(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
 		TimeoutMS: cfg.LLMTimeoutMS,

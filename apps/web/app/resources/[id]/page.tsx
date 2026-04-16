@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { ResourceVersionViewer } from "../../../components/resource-version-viewer";
@@ -11,7 +11,9 @@ import styles from "./page.module.css";
 
 export default function ResourceDetailPage() {
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const resourceId = typeof params.id === "string" ? params.id : "";
+  const sessionId = normalizeSessionId(searchParams.get("session"));
 
   const [details, setDetails] = useState<ResourceDetailsResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -62,9 +64,15 @@ export default function ResourceDetailPage() {
       {details ? (
         <ResourceVersionViewer
           resource={details.resource}
+          sessionId={sessionId}
           version={details.current_version}
         />
       ) : null}
     </div>
   );
+}
+
+function normalizeSessionId(value: string | null): string | null {
+  const normalized = (value || "").trim();
+  return normalized || null;
 }

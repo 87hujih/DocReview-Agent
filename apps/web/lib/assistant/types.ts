@@ -29,6 +29,17 @@ export type AssistantTaskCreatedPayload = {
   task_id: string;
 };
 
+export type AssistantTaskStatusPayload = {
+  detail_url: string;
+  instruction: string;
+  resource_id: string;
+  result_url?: string;
+  status: string;
+  status_message: string;
+  task_id: string;
+  title: string;
+};
+
 export type AssistantSessionFilePayload = {
   file_id?: string;
   file_name: string;
@@ -65,6 +76,11 @@ export type AssistantTaskCreatedMessage = AssistantMessageBase & {
   payload: AssistantTaskCreatedPayload;
 };
 
+export type AssistantTaskStatusMessage = AssistantMessageBase & {
+  kind: "task_status";
+  payload: AssistantTaskStatusPayload;
+};
+
 export type AssistantSessionFileMessage = AssistantMessageBase & {
   kind: "session_file";
   payload: AssistantSessionFilePayload;
@@ -79,6 +95,7 @@ export type AssistantMessage =
   | AssistantSessionFileMessage
   | AssistantSystemMessage
   | AssistantTaskCreatedMessage
+  | AssistantTaskStatusMessage
   | AssistantTaskSuggestionMessage
   | AssistantTextMessage;
 
