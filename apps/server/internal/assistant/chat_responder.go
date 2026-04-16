@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"agent_project/apps/server/internal/agent/llmclient"
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/postgres"
 
@@ -32,6 +33,16 @@ const assistantSystemPrompt = `你是中文个人助手。
 type chatResponder interface {
 	Reply(ctx context.Context, input ChatCompletionInput) (*ChatCompletionResult, error)
 	Stream(ctx context.Context, input ChatCompletionInput) (chatStream, error)
+}
+
+type assistantLLMClient interface {
+	Generate(ctx context.Context, messages []*schema.Message) (*schema.Message, error)
+	Stream(ctx context.Context, messages []*schema.Message) (assistantLLMStream, error)
+}
+
+type assistantLLMStream interface {
+	Close()
+	Recv() (*schema.Message, error)
 }
 
 type chatStream interface {
@@ -64,17 +75,26 @@ type chatResponsePayload struct {
 
 // ChatResponder 封装 assistant 会话所需的模型客户端。
 type ChatResponder struct {
-	client *openaiacl.Client
+	client      assistantLLMClient
+	retryConfig llmclient.Config
+	timeout     time.Duration
 }
 
 // NewChatResponder 构造助手对话模型客户端。
-func NewChatResponder(ctx context.Context, baseURL string, apiKey string, model string) (*ChatResponder, error) {
+func NewChatResponder(
+	ctx context.Context,
+	baseURL string,
+	apiKey string,
+	model string,
+	cfg llmclient.Config,
+) (*ChatResponder, error) {
 	temperature := float32(0.3)
 	config := &openaiacl.Config{
 		APIKey:      apiKey,
 		Model:       model,
 		Temperature: &temperature,
-		HTTPClient:  &http.Client{Timeout: 120 * time.Second},
+		// 流式回复可能持续较长时间，不能在 HTTP client 层绑定固定总时长。
+		HTTPClient: &http.Client{},
 		ResponseFormat: &openaiacl.ChatCompletionResponseFormat{
 			Type: openaiacl.ChatCompletionResponseFormatTypeJSONObject,
 		},
@@ -88,12 +108,29 @@ func NewChatResponder(ctx context.Context, baseURL string, apiKey string, model 
 		return nil, err
 	}
 
-	return &ChatResponder{client: client}, nil
+	return newChatResponderWithClient(&openAIClientAdapter{client: client}, cfg), nil
+}
+
+func newChatResponderWithClient(client assistantLLMClient, cfg llmclient.Config) *ChatResponder {
+	timeoutMS := cfg.TimeoutMS
+	if timeoutMS <= 0 {
+		timeoutMS = 90000
+	}
+
+	return &ChatResponder{
+		client: client,
+		retryConfig: llmclient.Config{
+			TimeoutMS: timeoutMS,
+			RetryMax:  cfg.RetryMax,
+			BackoffMS: cfg.BackoffMS,
+		},
+		timeout: time.Duration(timeoutMS) * time.Millisecond,
+	}
 }
 
 // Reply 基于历史、当前资源上下文和最新消息生成一轮助手回复。
 func (r *ChatResponder) Reply(ctx context.Context, input ChatCompletionInput) (*ChatCompletionResult, error) {
-	response, err := r.client.Generate(ctx, buildChatMessages(input))
+	response, err := r.generateWithRetry(ctx, buildChatMessages(input))
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +158,7 @@ func (r *ChatResponder) Reply(ctx context.Context, input ChatCompletionInput) (*
 
 // Stream 基于历史、资源上下文和最新消息流式返回 reply 文本增量。
 func (r *ChatResponder) Stream(ctx context.Context, input ChatCompletionInput) (chatStream, error) {
-	stream, err := r.client.Stream(ctx, buildChatMessages(input))
+	stream, err := r.openStreamWithRetry(ctx, buildChatMessages(input))
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +167,46 @@ func (r *ChatResponder) Stream(ctx context.Context, input ChatCompletionInput) (
 		extractor: &replyJSONStreamExtractor{},
 		stream:    stream,
 	}, nil
+}
+
+func (r *ChatResponder) generateWithRetry(ctx context.Context, messages []*schema.Message) (*schema.Message, error) {
+	var response *schema.Message
+
+	err := llmclient.CallWithRetry(ctx, r.retryConfig, func() error {
+		callCtx := ctx
+		cancel := func() {}
+		if r.timeout > 0 {
+			callCtx, cancel = context.WithTimeout(ctx, r.timeout)
+		}
+		defer cancel()
+
+		var err error
+		response, err = r.client.Generate(callCtx, messages)
+		return err
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
+}
+
+func (r *ChatResponder) openStreamWithRetry(ctx context.Context, messages []*schema.Message) (assistantLLMStream, error) {
+	var stream assistantLLMStream
+
+	err := llmclient.CallWithRetry(ctx, llmclient.Config{
+		RetryMax:  r.retryConfig.RetryMax,
+		BackoffMS: r.retryConfig.BackoffMS,
+	}, func() error {
+		var err error
+		stream, err = r.client.Stream(ctx, messages)
+		return err
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return stream, nil
 }
 
 func buildChatMessages(input ChatCompletionInput) []*schema.Message {
@@ -343,7 +420,7 @@ type responseChunkStream struct {
 	resultErr    error
 	resultLoaded bool
 	raw          strings.Builder
-	stream       *schema.StreamReader[*schema.Message]
+	stream       assistantLLMStream
 }
 
 func (s *responseChunkStream) Recv() (string, error) {
@@ -645,4 +722,33 @@ func isJSONWhitespace(r rune) bool {
 	default:
 		return false
 	}
+}
+
+type openAIClientAdapter struct {
+	client *openaiacl.Client
+}
+
+func (c *openAIClientAdapter) Generate(ctx context.Context, messages []*schema.Message) (*schema.Message, error) {
+	return c.client.Generate(ctx, messages)
+}
+
+func (c *openAIClientAdapter) Stream(ctx context.Context, messages []*schema.Message) (assistantLLMStream, error) {
+	stream, err := c.client.Stream(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+
+	return &schemaMessageStream{stream: stream}, nil
+}
+
+type schemaMessageStream struct {
+	stream *schema.StreamReader[*schema.Message]
+}
+
+func (s *schemaMessageStream) Recv() (*schema.Message, error) {
+	return s.stream.Recv()
+}
+
+func (s *schemaMessageStream) Close() {
+	s.stream.Close()
 }

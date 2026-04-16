@@ -1,9 +1,15 @@
 package assistant
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
+	"agent_project/apps/server/internal/agent/llmclient"
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/postgres"
 
@@ -112,6 +118,107 @@ func TestReplyJSONStreamExtractorRejectsInvalidSurrogatePair(t *testing.T) {
 	}
 }
 
+func TestChatResponderReplyUsesConfiguredTimeoutAndRetries(t *testing.T) {
+	var remaining []time.Duration
+	attempts := 0
+
+	responder := newChatResponderWithClient(fakeAssistantLLMClient{
+		generate: func(ctx context.Context, _ []*schema.Message) (*schema.Message, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("expected reply context deadline")
+			}
+
+			remaining = append(remaining, time.Until(deadline))
+			attempts++
+			if attempts == 1 {
+				return nil, context.DeadlineExceeded
+			}
+
+			return &schema.Message{Content: `{"reply":"你好"}`}, nil
+		},
+	}, llmclient.Config{
+		TimeoutMS: 1400,
+		RetryMax:  1,
+		BackoffMS: 1,
+	})
+
+	result, err := responder.Reply(context.Background(), ChatCompletionInput{Message: "你好"})
+	if err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+
+	if result.Reply != "你好" {
+		t.Fatalf("expected reply %q, got %q", "你好", result.Reply)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 generate attempts, got %d", attempts)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 recorded deadlines, got %d", len(remaining))
+	}
+
+	for index, duration := range remaining {
+		if duration <= 0 || duration > 2*time.Second {
+			t.Fatalf("expected attempt %d timeout near configured value, got %s", index+1, duration)
+		}
+	}
+}
+
+func TestChatResponderStreamRetriesOpenWithoutInjectingHardDeadline(t *testing.T) {
+	attempts := 0
+	var sawDeadline []bool
+
+	responder := newChatResponderWithClient(fakeAssistantLLMClient{
+		stream: func(ctx context.Context, _ []*schema.Message) (assistantLLMStream, error) {
+			_, ok := ctx.Deadline()
+			sawDeadline = append(sawDeadline, ok)
+			attempts++
+			if attempts == 1 {
+				return nil, fmt.Errorf("stream open failed: %w", context.DeadlineExceeded)
+			}
+
+			return &fakeAssistantLLMStream{
+				messages: []*schema.Message{
+					{Content: `{"reply":"你好"}`},
+				},
+			}, nil
+		},
+	}, llmclient.Config{
+		TimeoutMS: 90000,
+		RetryMax:  1,
+		BackoffMS: 1,
+	})
+
+	stream, err := responder.Stream(context.Background(), ChatCompletionInput{Message: "你好"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	delta, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv first chunk: %v", err)
+	}
+	if delta != "你好" {
+		t.Fatalf("expected stream delta %q, got %q", "你好", delta)
+	}
+
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF after first chunk, got %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 stream open attempts, got %d", attempts)
+	}
+	if len(sawDeadline) != 2 {
+		t.Fatalf("expected 2 recorded stream attempts, got %d", len(sawDeadline))
+	}
+	for index, ok := range sawDeadline {
+		if ok {
+			t.Fatalf("expected stream attempt %d to avoid injected deadline", index+1)
+		}
+	}
+}
+
 func countAssistantTestMessagesByRole(messages []*schema.Message, role schema.RoleType) int {
 	count := 0
 	for _, message := range messages {
@@ -122,3 +229,41 @@ func countAssistantTestMessagesByRole(messages []*schema.Message, role schema.Ro
 
 	return count
 }
+
+type fakeAssistantLLMClient struct {
+	generate func(ctx context.Context, messages []*schema.Message) (*schema.Message, error)
+	stream   func(ctx context.Context, messages []*schema.Message) (assistantLLMStream, error)
+}
+
+func (f fakeAssistantLLMClient) Generate(ctx context.Context, messages []*schema.Message) (*schema.Message, error) {
+	if f.generate == nil {
+		return nil, errors.New("generate not configured")
+	}
+
+	return f.generate(ctx, messages)
+}
+
+func (f fakeAssistantLLMClient) Stream(ctx context.Context, messages []*schema.Message) (assistantLLMStream, error) {
+	if f.stream == nil {
+		return nil, errors.New("stream not configured")
+	}
+
+	return f.stream(ctx, messages)
+}
+
+type fakeAssistantLLMStream struct {
+	index    int
+	messages []*schema.Message
+}
+
+func (f *fakeAssistantLLMStream) Recv() (*schema.Message, error) {
+	if f.index >= len(f.messages) {
+		return nil, io.EOF
+	}
+
+	message := f.messages[f.index]
+	f.index++
+	return message, nil
+}
+
+func (f *fakeAssistantLLMStream) Close() {}

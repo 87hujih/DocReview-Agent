@@ -58,6 +58,7 @@ func main() {
 	jobRepo := postgres.NewJobRepo(pool)
 	eventRepo := postgres.NewTaskEventRepo(pool)
 	assistantRepo := postgres.NewAssistantRepo(pool)
+	sessionContextSnapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
 	uploadedFileRepo := postgres.NewUploadedFileRepo(pool)
 	eventService := taskevents.New(eventRepo)
 
@@ -152,10 +153,15 @@ func main() {
 	taskHandler := handlers.NewTaskHandler(taskService, taskRepo, eventRepo)
 	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
-	assistantResponder, err := assistant.NewChatResponder(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
+	assistantResponder, err := assistant.NewChatResponder(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
+		TimeoutMS: cfg.LLMTimeoutMS,
+		RetryMax:  cfg.LLMRetryMax,
+		BackoffMS: cfg.LLMRetryBackoffMS,
+	})
 	if err != nil {
 		log.Fatalf("助手对话模型初始化失败：%v", err)
 	}
+	sessionContextProjector := assistant.NewSessionContextProjector(sessionContextSnapshotRepo)
 
 	assistantService := assistant.NewService(
 		assistantRepo,
@@ -164,6 +170,7 @@ func main() {
 		assistantResponder,
 		retrieverService,
 		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
+		assistant.WithSessionContextProjector(sessionContextProjector),
 	)
 	assistantHandler := handlers.NewAssistantHandlerWithUploadLimitAndPolicy(
 		assistantService,
