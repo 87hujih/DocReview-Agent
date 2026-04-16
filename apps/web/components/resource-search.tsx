@@ -11,12 +11,16 @@ type ResourceSearchProps = {
   resourceId: string;
 };
 
+type SearchStatus = "idle" | "loading" | "success-empty" | "success-hit" | "error";
+
 export function ResourceSearch({ resourceId }: ResourceSearchProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Citation[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [lastRunAt, setLastRunAt] = useState<string | null>(null);
+  const [status, setStatus] = useState<SearchStatus>("idle");
+
+  const isLoading = status === "loading";
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -26,26 +30,57 @@ export function ResourceSearch({ resourceId }: ResourceSearchProps) {
       return;
     }
 
-    setIsLoading(true);
+    setStatus("loading");
     setErrorMessage(null);
 
     try {
       const citations = await searchResource(resourceId, trimmedQuery);
       setResults(citations);
       setLastRunAt(new Date().toISOString());
+      setStatus(citations.length > 0 ? "success-hit" : "success-empty");
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
       setResults([]);
-    } finally {
-      setIsLoading(false);
+      setStatus("error");
     }
+  }
+
+  function renderBody() {
+    if (status === "success-hit") {
+      return (
+        <ul className={styles.results}>
+          {results.map((citation) => (
+            <li key={citation.citation_id} className={styles.result}>
+              <div className={styles.resultHeader}>
+                <span>{citation.section_title}</span>
+                <span>{truncateId(citation.resource_id, 8, 4)}</span>
+              </div>
+              <p className={styles.snippet}>{citation.snippet}</p>
+              <span className={styles.citationId}>{citation.citation_id}</span>
+            </li>
+          ))}
+        </ul>
+      );
+    }
+
+    if (status === "error") {
+      return null;
+    }
+
+    const placeholder =
+      status === "loading"
+        ? "正在检索引用"
+        : status === "success-empty"
+          ? "没有匹配到引用片段"
+          : "请输入检索词";
+
+    return <p className={styles.placeholder}>{placeholder}</p>;
   }
 
   return (
     <TerminalFrame
       label="资源检索"
       title="引用查找"
-      description="用真实检索接口预览当前文档里的证据片段。"
     >
       <form className={styles.form} onSubmit={handleSubmit}>
         <label className={styles.field} htmlFor="resource-search-query">
@@ -69,24 +104,7 @@ export function ResourceSearch({ resourceId }: ResourceSearchProps) {
 
       {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
 
-      {results.length > 0 ? (
-        <ul className={styles.results}>
-          {results.map((citation) => (
-            <li key={citation.citation_id} className={styles.result}>
-              <div className={styles.resultHeader}>
-                <span>{citation.section_title}</span>
-                <span>{truncateId(citation.resource_id, 8, 4)}</span>
-              </div>
-              <p className={styles.snippet}>{citation.snippet}</p>
-              <span className={styles.citationId}>{citation.citation_id}</span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className={styles.placeholder}>
-          {query.trim() ? "没有匹配到引用片段" : "请输入检索词"}
-        </p>
-      )}
+      {renderBody()}
     </TerminalFrame>
   );
 }

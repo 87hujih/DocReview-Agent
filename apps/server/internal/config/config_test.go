@@ -17,6 +17,11 @@ func TestLoadUsesYAMLDefaults(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
 	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("UPLOAD_STORAGE_DIR", "")
+	t.Setenv("UPLOAD_MAX_BYTES", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -61,6 +66,14 @@ func TestLoadUsesYAMLDefaults(t *testing.T) {
 	if cfg.RerankerModel != "yaml-reranker" {
 		t.Fatalf("expected yaml reranker model, got %q", cfg.RerankerModel)
 	}
+
+	if cfg.UploadStorageDir != "data/uploads" {
+		t.Fatalf("expected default upload storage dir %q, got %q", "data/uploads", cfg.UploadStorageDir)
+	}
+
+	if cfg.UploadMaxBytes != 20*1024*1024 {
+		t.Fatalf("expected default upload max bytes %d, got %d", 20*1024*1024, cfg.UploadMaxBytes)
+	}
 }
 
 // TestLoadUsesDotEnvOverrides 验证 .env 会覆盖 YAML 中的默认值。
@@ -73,6 +86,9 @@ func TestLoadUsesDotEnvOverrides(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
 	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -128,6 +144,9 @@ func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "env-embedding")
 	t.Setenv("EMBEDDING_DIM", "3072")
 	t.Setenv("RERANKER_MODEL", "env-reranker")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -180,6 +199,9 @@ func TestLoadUsesHardcodedLLMDefault(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
 	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -188,6 +210,58 @@ func TestLoadUsesHardcodedLLMDefault(t *testing.T) {
 
 	if cfg.LLMModel != "Qwen/Qwen2.5-7B-Instruct" {
 		t.Fatalf("expected hardcoded llm model %q, got %q", "Qwen/Qwen2.5-7B-Instruct", cfg.LLMModel)
+	}
+
+	if cfg.LogLevel != "info" {
+		t.Fatalf("expected hardcoded log level %q, got %q", "info", cfg.LogLevel)
+	}
+
+	if cfg.LogFormat != "json" {
+		t.Fatalf("expected hardcoded log format %q, got %q", "json", cfg.LogFormat)
+	}
+
+	if cfg.LogAddSource {
+		t.Fatalf("expected hardcoded log add_source %v, got %v", false, cfg.LogAddSource)
+	}
+}
+
+func TestLoadUsesDocumentParserOverrides(t *testing.T) {
+	t.Setenv("SERVER_PORT", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("SILICONFLOW_API_KEY", "")
+	t.Setenv("SILICONFLOW_BASE_URL", "")
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("DOCUMENT_PARSER", "")
+	t.Setenv("TIKA_URL", "")
+	t.Setenv("TIKA_TIMEOUT_MS", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
+
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	writeTestFile(t, filepath.Join(tempDir, ".env"), strings.Join([]string{
+		"DOCUMENT_PARSER=tika",
+		"TIKA_URL=http://127.0.0.1:9998",
+		"TIKA_TIMEOUT_MS=45000",
+	}, "\n"))
+
+	cfg := Load()
+
+	if cfg.DocumentParser != "tika" {
+		t.Fatalf("expected document parser %q, got %q", "tika", cfg.DocumentParser)
+	}
+
+	if cfg.TikaURL != "http://127.0.0.1:9998" {
+		t.Fatalf("expected tika url %q, got %q", "http://127.0.0.1:9998", cfg.TikaURL)
+	}
+
+	if cfg.TikaTimeoutMS != 45000 {
+		t.Fatalf("expected tika timeout %d, got %d", 45000, cfg.TikaTimeoutMS)
 	}
 }
 
@@ -200,6 +274,9 @@ func TestLoadStopsDotEnvSearchAtWorktreeRoot(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL", "")
 	t.Setenv("EMBEDDING_DIM", "")
 	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
 
 	tempDir := t.TempDir()
 	parentRepoRoot := filepath.Join(tempDir, "repo")
@@ -233,6 +310,88 @@ func TestLoadStopsDotEnvSearchAtWorktreeRoot(t *testing.T) {
 
 	if cfg.DatabaseURL != "" {
 		t.Fatalf("expected parent dotenv DATABASE_URL to be ignored at worktree root, got %q", cfg.DatabaseURL)
+	}
+}
+
+func TestLoadUsesLogDefaultsFromYAML(t *testing.T) {
+	t.Setenv("SERVER_PORT", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("SILICONFLOW_API_KEY", "")
+	t.Setenv("SILICONFLOW_BASE_URL", "")
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
+	t.Setenv("LOG_ADD_SOURCE", "")
+
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	writeTestFile(t, filepath.Join(tempDir, "config", "default.yaml"), strings.Join([]string{
+		"server:",
+		"  port: \"8181\"",
+		"ai:",
+		"  embedding_model: \"yaml-embedding\"",
+		"  embedding_dim: 1024",
+		"  reranker_model: \"yaml-reranker\"",
+		"log:",
+		"  level: \"debug\"",
+		"  format: \"text\"",
+		"  add_source: true",
+	}, "\n"))
+
+	cfg := Load()
+
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("expected yaml log level %q, got %q", "debug", cfg.LogLevel)
+	}
+
+	if cfg.LogFormat != "text" {
+		t.Fatalf("expected yaml log format %q, got %q", "text", cfg.LogFormat)
+	}
+
+	if !cfg.LogAddSource {
+		t.Fatalf("expected yaml log add_source %v, got %v", true, cfg.LogAddSource)
+	}
+}
+
+func TestLoadUsesEnvironmentOverridesForLogging(t *testing.T) {
+	t.Setenv("SERVER_PORT", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("SILICONFLOW_API_KEY", "")
+	t.Setenv("SILICONFLOW_BASE_URL", "")
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("LOG_LEVEL", "warn")
+	t.Setenv("LOG_FORMAT", "text")
+	t.Setenv("LOG_ADD_SOURCE", "true")
+
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	writeTestFile(t, filepath.Join(tempDir, "config", "default.yaml"), strings.Join([]string{
+		"log:",
+		"  level: \"debug\"",
+		"  format: \"json\"",
+		"  add_source: false",
+	}, "\n"))
+
+	cfg := Load()
+
+	if cfg.LogLevel != "warn" {
+		t.Fatalf("expected env log level %q, got %q", "warn", cfg.LogLevel)
+	}
+
+	if cfg.LogFormat != "text" {
+		t.Fatalf("expected env log format %q, got %q", "text", cfg.LogFormat)
+	}
+
+	if !cfg.LogAddSource {
+		t.Fatalf("expected env log add_source %v, got %v", true, cfg.LogAddSource)
 	}
 }
 
@@ -332,6 +491,70 @@ func TestValidateForServerRequiresLLMModel(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "LLM_MODEL") {
 		t.Fatalf("expected LLM_MODEL validation error, got %v", err)
+	}
+}
+
+func TestValidateForServerAllowsTextParserWithoutTika(t *testing.T) {
+	cfg := Config{
+		ServerPort:        "8080",
+		DatabaseURL:       "postgres://example",
+		SiliconFlowAPIKey: "api-key",
+		LLMModel:          "llm-model",
+		EmbeddingModel:    "embedding-model",
+		EmbeddingDim:      1024,
+		RerankerModel:     "reranker-model",
+		DocumentParser:    "text",
+	}
+
+	if err := cfg.ValidateForServer(); err != nil {
+		t.Fatalf("expected valid text parser config, got %v", err)
+	}
+}
+
+func TestValidateForServerRequiresTikaURLWhenTikaParserEnabled(t *testing.T) {
+	cfg := Config{
+		ServerPort:        "8080",
+		DatabaseURL:       "postgres://example",
+		SiliconFlowAPIKey: "api-key",
+		LLMModel:          "llm-model",
+		EmbeddingModel:    "embedding-model",
+		EmbeddingDim:      1024,
+		RerankerModel:     "reranker-model",
+		DocumentParser:    "tika",
+		TikaTimeoutMS:     30000,
+	}
+
+	err := cfg.ValidateForServer()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "TIKA_URL") {
+		t.Fatalf("expected TIKA_URL validation error, got %v", err)
+	}
+}
+
+func TestValidateForServerRequiresPositiveTikaTimeout(t *testing.T) {
+	cfg := Config{
+		ServerPort:        "8080",
+		DatabaseURL:       "postgres://example",
+		SiliconFlowAPIKey: "api-key",
+		LLMModel:          "llm-model",
+		EmbeddingModel:    "embedding-model",
+		EmbeddingDim:      1024,
+		RerankerModel:     "reranker-model",
+		DocumentParser:    "tika",
+		TikaURL:           "http://127.0.0.1:9998",
+		TikaTimeoutMS:     0,
+	}
+
+	err := cfg.ValidateForServer()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "TIKA_TIMEOUT_MS") {
+		t.Fatalf("expected TIKA_TIMEOUT_MS validation error, got %v", err)
 	}
 }
 

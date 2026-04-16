@@ -44,7 +44,6 @@ export function TaskCreateForm({
     <TerminalFrame
       label="创建任务"
       title="提交任务"
-      description="提交一条结构化修订指令，触发 planner -> retriever -> reviewer -> editor 流程。"
     >
       <form className={styles.form} onSubmit={handleSubmit}>
         <div className={styles.resourcePanel}>

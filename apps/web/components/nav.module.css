@@ -1,62 +1,109 @@
-.bar {
+.nav {
   display: flex;
+  flex-direction: column;
+  flex: 1;
   justify-content: space-between;
-  gap: var(--terminal-space-4);
-  align-items: center;
-  width: min(1100px, calc(100% - 32px));
-  margin: 0 auto;
-  padding: var(--terminal-space-4) 0;
-  border-bottom: var(--terminal-border-width) solid var(--terminal-border);
+  gap: 18px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 24px 18px 18px;
+  border: none;
 }
 
-.identity {
+.identity,
+.footer {
   display: grid;
-  gap: var(--terminal-space-2);
+  gap: 6px;
+}
+
+.eyebrow,
+.footerLabel {
+  color: rgba(115, 215, 255, 0.72);
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .product {
   color: var(--terminal-text-strong);
-  letter-spacing: 0.16em;
+  font-size: 1.32rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
-.environment {
+.caption,
+.footerText {
   color: var(--terminal-text-dim);
-  font-size: 0.8rem;
+  font-size: 0.88rem;
+  line-height: 1.65;
+}
+
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
 }
 
 .links {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--terminal-space-3);
+  flex-direction: column;
+  gap: 6px;
+}
+
+.extraSlot {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding-top: 4px;
 }
 
 .link {
   display: inline-flex;
   align-items: center;
-  gap: var(--terminal-space-2);
-  min-height: 32px;
-  padding: 0 var(--terminal-space-3);
-  border: var(--terminal-border-width) solid var(--terminal-border);
+  gap: 12px;
+  min-height: 46px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 14px;
   color: var(--terminal-text-dim);
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
 }
 
-.prefix {
-  display: inline-block;
-  min-width: 1ch;
+.link:hover {
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--terminal-text);
+  transform: translateX(2px);
 }
 
 .link[data-active="true"] {
-  color: var(--terminal-info);
-  border-color: var(--terminal-info);
+  background: rgba(0, 200, 165, 0.14);
+  color: #00C8A5;
 }
 
-@media (max-width: 720px) {
-  .bar {
-    flex-direction: column;
-    align-items: stretch;
-  }
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
 
-  .links {
-    justify-content: flex-start;
+.linkText {
+  font-size: 0.95rem;
+}
+
+@media (max-width: 920px) {
+  .nav {
+    min-height: auto;
+    padding: 18px 16px;
   }
 }

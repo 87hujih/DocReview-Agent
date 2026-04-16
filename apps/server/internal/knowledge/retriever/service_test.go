@@ -15,7 +15,60 @@ import (
 	"agent_project/apps/server/internal/knowledge/ingest"
 	"agent_project/apps/server/internal/knowledge/reranker"
 	"agent_project/apps/server/internal/storage/postgres"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
+
+	"github.com/pgvector/pgvector-go"
 )
+
+func TestShouldRunSearchIntegrationRequiresExplicitOptIn(t *testing.T) {
+	cfg := appconfig.Config{
+		DatabaseURL:       "postgres://postgres:postgres@127.0.0.1:55432/agent_project?sslmode=disable",
+		SiliconFlowAPIKey: "test-key",
+	}
+
+	t.Setenv("KNOWLEDGE_RETRIEVER_INTEGRATION", "")
+
+	shouldRun, reason := shouldRunSearchIntegration(cfg)
+	if shouldRun {
+		t.Fatal("expected integration test to require explicit opt-in")
+	}
+	if !strings.Contains(reason, "KNOWLEDGE_RETRIEVER_INTEGRATION=1") {
+		t.Fatalf("expected opt-in reason, got %q", reason)
+	}
+}
+
+func TestShouldRunSearchIntegrationAllowsExplicitOptInWithLocalDB(t *testing.T) {
+	cfg := appconfig.Config{
+		DatabaseURL:       "postgres://postgres:postgres@127.0.0.1:55432/agent_project?sslmode=disable",
+		SiliconFlowAPIKey: "test-key",
+	}
+
+	t.Setenv("KNOWLEDGE_RETRIEVER_INTEGRATION", "1")
+	t.Setenv("ALLOW_NONLOCAL_DB", "")
+
+	shouldRun, reason := shouldRunSearchIntegration(cfg)
+	if !shouldRun {
+		t.Fatalf("expected integration test to run, got reason %q", reason)
+	}
+}
+
+func TestShouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride(t *testing.T) {
+	cfg := appconfig.Config{
+		DatabaseURL:       "postgres://postgres:postgres@10.0.0.8:5432/agent_project?sslmode=disable",
+		SiliconFlowAPIKey: "test-key",
+	}
+
+	t.Setenv("KNOWLEDGE_RETRIEVER_INTEGRATION", "1")
+	t.Setenv("ALLOW_NONLOCAL_DB", "")
+
+	shouldRun, reason := shouldRunSearchIntegration(cfg)
+	if shouldRun {
+		t.Fatal("expected nonlocal database to require explicit override")
+	}
+	if !strings.Contains(reason, "ALLOW_NONLOCAL_DB=1") {
+		t.Fatalf("expected nonlocal db reason, got %q", reason)
+	}
+}
 
 // TestBuildCitationsFromChunks 验证检索分块会被映射成稳定的 citation 结构。
 func TestBuildCitationsFromChunks(t *testing.T) {
@@ -93,29 +146,70 @@ func TestRerankResultsToChunks(t *testing.T) {
 	}
 }
 
+func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-1",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-current",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "新版本考勤条款",
+			},
+		},
+		lexicalByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-current",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "新版本考勤条款",
+			},
+		},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, fakeRetrieverReranker{
+		results: []reranker.Result{
+			{Index: 0, RelevanceScore: 0.99},
+		},
+	})
+
+	citations, err := service.SearchByResource(context.Background(), "resource-1", "考勤", 3)
+	if err != nil {
+		t.Fatalf("search by resource: %v", err)
+	}
+
+	if repo.currentVersionLookups != 1 {
+		t.Fatalf("expected exactly 1 current version lookup, got %d", repo.currentVersionLookups)
+	}
+	if repo.lastVersionID != "version-current" {
+		t.Fatalf("expected version-scoped search to use %q, got %q", "version-current", repo.lastVersionID)
+	}
+	if repo.searchByResourceCalls != 0 {
+		t.Fatalf("expected resource-scoped search not to be used, got %d calls", repo.searchByResourceCalls)
+	}
+	if len(citations) != 1 {
+		t.Fatalf("expected 1 citation, got %d", len(citations))
+	}
+	if !strings.Contains(citations[0].Snippet, "新版本") {
+		t.Fatalf("expected citation from current version, got %q", citations[0].Snippet)
+	}
+}
+
 // TestSearchIntegration 验证导入文档后能够通过真实 embedding、reranker 和数据库完成一次检索。
 func TestSearchIntegration(t *testing.T) {
 	cfg := appconfig.Load()
-	if strings.TrimSpace(cfg.SiliconFlowAPIKey) == "" {
-		t.Skip("skipping: SILICONFLOW_API_KEY not configured")
-	}
-
-	if strings.TrimSpace(cfg.DatabaseURL) == "" {
-		t.Skip("skipping: DATABASE_URL not configured")
+	if shouldRun, reason := shouldRunSearchIntegration(cfg); !shouldRun {
+		t.Skip(reason)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("skipping: database not available: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
+	pool := postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "knowledge_retriever", postgres.NewPool, postgres.RunMigrations)
 
 	repo := postgres.NewResourceRepo(pool)
 	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
@@ -175,4 +269,97 @@ func TestSearchIntegration(t *testing.T) {
 	if len(citations) == 0 {
 		t.Fatal("expected at least one citation")
 	}
+}
+
+func shouldRunSearchIntegration(cfg appconfig.Config) (bool, string) {
+	if strings.TrimSpace(os.Getenv("KNOWLEDGE_RETRIEVER_INTEGRATION")) != "1" {
+		return false, "skipping: integration test requires KNOWLEDGE_RETRIEVER_INTEGRATION=1"
+	}
+
+	if strings.TrimSpace(cfg.SiliconFlowAPIKey) == "" {
+		return false, "skipping: SILICONFLOW_API_KEY not configured"
+	}
+
+	if strings.TrimSpace(cfg.DatabaseURL) == "" {
+		return false, "skipping: DATABASE_URL not configured"
+	}
+
+	if !isLocalDatabaseHost(cfg.DatabaseURL) && strings.TrimSpace(os.Getenv("ALLOW_NONLOCAL_DB")) != "1" {
+		return false, "skipping: nonlocal database requires ALLOW_NONLOCAL_DB=1"
+	}
+
+	return true, ""
+}
+
+func isLocalDatabaseHost(databaseURL string) bool {
+	lowerURL := strings.ToLower(strings.TrimSpace(databaseURL))
+	switch {
+	case strings.Contains(lowerURL, "@127.0.0.1:"),
+		strings.Contains(lowerURL, "@localhost:"),
+		strings.Contains(lowerURL, "@[::1]:"):
+		return true
+	default:
+		return false
+	}
+}
+
+type fakeRetrieverRepo struct {
+	currentVersion        *postgres.ResourceVersion
+	semanticByVersion     []postgres.ResourceChunk
+	lexicalByVersion      []postgres.ResourceChunk
+	currentVersionLookups int
+	lastVersionID         string
+	searchByResourceCalls int
+}
+
+func (r *fakeRetrieverRepo) GetCurrentVersion(context.Context, string) (*postgres.ResourceVersion, error) {
+	r.currentVersionLookups++
+	return r.currentVersion, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunks(context.Context, pgvector.Vector, int) ([]postgres.ResourceChunk, error) {
+	return nil, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunksLexical(context.Context, string, int) ([]postgres.ResourceChunk, error) {
+	return nil, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunksByResource(context.Context, pgvector.Vector, int, string) ([]postgres.ResourceChunk, error) {
+	r.searchByResourceCalls++
+	return nil, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunksLexicalByResource(context.Context, string, int, string) ([]postgres.ResourceChunk, error) {
+	r.searchByResourceCalls++
+	return nil, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunksByVersion(_ context.Context, _ pgvector.Vector, _ int, versionID string) ([]postgres.ResourceChunk, error) {
+	r.lastVersionID = versionID
+	return r.semanticByVersion, nil
+}
+
+func (r *fakeRetrieverRepo) SearchChunksLexicalByVersion(_ context.Context, _ string, _ int, versionID string) ([]postgres.ResourceChunk, error) {
+	r.lastVersionID = versionID
+	return r.lexicalByVersion, nil
+}
+
+type fakeRetrieverEmbedder struct{}
+
+func (fakeRetrieverEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	values := make([]float32, 1024)
+	for index := range values {
+		values[index] = 0.4 + float32(index%5)/10
+	}
+
+	return [][]float32{values}, nil
+}
+
+type fakeRetrieverReranker struct {
+	results []reranker.Result
+}
+
+func (r fakeRetrieverReranker) Rerank(context.Context, string, []string, int) ([]reranker.Result, error) {
+	return r.results, nil
 }

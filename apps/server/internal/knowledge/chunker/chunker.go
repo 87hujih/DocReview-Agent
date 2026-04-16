@@ -1,6 +1,10 @@
 package chunker
 
-import "strings"
+import (
+	"strings"
+
+	"agent_project/apps/server/internal/knowledge/sections"
+)
 
 // maxChunkChars 用来限制分块长度，避免 embedding 过大并保持引用片段可读。
 const maxChunkChars = 800
@@ -18,20 +22,11 @@ func ChunkMarkdown(content string) []Chunk {
 		return nil
 	}
 
-	lines := strings.Split(content, "\n")
 	chunks := make([]Chunk, 0)
-	currentTitle := ""
-	currentLines := make([]string, 0)
-	inSection := false
-
-	flushSection := func() {
-		if !inSection {
-			return
-		}
-
-		sectionContent := strings.TrimSpace(strings.Join(currentLines, "\n"))
+	for _, section := range sections.ParseMarkdown(content) {
+		sectionContent := strings.TrimSpace(section.Body)
 		if sectionContent == "" {
-			return
+			continue
 		}
 
 		if len(sectionContent) > maxChunkChars {
@@ -44,36 +39,19 @@ func ChunkMarkdown(content string) []Chunk {
 				}
 
 				chunks = append(chunks, Chunk{
-					SectionTitle: currentTitle,
+					SectionTitle: section.Title,
 					Content:      paragraph,
 				})
 			}
 
-			return
-		}
-
-		chunks = append(chunks, Chunk{
-			SectionTitle: currentTitle,
-			Content:      sectionContent,
-		})
-	}
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, "## ") {
-			flushSection()
-
-			currentTitle = strings.TrimSpace(strings.TrimPrefix(line, "## "))
-			currentLines = currentLines[:0]
-			inSection = true
 			continue
 		}
 
-		if inSection {
-			currentLines = append(currentLines, line)
-		}
+		chunks = append(chunks, Chunk{
+			SectionTitle: section.Title,
+			Content:      sectionContent,
+		})
 	}
-
-	flushSection()
 
 	for index := range chunks {
 		chunks[index].ChunkIndex = index

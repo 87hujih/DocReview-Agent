@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	appconfig "agent_project/apps/server/internal/config"
+	"agent_project/apps/server/internal/testsupport/postgrescleanup"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,7 +31,7 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	rows, err := pool.Query(ctx, `
 		SELECT table_name
 		FROM information_schema.tables
-		WHERE table_schema = 'public'
+		WHERE table_schema = current_schema()
 	`)
 	if err != nil {
 		t.Fatalf("query tables: %v", err)
@@ -44,9 +47,13 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 		"resources",
 		"resource_versions",
 		"resource_chunks",
+		"assistant_sessions",
+		"assistant_messages",
+		"session_context_snapshots",
 		"tasks",
 		"task_steps",
 		"task_artifacts",
+		"task_events",
 		"approvals",
 		"execution_jobs",
 	}
@@ -73,6 +80,181 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 
 	if trigramExtension != "pg_trgm" {
 		t.Fatalf("expected pg_trgm extension, got %q", trigramExtension)
+	}
+}
+
+func TestMigrationCreatesTaskQueryIndexes(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT indexname
+		FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND indexname = ANY($1)
+	`, []string{
+		"idx_tasks_created_at_id",
+		"idx_task_steps_task_created_id",
+		"idx_task_artifacts_task_created_id",
+	})
+	if err != nil {
+		t.Fatalf("query indexes: %v", err)
+	}
+	defer rows.Close()
+
+	indexNames, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collect indexes: %v", err)
+	}
+
+	expectedIndexes := []string{
+		"idx_tasks_created_at_id",
+		"idx_task_steps_task_created_id",
+		"idx_task_artifacts_task_created_id",
+	}
+	for _, expectedIndex := range expectedIndexes {
+		if !slices.Contains(indexNames, expectedIndex) {
+			t.Fatalf("expected index %q to exist, got %v", expectedIndex, indexNames)
+		}
+	}
+}
+
+func TestMigrationAddsAssistantSuggestionSourceColumn(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	var currentSchema string
+	if err := pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&currentSchema); err != nil {
+		t.Fatalf("query current schema: %v", err)
+	}
+	if currentSchema == "" {
+		t.Fatal("expected isolated schema, got empty current_schema()")
+	}
+	if currentSchema == "public" {
+		t.Fatalf("expected isolated schema instead of public, got %q", currentSchema)
+	}
+
+	type columnInfo struct {
+		TableSchema string
+		ColumnName  string
+		IsNullable  string
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT table_schema, column_name, is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'tasks'
+		  AND column_name = 'source_message_id'
+	`)
+	if err != nil {
+		t.Fatalf("query task source_message_id column: %v", err)
+	}
+	defer rows.Close()
+
+	columns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (columnInfo, error) {
+		var info columnInfo
+		err := row.Scan(&info.TableSchema, &info.ColumnName, &info.IsNullable)
+		return info, err
+	})
+	if err != nil {
+		t.Fatalf("collect source_message_id column info: %v", err)
+	}
+
+	if len(columns) != 1 {
+		t.Fatalf("expected tasks.source_message_id column to exist once, got %d", len(columns))
+	}
+	if columns[0].TableSchema != currentSchema {
+		t.Fatalf("expected tasks.source_message_id in current schema %q, got %q", currentSchema, columns[0].TableSchema)
+	}
+	if columns[0].IsNullable != "YES" {
+		t.Fatalf("expected tasks.source_message_id to be nullable, got %q", columns[0].IsNullable)
+	}
+
+	var indexSchema string
+	var indexName string
+	if err := pool.QueryRow(ctx, `
+		SELECT schemaname, indexname
+		FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND tablename = 'tasks'
+		  AND indexname = 'idx_tasks_source_message_id_unique'
+	`).Scan(&indexSchema, &indexName); err != nil {
+		t.Fatalf("query source_message_id unique index: %v", err)
+	}
+
+	if indexSchema != currentSchema {
+		t.Fatalf("expected source_message_id unique index in current schema %q, got %q", currentSchema, indexSchema)
+	}
+	if indexName != "idx_tasks_source_message_id_unique" {
+		t.Fatalf("expected source_message_id unique index, got %q", indexName)
+	}
+}
+
+func TestMigrationAddsExecutionChainBaseVersionColumns(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT table_name, column_name, is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND (
+			(table_name = 'approvals' AND column_name = 'base_version_id')
+			OR
+			(table_name = 'execution_jobs' AND column_name = 'base_version_id')
+		  )
+		ORDER BY table_name, column_name
+	`)
+	if err != nil {
+		t.Fatalf("query base version columns: %v", err)
+	}
+	defer rows.Close()
+
+	type columnInfo struct {
+		TableName  string
+		ColumnName string
+		IsNullable string
+	}
+
+	columns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (columnInfo, error) {
+		var info columnInfo
+		err := row.Scan(&info.TableName, &info.ColumnName, &info.IsNullable)
+		return info, err
+	})
+	if err != nil {
+		t.Fatalf("collect base version columns: %v", err)
+	}
+
+	expected := map[string]string{
+		"approvals.base_version_id":      "YES",
+		"execution_jobs.base_version_id": "YES",
+	}
+	if len(columns) != len(expected) {
+		t.Fatalf("expected %d base version columns, got %d (%v)", len(expected), len(columns), columns)
+	}
+
+	for _, column := range columns {
+		key := column.TableName + "." + column.ColumnName
+		expectedNullable, ok := expected[key]
+		if !ok {
+			t.Fatalf("unexpected column info returned: %#v", column)
+		}
+		if column.IsNullable != expectedNullable {
+			t.Fatalf("expected %s nullable=%s, got %s", key, expectedNullable, column.IsNullable)
+		}
 	}
 }
 
@@ -203,12 +385,13 @@ func TestResourceCRUD(t *testing.T) {
 		t.Fatalf("create other version: %v", err)
 	}
 
+	lexicalToken := "考勤隔离测试-" + uniqueSuffix()
 	attendanceChunk := &ResourceChunk{
 		ResourceID:   resource.ID,
 		VersionID:    version.ID,
 		ChunkIndex:   1,
-		SectionTitle: "考勤管理",
-		Content:      "员工必须按时完成考勤签到和签退。",
+		SectionTitle: lexicalToken,
+		Content:      "员工必须按时完成" + lexicalToken + "签到和签退。",
 		Embedding:    testVector(0.45),
 	}
 	if err := repo.CreateChunk(ctx, attendanceChunk); err != nil {
@@ -227,7 +410,7 @@ func TestResourceCRUD(t *testing.T) {
 		t.Fatalf("create other chunk: %v", err)
 	}
 
-	lexicalChunks, err := repo.SearchChunksLexical(ctx, "考勤", 5)
+	lexicalChunks, err := repo.SearchChunksLexical(ctx, lexicalToken, 5)
 	if err != nil {
 		t.Fatalf("search lexical chunks: %v", err)
 	}
@@ -240,7 +423,7 @@ func TestResourceCRUD(t *testing.T) {
 		t.Fatalf("expected lexical search to rank attendance chunk first, got %q", lexicalChunks[0].ID)
 	}
 
-	filteredLexicalChunks, err := repo.SearchChunksLexicalByResource(ctx, "考勤", 5, resource.ID)
+	filteredLexicalChunks, err := repo.SearchChunksLexicalByResource(ctx, lexicalToken, 5, resource.ID)
 	if err != nil {
 		t.Fatalf("search lexical chunks by resource: %v", err)
 	}
@@ -262,6 +445,114 @@ func TestResourceCRUD(t *testing.T) {
 
 	if !containsResource(resources, resource.ID) {
 		t.Fatalf("expected resources list to contain %q", resource.ID)
+	}
+}
+
+func TestResourceRepoGetVersionByID(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := repo.Create(ctx, "版本读取测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	version, err := repo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	got, err := repo.GetVersionByID(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("get version by id: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected version, got nil")
+	}
+	if got.ID != version.ID {
+		t.Fatalf("expected version id %q, got %q", version.ID, got.ID)
+	}
+}
+
+func TestCreateDocumentGraphRollsBackOnChunkFailure(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	method := reflect.ValueOf(repo).MethodByName("CreateDocumentGraph")
+	if !method.IsValid() {
+		t.Fatal("expected resource repo to expose CreateDocumentGraph")
+	}
+
+	paramsType := method.Type().In(1)
+	paramsValue := reflect.New(paramsType).Elem()
+	title := "事务回滚测试-" + uniqueSuffix()
+
+	paramsValue.FieldByName("Title").SetString(title)
+	paramsValue.FieldByName("SourceType").SetString("upload")
+	paramsValue.FieldByName("VersionSource").SetString("assistant_upload")
+	paramsValue.FieldByName("Content").SetString("# 标题\n正文")
+
+	chunksField := paramsValue.FieldByName("Chunks")
+	chunkType := chunksField.Type().Elem()
+	chunksValue := reflect.MakeSlice(chunksField.Type(), 2, 2)
+
+	firstChunk := reflect.New(chunkType).Elem()
+	firstChunk.FieldByName("ChunkIndex").SetInt(0)
+	firstChunk.FieldByName("SectionTitle").SetString("标题")
+	firstChunk.FieldByName("Content").SetString("第一段")
+	firstChunk.FieldByName("Embedding").Set(reflect.ValueOf(testVector(0.31)))
+	chunksValue.Index(0).Set(firstChunk)
+
+	secondChunk := reflect.New(chunkType).Elem()
+	secondChunk.FieldByName("ChunkIndex").SetInt(1)
+	secondChunk.FieldByName("SectionTitle").SetString("标题")
+	secondChunk.FieldByName("Content").SetString("第二段")
+	secondChunk.FieldByName("Embedding").Set(reflect.ValueOf(pgvector.NewVector([]float32{0.1, 0.2})))
+	chunksValue.Index(1).Set(secondChunk)
+
+	chunksField.Set(chunksValue)
+
+	results := method.Call([]reflect.Value{
+		reflect.ValueOf(ctx),
+		paramsValue,
+	})
+	if len(results) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(results))
+	}
+
+	if results[2].IsNil() {
+		t.Fatal("expected chunk write failure to return error")
+	}
+
+	var resourceCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM resources
+		WHERE title = $1
+	`, title).Scan(&resourceCount); err != nil {
+		t.Fatalf("count resources after rollback: %v", err)
+	}
+
+	if resourceCount != 0 {
+		t.Fatalf("expected rollback to leave 0 resources, got %d", resourceCount)
+	}
+
+	var versionCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM resource_versions
+		WHERE content = $1
+	`, "# 标题\n正文").Scan(&versionCount); err != nil {
+		t.Fatalf("count versions after rollback: %v", err)
+	}
+
+	if versionCount != 0 {
+		t.Fatalf("expected rollback to leave 0 versions, got %d", versionCount)
 	}
 }
 
@@ -323,6 +614,264 @@ func TestTaskAndStepsCRUD(t *testing.T) {
 	}
 }
 
+func TestCountChunksByVersion(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, repo, ctx, "版本分块统计测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	count, err := repo.CountChunksByVersion(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("count chunks before insert: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 chunks before insert, got %d", count)
+	}
+
+	if err := repo.CreateChunk(ctx, &ResourceChunk{
+		ResourceID:   resource.ID,
+		VersionID:    version.ID,
+		ChunkIndex:   0,
+		SectionTitle: "考勤管理",
+		Content:      "员工必须在九点前完成签到。",
+		Embedding:    testVector(0.42),
+	}); err != nil {
+		t.Fatalf("create chunk: %v", err)
+	}
+
+	count, err = repo.CountChunksByVersion(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("count chunks after insert: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 chunk after insert, got %d", count)
+	}
+}
+
+func TestReplaceVersionChunksIsIdempotent(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, repo, ctx, "版本分块替换测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	if err := repo.CreateChunk(ctx, &ResourceChunk{
+		ResourceID:   resource.ID,
+		VersionID:    version.ID,
+		ChunkIndex:   0,
+		SectionTitle: "旧章节",
+		Content:      "旧版本正文",
+		Embedding:    testVector(0.11),
+	}); err != nil {
+		t.Fatalf("seed old chunk: %v", err)
+	}
+
+	inputs := []ResourceChunkInput{
+		{
+			ChunkIndex:   0,
+			SectionTitle: "考勤管理",
+			Content:      "第一版正文",
+			Embedding:    testVector(0.21),
+		},
+	}
+
+	if err := repo.ReplaceVersionChunks(ctx, version.ID, resource.ID, inputs); err != nil {
+		t.Fatalf("replace version chunks first run: %v", err)
+	}
+	if err := repo.ReplaceVersionChunks(ctx, version.ID, resource.ID, inputs); err != nil {
+		t.Fatalf("replace version chunks second run: %v", err)
+	}
+
+	count, err := repo.CountChunksByVersion(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("count chunks after replace: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 chunk after repeated replace, got %d", count)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT section_title, content, chunk_index
+		FROM resource_chunks
+		WHERE version_id = $1
+	`, version.ID)
+	if err != nil {
+		t.Fatalf("query version chunks: %v", err)
+	}
+	defer rows.Close()
+
+	type storedChunk struct {
+		sectionTitle string
+		content      string
+		chunkIndex   int
+	}
+
+	storedChunks := make([]storedChunk, 0)
+	for rows.Next() {
+		var chunk storedChunk
+		if err := rows.Scan(&chunk.sectionTitle, &chunk.content, &chunk.chunkIndex); err != nil {
+			t.Fatalf("scan stored chunk: %v", err)
+		}
+
+		storedChunks = append(storedChunks, chunk)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate stored chunks: %v", err)
+	}
+
+	if len(storedChunks) != 1 {
+		t.Fatalf("expected exactly 1 stored chunk row, got %d", len(storedChunks))
+	}
+	if storedChunks[0].sectionTitle != "考勤管理" {
+		t.Fatalf("expected section title %q, got %q", "考勤管理", storedChunks[0].sectionTitle)
+	}
+	if storedChunks[0].content != "第一版正文" {
+		t.Fatalf("expected content %q, got %q", "第一版正文", storedChunks[0].content)
+	}
+	if storedChunks[0].chunkIndex != 0 {
+		t.Fatalf("expected chunk index 0, got %d", storedChunks[0].chunkIndex)
+	}
+}
+
+func TestSearchChunksByVersionExcludesOlderVersion(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, oldVersion := seedResourceVersion(t, repo, ctx, "版本语义检索测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	newVersion, err := repo.CreateVersion(ctx, resource.ID, 2, "## 考勤管理\n新版本考勤条款", "agent_edit")
+	if err != nil {
+		t.Fatalf("create new version: %v", err)
+	}
+
+	seedVersionChunk(t, repo, ctx, resource.ID, oldVersion.ID, 0, "考勤管理", "旧版本考勤条款", testVector(0.21))
+	seedVersionChunk(t, repo, ctx, resource.ID, newVersion.ID, 0, "考勤管理", "新版本考勤条款", testVector(0.41))
+
+	chunks, err := repo.SearchChunksByVersion(ctx, testVector(0.41), 5, newVersion.ID)
+	if err != nil {
+		t.Fatalf("search chunks by version: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk from current version, got %d", len(chunks))
+	}
+	if chunks[0].VersionID != newVersion.ID {
+		t.Fatalf("expected version id %q, got %q", newVersion.ID, chunks[0].VersionID)
+	}
+	if chunks[0].Content != "新版本考勤条款" {
+		t.Fatalf("expected current version content %q, got %q", "新版本考勤条款", chunks[0].Content)
+	}
+}
+
+func TestSearchChunksLexicalByVersionExcludesOlderVersion(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, oldVersion := seedResourceVersion(t, repo, ctx, "版本词法检索测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	newVersion, err := repo.CreateVersion(ctx, resource.ID, 2, "## 考勤管理\n新版本考勤条款", "agent_edit")
+	if err != nil {
+		t.Fatalf("create new version: %v", err)
+	}
+
+	seedVersionChunk(t, repo, ctx, resource.ID, oldVersion.ID, 0, "考勤管理", "旧版本考勤条款", testVector(0.22))
+	seedVersionChunk(t, repo, ctx, resource.ID, newVersion.ID, 0, "考勤管理", "新版本考勤条款", testVector(0.42))
+
+	chunks, err := repo.SearchChunksLexicalByVersion(ctx, "考勤", 5, newVersion.ID)
+	if err != nil {
+		t.Fatalf("search lexical chunks by version: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 lexical chunk from current version, got %d", len(chunks))
+	}
+	if chunks[0].VersionID != newVersion.ID {
+		t.Fatalf("expected lexical version id %q, got %q", newVersion.ID, chunks[0].VersionID)
+	}
+	if chunks[0].Content != "新版本考勤条款" {
+		t.Fatalf("expected lexical content %q, got %q", "新版本考勤条款", chunks[0].Content)
+	}
+}
+
+func TestCleanupResourceTreeIsIdempotent(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	jobRepo := NewJobRepo(pool)
+	eventRepo := NewTaskEventRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "资源树清理测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+
+	task, err := taskRepo.Create(ctx, resource.ID, "验证共享 cleanup helper")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := taskRepo.AddStep(ctx, task.ID, "planner"); err != nil {
+		t.Fatalf("add step: %v", err)
+	}
+	if _, err := taskRepo.AddArtifact(ctx, task.ID, "diff_preview", []byte(`{"sections":[]}`)); err != nil {
+		t.Fatalf("add artifact: %v", err)
+	}
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	job, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, err := eventRepo.Add(ctx, TaskEventCreateParams{
+		TaskID:    task.ID,
+		RunID:     &job.ID,
+		Source:    "cleanup_test",
+		Level:     "info",
+		EventType: "cleanup.seed",
+		Message:   "seed cleanup data",
+		Payload:   []byte(`{"resource_id":"` + resource.ID + `"}`),
+	}); err != nil {
+		t.Fatalf("add task event: %v", err)
+	}
+
+	if err := postgrescleanup.CleanupResourceTree(ctx, pool, resource.ID); err != nil {
+		t.Fatalf("first cleanup: %v", err)
+	}
+
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM resources WHERE id = $1`, resource.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM tasks WHERE id = $1`, task.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM approvals WHERE id = $1`, approvalRecord.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM execution_jobs WHERE id = $1`, job.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM task_steps WHERE task_id = $1`, task.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM task_artifacts WHERE task_id = $1`, task.ID)
+	assertRowMissing(t, ctx, pool, `SELECT COUNT(*) FROM task_events WHERE task_id = $1`, task.ID)
+
+	if err := postgrescleanup.CleanupResourceTree(ctx, pool, resource.ID); err != nil {
+		t.Fatalf("second cleanup: %v", err)
+	}
+}
+
 // newTestPool 为 PostgreSQL 存储测试创建可复用连接池并执行迁移。
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -333,18 +882,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 
 	ctx := testContext(t)
 	databaseURL := testDatabaseURL()
-
-	pool, err := NewPool(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("new pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, databaseURL, "storage_postgres", NewPool, RunMigrations)
 }
 
 // newRawTestPool 为需要自行控制迁移时机的测试创建数据库连接池。
@@ -357,14 +895,7 @@ func newRawTestPool(t *testing.T) *pgxpool.Pool {
 
 	ctx := testContext(t)
 	databaseURL := testDatabaseURL()
-
-	pool, err := NewPool(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("new raw pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	return pool
+	return postgrestest.NewRawIsolatedPool(t, ctx, databaseURL, "storage_postgres_raw", NewPool)
 }
 
 // testDatabaseURL 从当前配置中读取测试数据库地址。
@@ -378,12 +909,20 @@ func cleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
 	ctx := testContext(t)
-	if _, err := pool.Exec(ctx, `DELETE FROM tasks WHERE resource_id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup tasks for resource %q: %v", resourceID, err)
+	if err := postgrescleanup.CleanupResourceTree(ctx, pool, resourceID); err != nil {
+		t.Fatalf("cleanup resource tree for resource %q: %v", resourceID, err)
 	}
+}
 
-	if _, err := pool.Exec(ctx, `DELETE FROM resources WHERE id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup resource %q: %v", resourceID, err)
+func assertRowMissing(t *testing.T, ctx context.Context, pool *pgxpool.Pool, query string, id string) {
+	t.Helper()
+
+	var count int
+	if err := pool.QueryRow(ctx, query, id).Scan(&count); err != nil {
+		t.Fatalf("query cleanup result: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected query %q to return 0 rows for %q, got %d", query, id, count)
 	}
 }
 
@@ -399,6 +938,47 @@ func testContext(t *testing.T) context.Context {
 // uniqueSuffix 生成测试数据使用的唯一后缀。
 func uniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+func seedResourceVersion(t *testing.T, repo *ResourceRepo, ctx context.Context, title string) (*Resource, *ResourceVersion) {
+	t.Helper()
+
+	resource, err := repo.Create(ctx, title, "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+
+	version, err := repo.CreateVersion(ctx, resource.ID, 1, "## 考勤管理\n员工必须在九点前签到。", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	return resource, version
+}
+
+func seedVersionChunk(
+	t *testing.T,
+	repo *ResourceRepo,
+	ctx context.Context,
+	resourceID string,
+	versionID string,
+	chunkIndex int,
+	sectionTitle string,
+	content string,
+	embedding pgvector.Vector,
+) {
+	t.Helper()
+
+	if err := repo.CreateChunk(ctx, &ResourceChunk{
+		ResourceID:   resourceID,
+		VersionID:    versionID,
+		ChunkIndex:   chunkIndex,
+		SectionTitle: sectionTitle,
+		Content:      content,
+		Embedding:    embedding,
+	}); err != nil {
+		t.Fatalf("create version chunk: %v", err)
+	}
 }
 
 // testVector 生成固定维度的测试向量，便于插入和相似度查询。

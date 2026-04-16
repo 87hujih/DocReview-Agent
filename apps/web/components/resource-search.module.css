@@ -24,7 +24,11 @@
 .button {
   min-height: 42px;
   padding: 0 var(--terminal-space-4);
-  justify-self: start;
+  min-width: 140px;
+  justify-self: end;
+  border-color: var(--terminal-info);
+  color: var(--terminal-info);
+  background: rgba(0, 200, 165, 0.08);
 }
 
 .timestamp {
@@ -76,6 +80,11 @@
 }
 
 @media (max-width: 640px) {
+  .button {
+    width: 100%;
+    justify-self: stretch;
+  }
+
   .resultHeader {
     flex-direction: column;
   }

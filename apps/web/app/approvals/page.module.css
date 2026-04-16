@@ -1,15 +1,38 @@
 .page {
   display: grid;
+  grid-template-rows: minmax(0, 1fr);
   gap: var(--terminal-space-6);
+  height: 100%;
+  min-height: 0;
+  width: min(100%, 1120px);
+  margin: 0 auto;
+  overflow: hidden;
 }
 
-.banner {
-  margin: 0;
-  color: var(--terminal-info);
+.listFrame {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.listBody {
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.listBody::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .list {
   display: grid;
+  align-content: start;
+  grid-auto-rows: max-content;
   gap: var(--terminal-space-4);
   margin: 0;
   padding: 0;
@@ -45,13 +68,73 @@
   gap: var(--terminal-space-3);
 }
 
-.actionButton {
+.viewButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 var(--terminal-space-4);
+  border: var(--terminal-border-width) solid var(--terminal-border);
+  color: var(--terminal-text-dim);
+}
+
+.approveButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 var(--terminal-space-4);
+  border: var(--terminal-border-width) solid var(--terminal-success);
+  color: var(--terminal-success);
+}
+
+.rejectButton {
   display: inline-flex;
   align-items: center;
   min-height: 38px;
   padding: 0 var(--terminal-space-4);
   border: var(--terminal-border-width) solid var(--terminal-warning);
   color: var(--terminal-warning);
+}
+
+.rejectForm {
+  display: grid;
+  gap: var(--terminal-space-3);
+  padding: var(--terminal-space-3) var(--terminal-space-4);
+  border: var(--terminal-border-width) dashed var(--terminal-warning);
+}
+
+.rejectInput {
+  width: 100%;
+  padding: var(--terminal-space-2) var(--terminal-space-3);
+  border-color: rgba(255, 176, 0, 0.4);
+  background: rgba(30, 14, 0, 0.6);
+  color: var(--terminal-text-strong);
+}
+
+.rejectInput::placeholder {
+  color: var(--terminal-text-muted);
+}
+
+.rejectActions {
+  display: flex;
+  gap: var(--terminal-space-3);
+}
+
+.confirmRejectButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 var(--terminal-space-4);
+  border: var(--terminal-border-width) solid var(--terminal-warning);
+  color: var(--terminal-warning);
+}
+
+.cancelButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 var(--terminal-space-4);
+  border: var(--terminal-border-width) solid var(--terminal-border);
+  color: var(--terminal-text-dim);
 }
 
 .error {

@@ -3,58 +3,54 @@ package service
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 
 	"agent_project/apps/server/internal/storage/postgres"
+	taskevents "agent_project/apps/server/internal/task/events"
+	"agent_project/apps/server/internal/task/models"
 	"agent_project/apps/server/internal/task/workflow"
 )
 
 var (
 	// ErrInstructionRequired 表示任务指令为空。
-	ErrInstructionRequired = errors.New("instruction is required")
+	ErrInstructionRequired = errors.New("任务指令不能为空")
 	// ErrResourceNotFound 表示资源不存在。
-	ErrResourceNotFound = errors.New("resource not found")
+	ErrResourceNotFound = errors.New("资源不存在")
 	// ErrResourceCurrentVersionNotFound 表示资源缺少当前版本。
-	ErrResourceCurrentVersionNotFound = errors.New("resource current version not found")
+	ErrResourceCurrentVersionNotFound = errors.New("资源当前版本不存在")
+	// ErrSuggestionMessageIDRequired 表示助手建议消息 ID 为空。
+	ErrSuggestionMessageIDRequired = errors.New("任务建议消息 ID 不能为空")
 )
 
 // Service 协调任务创建、查询和后台编排启动。
 type Service struct {
 	taskRepo     *postgres.TaskRepo
 	resourceRepo *postgres.ResourceRepo
-	orchestrator *workflow.Orchestrator
+	runner       *workflow.WorkflowRunner
+	eventService *taskevents.Service
 }
 
 // New 创建任务服务。
-func New(taskRepo *postgres.TaskRepo, resourceRepo *postgres.ResourceRepo, orch *workflow.Orchestrator) *Service {
+func New(
+	taskRepo *postgres.TaskRepo,
+	resourceRepo *postgres.ResourceRepo,
+	runner *workflow.WorkflowRunner,
+	eventService *taskevents.Service,
+) *Service {
 	return &Service{
 		taskRepo:     taskRepo,
 		resourceRepo: resourceRepo,
-		orchestrator: orch,
+		runner:       runner,
+		eventService: eventService,
 	}
 }
 
 // CreateTask 创建任务，并在生产接线中异步启动编排器。
 func (s *Service) CreateTask(ctx context.Context, resourceID string, instruction string) (*postgres.Task, error) {
-	instruction = strings.TrimSpace(instruction)
-	if instruction == "" {
-		return nil, ErrInstructionRequired
-	}
-
-	resource, err := s.resourceRepo.GetByID(ctx, resourceID)
+	resourceID, instruction, err := s.validateCreateTaskInput(ctx, resourceID, instruction)
 	if err != nil {
 		return nil, err
-	}
-	if resource == nil {
-		return nil, ErrResourceNotFound
-	}
-
-	version, err := s.resourceRepo.GetCurrentVersion(ctx, resourceID)
-	if err != nil {
-		return nil, err
-	}
-	if version == nil {
-		return nil, ErrResourceCurrentVersionNotFound
 	}
 
 	task, err := s.taskRepo.Create(ctx, resourceID, instruction)
@@ -62,11 +58,40 @@ func (s *Service) CreateTask(ctx context.Context, resourceID string, instruction
 		return nil, err
 	}
 
-	if s.orchestrator != nil {
-		go s.orchestrator.Orchestrate(context.Background(), task)
+	return s.afterTaskCreated(ctx, task)
+}
+
+// CreateTaskFromAssistantSuggestion 根据建议消息创建任务，并用 suggestion message id 做幂等保护。
+func (s *Service) CreateTaskFromAssistantSuggestion(
+	ctx context.Context,
+	resourceID string,
+	instruction string,
+	sourceMessageID string,
+) (*postgres.Task, bool, error) {
+	resourceID, instruction, err := s.validateCreateTaskInput(ctx, resourceID, instruction)
+	if err != nil {
+		return nil, false, err
 	}
 
-	return task, nil
+	sourceMessageID = strings.TrimSpace(sourceMessageID)
+	if sourceMessageID == "" {
+		return nil, false, ErrSuggestionMessageIDRequired
+	}
+
+	task, created, err := s.taskRepo.CreateFromAssistantSuggestion(ctx, resourceID, instruction, sourceMessageID)
+	if err != nil {
+		return nil, false, err
+	}
+	if !created {
+		return task, false, nil
+	}
+
+	task, err = s.afterTaskCreated(ctx, task)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return task, true, nil
 }
 
 // GetTask 返回任务和步骤列表。
@@ -90,4 +115,114 @@ func (s *Service) GetTask(ctx context.Context, id string) (*postgres.Task, []pos
 // ListTasks 返回任务列表。
 func (s *Service) ListTasks(ctx context.Context) ([]postgres.Task, error) {
 	return s.taskRepo.List(ctx)
+}
+
+func (s *Service) recordEvent(ctx context.Context, input taskevents.RecordInput) {
+	if s.eventService == nil {
+		return
+	}
+
+	if _, err := s.eventService.Record(ctx, input); err != nil {
+		log.Printf("警告：记录任务事件失败：task=%s event=%s err=%v", input.TaskID, input.EventType, err)
+	}
+}
+
+func (s *Service) validateCreateTaskInput(ctx context.Context, resourceID string, instruction string) (string, string, error) {
+	resourceID = strings.TrimSpace(resourceID)
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" {
+		return "", "", ErrInstructionRequired
+	}
+
+	resource, err := s.resourceRepo.GetByID(ctx, resourceID)
+	if err != nil {
+		return "", "", err
+	}
+	if resource == nil {
+		return "", "", ErrResourceNotFound
+	}
+
+	version, err := s.resourceRepo.GetCurrentVersion(ctx, resourceID)
+	if err != nil {
+		return "", "", err
+	}
+	if version == nil {
+		return "", "", ErrResourceCurrentVersionNotFound
+	}
+
+	return resourceID, instruction, nil
+}
+
+func (s *Service) afterTaskCreated(ctx context.Context, task *postgres.Task) (*postgres.Task, error) {
+	s.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "task_service",
+		Level:     "info",
+		EventType: "task.created",
+		Message:   "任务已创建，等待编排执行",
+		Payload: map[string]any{
+			"resource_id": task.ResourceID,
+			"status":      task.Status,
+		},
+	})
+
+	if s.runner != nil {
+		if err := s.runner.Enqueue(task.ID); err != nil {
+			return s.failCreatedTask(ctx, task, err)
+		}
+	}
+
+	return task, nil
+}
+
+func (s *Service) failCreatedTask(ctx context.Context, task *postgres.Task, enqueueErr error) (*postgres.Task, error) {
+	errorMsg, reason := taskEnqueueFailureDetail(enqueueErr)
+	from := task.Status
+	if err := models.Transition(task.Status, models.StatusFailed); err != nil {
+		return nil, err
+	}
+	if err := s.taskRepo.UpdateStatus(ctx, task.ID, models.StatusFailed, &errorMsg); err != nil {
+		return nil, err
+	}
+
+	task.Status = models.StatusFailed
+	task.ErrorMessage = &errorMsg
+	s.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "task_service",
+		Level:     "error",
+		EventType: "task.status_changed",
+		Message:   "任务状态已更新为失败",
+		Payload: map[string]any{
+			"from_status":   from,
+			"to_status":     models.StatusFailed,
+			"error_message": errorMsg,
+			"reason":        reason,
+		},
+	})
+	s.recordEvent(ctx, taskevents.RecordInput{
+		TaskID:    task.ID,
+		Source:    "task_service",
+		Level:     "error",
+		EventType: "task.failed",
+		Message:   errorMsg,
+		Payload: map[string]any{
+			"reason":        reason,
+			"error_message": errorMsg,
+			"status":        models.StatusFailed,
+		},
+	})
+
+	return task, nil
+}
+
+func taskEnqueueFailureDetail(err error) (string, string) {
+	switch {
+	case errors.Is(err, workflow.ErrQueueFull):
+		return "任务队列已满，无法调度执行", "queue_full"
+	case errors.Is(err, workflow.ErrRunnerStopped):
+		return "工作流执行器已停止，无法调度执行", "runner_stopped"
+	default:
+		return "任务调度失败，无法启动执行", "enqueue_failed"
+	}
 }

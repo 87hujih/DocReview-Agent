@@ -18,6 +18,20 @@ const (
 	defaultEmbeddingModel     = "Qwen/Qwen3-Embedding-8B"
 	defaultEmbeddingDim       = 1024
 	defaultRerankerModel      = "Qwen/Qwen3-Reranker-8B"
+	defaultDocumentParser     = "text"
+	defaultTikaTimeoutMS      = 30000
+	defaultUploadStorageDir   = "data/uploads"
+	defaultUploadMaxBytes     = 20 * 1024 * 1024
+	defaultLogLevel           = "info"
+	defaultLogFormat          = "json"
+
+	defaultLLMTimeoutMS        = 90000
+	defaultLLMRetryMax         = 2
+	defaultLLMRetryBackoffMS   = 1000
+	defaultTaskStepTimeoutMS   = 120000
+	defaultTaskContextMaxRunes = 24000
+	defaultWorkflowWorkers     = 2
+	defaultWorkflowQueueSize   = 100
 )
 
 // Config 保存从环境变量、.env 和默认 YAML 配置解析出的运行时参数。
@@ -31,12 +45,31 @@ type Config struct {
 	EmbeddingModel     string
 	EmbeddingDim       int
 	RerankerModel      string
+	DocumentParser     string
+	TikaURL            string
+	TikaTimeoutMS      int
+	UploadStorageDir   string
+	UploadMaxBytes     int
+
+	LogLevel     string
+	LogFormat    string
+	LogAddSource bool
+
+	LLMTimeoutMS        int
+	LLMRetryMax         int
+	LLMRetryBackoffMS   int
+	TaskStepTimeoutMS   int
+	TaskContextMaxRunes int
+	WorkflowWorkers     int
+	WorkflowQueueSize   int
 }
 
 // fileConfig 对应默认 YAML 配置文件的顶层结构。
 type fileConfig struct {
-	Server serverConfig `yaml:"server"`
-	AI     aiConfig     `yaml:"ai"`
+	Server   serverConfig   `yaml:"server"`
+	AI       aiConfig       `yaml:"ai"`
+	Document documentConfig `yaml:"document"`
+	Log      logConfig      `yaml:"log"`
 }
 
 // serverConfig 描述服务端口等服务级默认配置。
@@ -53,6 +86,20 @@ type aiConfig struct {
 	RerankerModel      string `yaml:"reranker_model"`
 }
 
+// documentConfig 描述文档解析模式与 Tika 连接参数。
+type documentConfig struct {
+	Parser        string `yaml:"parser"`
+	TikaURL       string `yaml:"tika_url"`
+	TikaTimeoutMS int    `yaml:"tika_timeout_ms"`
+}
+
+// logConfig 描述日志级别、输出格式和是否附带源码位置。
+type logConfig struct {
+	Level     string `yaml:"level"`
+	Format    string `yaml:"format"`
+	AddSource bool   `yaml:"add_source"`
+}
+
 // Load 按“进程环境变量 -> .env -> config/default.yaml -> 硬编码默认值”的优先级解析配置。
 func Load() Config {
 	defaults := loadDefaultFileConfig()
@@ -67,6 +114,22 @@ func Load() Config {
 		EmbeddingModel:     resolveString("EMBEDDING_MODEL", dotenvValues, defaults.AI.EmbeddingModel, defaultEmbeddingModel),
 		EmbeddingDim:       resolveInt("EMBEDDING_DIM", dotenvValues, defaults.AI.EmbeddingDim, defaultEmbeddingDim),
 		RerankerModel:      resolveString("RERANKER_MODEL", dotenvValues, defaults.AI.RerankerModel, defaultRerankerModel),
+		DocumentParser:     resolveString("DOCUMENT_PARSER", dotenvValues, defaults.Document.Parser, defaultDocumentParser),
+		TikaURL:            resolveString("TIKA_URL", dotenvValues, defaults.Document.TikaURL, ""),
+		TikaTimeoutMS:      resolveInt("TIKA_TIMEOUT_MS", dotenvValues, defaults.Document.TikaTimeoutMS, defaultTikaTimeoutMS),
+		UploadStorageDir:   resolveString("UPLOAD_STORAGE_DIR", dotenvValues, "", defaultUploadStorageDir),
+		UploadMaxBytes:     resolveInt("UPLOAD_MAX_BYTES", dotenvValues, 0, defaultUploadMaxBytes),
+		LogLevel:           resolveString("LOG_LEVEL", dotenvValues, defaults.Log.Level, defaultLogLevel),
+		LogFormat:          resolveString("LOG_FORMAT", dotenvValues, defaults.Log.Format, defaultLogFormat),
+		LogAddSource:       resolveBool("LOG_ADD_SOURCE", dotenvValues, defaults.Log.AddSource, false),
+
+		LLMTimeoutMS:        resolveInt("LLM_TIMEOUT_MS", dotenvValues, 0, defaultLLMTimeoutMS),
+		LLMRetryMax:         resolveInt("LLM_RETRY_MAX", dotenvValues, 0, defaultLLMRetryMax),
+		LLMRetryBackoffMS:   resolveInt("LLM_RETRY_BACKOFF_MS", dotenvValues, 0, defaultLLMRetryBackoffMS),
+		TaskStepTimeoutMS:   resolveInt("TASK_STEP_TIMEOUT_MS", dotenvValues, 0, defaultTaskStepTimeoutMS),
+		TaskContextMaxRunes: resolveInt("TASK_CONTEXT_MAX_RUNES", dotenvValues, 0, defaultTaskContextMaxRunes),
+		WorkflowWorkers:     resolveInt("WORKFLOW_WORKERS", dotenvValues, 0, defaultWorkflowWorkers),
+		WorkflowQueueSize:   resolveInt("WORKFLOW_QUEUE_SIZE", dotenvValues, 0, defaultWorkflowQueueSize),
 	}
 }
 
@@ -99,14 +162,29 @@ func (c Config) ValidateForServer() error {
 	}
 
 	if len(missing) > 0 {
-		return fmt.Errorf("missing required config: %s", strings.Join(missing, ", "))
+		return fmt.Errorf("缺少必填配置：%s", strings.Join(missing, ", "))
 	}
 
 	if c.EmbeddingDim <= 0 {
-		return fmt.Errorf("invalid EMBEDDING_DIM: %d", c.EmbeddingDim)
+		return fmt.Errorf("EMBEDDING_DIM 无效：%d", c.EmbeddingDim)
 	}
 
-	return nil
+	parserMode := strings.ToLower(strings.TrimSpace(c.DocumentParser))
+	switch parserMode {
+	case "", defaultDocumentParser:
+		return nil
+	case "tika":
+		if strings.TrimSpace(c.TikaURL) == "" {
+			return fmt.Errorf("缺少必填配置：TIKA_URL")
+		}
+		if c.TikaTimeoutMS <= 0 {
+			return fmt.Errorf("TIKA_TIMEOUT_MS 无效：%d", c.TikaTimeoutMS)
+		}
+		return nil
+	default:
+		return fmt.Errorf("DOCUMENT_PARSER 无效：%s", c.DocumentParser)
+	}
+
 }
 
 // loadDefaultFileConfig 允许命令从仓库根目录或嵌套应用目录启动时都能读取 config/default.yaml。
@@ -203,6 +281,23 @@ func resolveInt(key string, dotenvValues map[string]string, fileValue int, fallb
 	return fallback
 }
 
+// resolveBool 按既定优先级解析布尔配置项。
+func resolveBool(key string, dotenvValues map[string]string, fileValue bool, fallback bool) bool {
+	if value, ok := parseBool(strings.TrimSpace(os.Getenv(key))); ok {
+		return value
+	}
+
+	if value, ok := parseBool(strings.TrimSpace(dotenvValues[key])); ok {
+		return value
+	}
+
+	if fileValue {
+		return true
+	}
+
+	return fallback
+}
+
 // parseInt 在解析失败时返回 false，便于上层继续走回退逻辑。
 func parseInt(value string) (int, bool) {
 	if value == "" {
@@ -215,6 +310,20 @@ func parseInt(value string) (int, bool) {
 	}
 
 	return number, true
+}
+
+// parseBool 在解析失败时返回 false，便于上层继续走回退逻辑。
+func parseBool(value string) (bool, bool) {
+	if value == "" {
+		return false, false
+	}
+
+	boolean, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, false
+	}
+
+	return boolean, true
 }
 
 // findUpward 会向上遍历父目录，让本地工具从不同工作目录执行时都能找到目标文件。

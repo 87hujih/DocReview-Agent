@@ -1,0 +1,326 @@
+.sidebar {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  padding: 22px 18px 18px;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.82));
+}
+
+.embedded {
+  height: 100%;
+  padding: 6px 0 0;
+  min-height: 0;
+  background: transparent;
+}
+
+.top {
+  display: grid;
+  gap: 18px;
+  padding: 4px 2px 20px;
+}
+
+.embedded .top {
+  gap: 10px;
+  padding: 0 0 16px;
+}
+
+.identity {
+  display: grid;
+  gap: 8px;
+}
+
+.embeddedHeader {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+}
+
+.label {
+  margin: 0;
+  color: rgba(115, 215, 255, 0.7);
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  color: var(--terminal-text-strong);
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.caption {
+  margin: 0;
+  color: var(--terminal-text-dim);
+  font-size: 0.92rem;
+  line-height: 1.7;
+}
+
+.embeddedLabel {
+  margin: 0;
+  color: rgba(115, 215, 255, 0.74);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.newButton {
+  justify-content: flex-start;
+  min-height: 44px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 14px;
+  background: rgba(0, 200, 165, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(0, 200, 165, 0.16);
+  color: #00C8A5;
+  font-size: 0.92rem;
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+
+.newButton:hover {
+  background: rgba(0, 200, 165, 0.2);
+  transform: translateY(-1px);
+}
+
+.listWrap {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.embedded .listWrap {
+  min-height: 0;
+  gap: 8px;
+}
+
+.sectionLabel {
+  margin: 0;
+  padding: 0 6px;
+  color: var(--terminal-text-muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.placeholder {
+  margin: 0;
+  padding: 0 6px;
+  color: var(--terminal-text-muted);
+  font-size: 0.86rem;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  list-style: none;
+}
+
+.list::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border-radius: 14px;
+  transition: background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.item:hover {
+  background: rgba(148, 163, 184, 0.08);
+  transform: translateY(-1px);
+}
+
+.item[data-active="true"] {
+  background: rgba(0, 200, 165, 0.1);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 200, 165, 0.14),
+    0 16px 40px rgba(2, 6, 23, 0.16);
+}
+
+.sessionButton {
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 14px 0 0 14px;
+  background: transparent;
+  color: var(--terminal-text-dim);
+  font-size: 0.88rem;
+  transition: color 120ms ease;
+}
+
+.sessionButton:hover,
+.sessionButton:focus-visible {
+  outline: none;
+}
+
+.item:hover .sessionButton {
+  color: var(--terminal-text);
+}
+
+.item[data-active="true"] .sessionButton {
+  color: #ffffff;
+}
+
+.sessionTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deleteButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: transparent;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.item:hover .deleteButton {
+  color: var(--terminal-text-muted);
+}
+
+.deleteButton:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #FC8181;
+}
+
+.deleteButton:focus-visible {
+  outline: none;
+  color: #FC8181;
+}
+
+/* ── Delete confirmation modal ───────────────── */
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.modal {
+  width: min(400px, calc(100vw - 32px));
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 20px;
+  background: #161D2C;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset,
+    0 24px 64px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.modalHeader {
+  padding: 22px 24px 4px;
+}
+
+.modalTitle {
+  margin: 0;
+  color: #F8FAFC;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.modalBody {
+  padding: 10px 24px 22px;
+}
+
+.modalText {
+  margin: 0;
+  color: #94A3B8;
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+
+.modalFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid #2A3241;
+}
+
+.modalCancelBtn {
+  min-height: 36px;
+  padding: 0 18px;
+  border: 1px solid #2A3241;
+  border-radius: 6px;
+  background: transparent;
+  color: #94A3B8;
+  font-size: 0.88rem;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.modalCancelBtn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: #3A4251;
+  color: #E2E8F0;
+}
+
+.modalCancelBtn:focus-visible {
+  outline: 1px solid #00C8A5;
+  outline-offset: 2px;
+}
+
+.modalConfirmBtn {
+  min-height: 36px;
+  padding: 0 18px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #FC8181;
+  font-size: 0.88rem;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.modalConfirmBtn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.65);
+}
+
+.modalConfirmBtn:focus-visible {
+  outline: 1px solid #FC8181;
+  outline-offset: 2px;
+}
+
+@media (max-width: 920px) {
+  .sidebar {
+    padding: 18px 14px 14px;
+  }
+
+  .embedded {
+    padding: 6px 0 0;
+  }
+}

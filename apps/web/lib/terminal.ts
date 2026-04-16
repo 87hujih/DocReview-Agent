@@ -74,6 +74,13 @@ export function toIsoSeconds(value?: Date | string | null): string {
     return "未提供";
   }
 
+  if (typeof value === "string") {
+    const normalized = trimIsoFractionalSeconds(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) {
     return String(value);
@@ -122,4 +129,16 @@ export function getErrorMessage(error: unknown): string {
   }
 
   return "发生未知错误";
+}
+
+function trimIsoFractionalSeconds(value: string): string | null {
+  const match = value
+    .trim()
+    .match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  return `${match[1]}${match[2]}`;
 }
