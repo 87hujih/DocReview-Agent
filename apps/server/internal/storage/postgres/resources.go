@@ -203,6 +203,11 @@ func (r *ResourceRepo) GetVersionByID(ctx context.Context, versionID string) (*R
 	return &version, nil
 }
 
+// ListSectionsByVersion 返回某个资源版本下的全部逻辑 sections。
+func (r *ResourceRepo) ListSectionsByVersion(ctx context.Context, versionID string) ([]ResourceSection, error) {
+	return NewResourceStructureRepo(r.pool).ListSectionsByVersion(ctx, versionID)
+}
+
 // CountChunksByVersion 返回指定版本当前已有的 chunk 数。
 func (r *ResourceRepo) CountChunksByVersion(ctx context.Context, versionID string) (int, error) {
 	var count int
@@ -215,6 +220,37 @@ func (r *ResourceRepo) CountChunksByVersion(ctx context.Context, versionID strin
 	}
 
 	return count, nil
+}
+
+// ListChunksByVersion 按 chunk_index 顺序返回某个版本下的全部 grounded chunks。
+func (r *ResourceRepo) ListChunksByVersion(ctx context.Context, versionID string) ([]ResourceChunk, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       chunk_index,
+		       section_title,
+		       content,
+		       embedding,
+		       section_id,
+		       section_type,
+		       chunk_role,
+		       window_group_id,
+		       order_in_section,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
+		FROM resource_chunks
+		WHERE version_id = $1
+		ORDER BY chunk_index ASC, created_at ASC
+	`, versionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectResourceChunks(rows)
 }
 
 // UpdateSourceRef 为资源回填或更新来源引用。
