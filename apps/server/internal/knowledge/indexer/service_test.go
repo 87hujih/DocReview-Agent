@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -114,6 +115,107 @@ func TestBuildVersionChunksKeepsWholeDocumentFallback(t *testing.T) {
 	}
 }
 
+func TestBuildVersionChunksFromProjectSections(t *testing.T) {
+	repo := &fakeIndexRepo{}
+	service := NewService(repo, fakeEmbedder{})
+
+	chunks, err := service.BuildVersionChunks(context.Background(), Input{
+		Resource: postgres.Resource{
+			ID:    "resource-project",
+			Title: "简历",
+		},
+		Version: postgres.ResourceVersion{
+			ID:         "version-project",
+			ResourceID: "resource-project",
+			Content:    "CampusHub校园活动平台\n负责活动发布与报名。",
+		},
+		Sections: []postgres.ResourceSection{
+			{
+				ID:                  "00000000-0000-0000-0000-000000000001",
+				ResourceID:          "resource-project",
+				VersionID:           "version-project",
+				SectionKey:          "project-1",
+				SectionType:         "project",
+				SectionOrder:        1,
+				Title:               "CampusHub校园活动平台",
+				CanonicalEntityName: stringPointer("CampusHub校园活动平台"),
+				AliasesJSON:         mustMarshalJSON(t, []string{"CampusHub校园活动平台", "CampusHub"}),
+				Summary:             "校园活动统一平台",
+				Content:             "负责活动发布、报名与签到链路。",
+				MetadataJSON: mustMarshalJSON(t, map[string]any{
+					"tech_stack": []string{"Go", "Redis", "gRPC"},
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build version chunks from sections: %v", err)
+	}
+
+	if len(chunks) != 5 {
+		t.Fatalf("expected 5 grounded project chunks, got %d", len(chunks))
+	}
+	expectedRoles := []string{"section_summary", "project_name", "tech_stack", "project_description", "project_work"}
+	for index, role := range expectedRoles {
+		if chunks[index].ChunkRole == nil || *chunks[index].ChunkRole != role {
+			t.Fatalf("expected chunk %d role %q, got %#v", index, role, chunks[index].ChunkRole)
+		}
+		if chunks[index].WindowGroupID == nil || *chunks[index].WindowGroupID != "project-1" {
+			t.Fatalf("expected chunk %d to reuse window_group_id project-1, got %#v", index, chunks[index].WindowGroupID)
+		}
+	}
+	if chunks[2].Content != "Go Redis gRPC" {
+		t.Fatalf("expected tech stack chunk content, got %q", chunks[2].Content)
+	}
+	if strings.Contains(chunks[3].Content, "项目描述：") {
+		t.Fatalf("expected low-value labels to be removed from chunk content, got %q", chunks[3].Content)
+	}
+}
+
+func TestBuildVersionChunksKeepsOrderInSection(t *testing.T) {
+	repo := &fakeIndexRepo{}
+	service := NewService(repo, fakeEmbedder{})
+
+	chunks, err := service.BuildVersionChunks(context.Background(), Input{
+		Resource: postgres.Resource{
+			ID:    "resource-project-order",
+			Title: "简历",
+		},
+		Version: postgres.ResourceVersion{
+			ID:         "version-project-order",
+			ResourceID: "resource-project-order",
+			Content:    "CampusHub校园活动平台\n负责活动发布与报名。",
+		},
+		Sections: []postgres.ResourceSection{
+			{
+				ID:                  "00000000-0000-0000-0000-000000000002",
+				ResourceID:          "resource-project-order",
+				VersionID:           "version-project-order",
+				SectionKey:          "project-1",
+				SectionType:         "project",
+				SectionOrder:        1,
+				Title:               "CampusHub校园活动平台",
+				CanonicalEntityName: stringPointer("CampusHub校园活动平台"),
+				Summary:             "校园活动统一平台",
+				Content:             "负责活动发布、报名与签到链路。",
+				MetadataJSON: mustMarshalJSON(t, map[string]any{
+					"tech_stack": []string{"Go", "Redis"},
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build version chunks from ordered sections: %v", err)
+	}
+
+	for index, chunk := range chunks {
+		expectedOrder := index + 1
+		if chunk.OrderInSection == nil || *chunk.OrderInSection != expectedOrder {
+			t.Fatalf("expected order_in_section %d, got %#v", expectedOrder, chunk.OrderInSection)
+		}
+	}
+}
+
 func TestReindexVersionClearsChunksForBlankContent(t *testing.T) {
 	repo := &fakeIndexRepo{}
 	service := NewService(repo, fakeEmbedder{})
@@ -202,4 +304,19 @@ func (e fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, err
 	}
 
 	return vectors, nil
+}
+
+func mustMarshalJSON(t *testing.T, value any) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+
+	return body
+}
+
+func stringPointer(value string) *string {
+	return &value
 }

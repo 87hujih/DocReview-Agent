@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/knowledge/sections"
@@ -96,6 +97,94 @@ func TestImportDocumentUsesParsedTextWhenParserConfigured(t *testing.T) {
 
 	if repo.createSourceRef == nil || *repo.createSourceRef != "学生守则.pdf" {
 		t.Fatalf("expected original filename to remain source_ref, got %#v", repo.createSourceRef)
+	}
+}
+
+func TestImportDocumentPersistsStructuredDocumentWhenParserConfigured(t *testing.T) {
+	repo := &fakeResourceRepo{
+		resource: &postgres.Resource{
+			ID:         "resource-1",
+			Title:      "CampusHub校园活动平台",
+			SourceType: "upload",
+		},
+		version: &postgres.ResourceVersion{
+			ID:            "version-1",
+			ResourceID:    "resource-1",
+			VersionNumber: 1,
+			Content:       "CampusHub校园活动平台\n负责活动发布与报名。",
+			Source:        "assistant_upload",
+		},
+	}
+	structureRepo := &fakeResourceStructureRepo{}
+	versionIndexer := &fakeVersionIndexer{}
+	normalizer := fakeDocumentNormalizer{
+		result: documentnormalize.NormalizedDocument{
+			Sections: []documentnormalize.NormalizedSection{
+				{
+					SectionKey:          "project-1",
+					Type:                documentnormalize.SectionTypeProject,
+					Order:               1,
+					Title:               "CampusHub校园活动平台",
+					CanonicalEntityName: "CampusHub校园活动平台",
+					Aliases:             []string{"CampusHub校园活动平台", "CampusHub"},
+					Summary:             "校园活动统一平台",
+					Content:             "负责活动发布与报名。",
+					TechStack:           []string{"Go", "Redis"},
+					Metadata:            map[string]any{"quality_flag": "ok"},
+				},
+			},
+		},
+	}
+	service := NewService(
+		repo,
+		fakeEmbedder{},
+		WithIndexer(versionIndexer),
+		WithParser(fakeDocumentParser{
+			result: &documentparser.Result{
+				Text: "CampusHub校园活动平台\n负责活动发布与报名。",
+				Document: &documentparser.ParsedDocument{
+					SourceFormat: "pdf",
+					Blocks: []documentparser.Block{
+						{Type: documentparser.BlockParagraph, Text: "CampusHub校园活动平台（2026.2-2026.3）"},
+						{Type: documentparser.BlockParagraph, Text: "负责活动发布与报名。"},
+					},
+				},
+			},
+		}),
+		WithNormalizer(normalizer),
+		WithStructureRepo(structureRepo),
+	)
+
+	result, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName: "campushub.pdf",
+		Content:  []byte("%PDF-binary-content"),
+	})
+	if err != nil {
+		t.Fatalf("import document with structured parser result: %v", err)
+	}
+	if result.Version == nil || result.Version.ID != "version-1" {
+		t.Fatalf("expected persisted version, got %#v", result.Version)
+	}
+	if structureRepo.createCalls != 1 {
+		t.Fatalf("expected version structure to be persisted once, got %d", structureRepo.createCalls)
+	}
+	if structureRepo.lastCreateParams.VersionID != "version-1" {
+		t.Fatalf("expected version structure to target version-1, got %#v", structureRepo.lastCreateParams)
+	}
+	if structureRepo.replaceCalls != 1 {
+		t.Fatalf("expected sections to be persisted once, got %d", structureRepo.replaceCalls)
+	}
+	if len(structureRepo.lastSections) != 1 {
+		t.Fatalf("expected 1 normalized section to be persisted, got %d", len(structureRepo.lastSections))
+	}
+	if structureRepo.lastSections[0].SectionType != string(documentnormalize.SectionTypeProject) {
+		t.Fatalf("expected persisted section type %q, got %#v", documentnormalize.SectionTypeProject, structureRepo.lastSections[0].SectionType)
+	}
+	if versionIndexer.reindexCalls != 1 {
+		t.Fatalf("expected grounded chunk reindex to run once, got %d", versionIndexer.reindexCalls)
+	}
+	if len(versionIndexer.lastInput.Sections) != 1 {
+		t.Fatalf("expected reindex to receive 1 section, got %d", len(versionIndexer.lastInput.Sections))
 	}
 }
 
@@ -505,6 +594,60 @@ func (p fakeDocumentParser) SupportedExtensions() []string {
 
 func (p fakeDocumentParser) UnsupportedFileMessage(string) string {
 	return "不支持的文件格式"
+}
+
+type fakeDocumentNormalizer struct {
+	result documentnormalize.NormalizedDocument
+}
+
+func (f fakeDocumentNormalizer) Normalize(document documentparser.ParsedDocument) documentnormalize.NormalizedDocument {
+	return f.result
+}
+
+type fakeResourceStructureRepo struct {
+	createCalls      int
+	replaceCalls     int
+	lastCreateParams postgres.CreateVersionStructureParams
+	lastSections     []postgres.ResourceSectionInput
+}
+
+func (f *fakeResourceStructureRepo) CreateVersionStructure(_ context.Context, params postgres.CreateVersionStructureParams) (*postgres.ResourceVersionStructure, error) {
+	f.createCalls++
+	f.lastCreateParams = params
+	return &postgres.ResourceVersionStructure{
+		ID:           "structure-1",
+		ResourceID:   params.ResourceID,
+		VersionID:    params.VersionID,
+		SourceFormat: params.SourceFormat,
+		DocumentJSON: params.DocumentJSON,
+	}, nil
+}
+
+func (f *fakeResourceStructureRepo) ReplaceSectionsForVersion(_ context.Context, versionID string, resourceID string, sections []postgres.ResourceSectionInput) ([]postgres.ResourceSection, error) {
+	f.replaceCalls++
+	f.lastSections = append([]postgres.ResourceSectionInput(nil), sections...)
+
+	inserted := make([]postgres.ResourceSection, 0, len(sections))
+	for index, section := range sections {
+		inserted = append(inserted, postgres.ResourceSection{
+			ID:                  "section-" + string(rune('1'+index)),
+			ResourceID:          resourceID,
+			VersionID:           versionID,
+			SectionKey:          section.SectionKey,
+			SectionType:         section.SectionType,
+			SectionOrder:        section.SectionOrder,
+			Title:               section.Title,
+			CanonicalEntityName: section.CanonicalEntityName,
+			AliasesJSON:         section.AliasesJSON,
+			Summary:             section.Summary,
+			Content:             section.Content,
+			PageStart:           section.PageStart,
+			PageEnd:             section.PageEnd,
+			MetadataJSON:        section.MetadataJSON,
+		})
+	}
+
+	return inserted, nil
 }
 
 type fakeVersionIndexer struct {

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"agent_project/apps/server/internal/knowledge/citation"
+	knowledgeRetriever "agent_project/apps/server/internal/knowledge/retriever"
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
@@ -21,6 +22,8 @@ type ReplyContext struct {
 	Snapshot       *SessionContextSnapshot
 	ActiveResource *resourceContext
 	Citations      []citation.Citation
+	GroundedTarget *ResolvedReference
+	QueryIntent    string
 	History        []postgres.AssistantMessage
 }
 
@@ -78,7 +81,22 @@ func (l *ContextLoader) LoadForReply(
 	}
 	replyContext.ActiveResource = activeResource
 
-	citations, err := l.loadResourceCitations(ctx, activeResource, snapshot, currentMessage)
+	resolvedReference := ReferenceResolver{}.Resolve(strings.TrimSpace(currentMessage), snapshot)
+	replyContext.GroundedTarget = resolvedReference
+
+	searchQuery := strings.TrimSpace(currentMessage)
+	if l.queries != nil {
+		searchQuery = l.queries.Build(RetrievalQueryInput{
+			CurrentMessage:        searchQuery,
+			ActiveResource:        snapshotActiveResource(snapshot),
+			RollingSummary:        snapshotRollingSummary(snapshot),
+			PendingTaskSuggestion: snapshotPendingTaskSuggestion(snapshot),
+			ResolvedReference:     resolvedReference,
+		})
+	}
+	replyContext.QueryIntent = string(knowledgeRetriever.QueryAnalyzer{}.Analyze(searchQuery).Intent)
+
+	citations, err := l.loadResourceCitations(ctx, activeResource, searchQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +155,6 @@ func (l *ContextLoader) resolveActiveResource(
 func (l *ContextLoader) loadResourceCitations(
 	ctx context.Context,
 	resource *resourceContext,
-	snapshot *SessionContextSnapshot,
 	query string,
 ) ([]citation.Citation, error) {
 	if l == nil || l.retriever == nil || resource == nil {
@@ -146,18 +163,6 @@ func (l *ContextLoader) loadResourceCitations(
 
 	trimmedQuery := strings.TrimSpace(query)
 	if trimmedQuery == "" {
-		return nil, nil
-	}
-
-	if l.queries != nil {
-		trimmedQuery = l.queries.Build(RetrievalQueryInput{
-			CurrentMessage: trimmedQuery,
-			ActiveResource: snapshotActiveResource(snapshot),
-			RollingSummary: snapshotRollingSummary(snapshot),
-			PendingTaskSuggestion: snapshotPendingTaskSuggestion(snapshot),
-		})
-	}
-	if strings.TrimSpace(trimmedQuery) == "" {
 		return nil, nil
 	}
 

@@ -199,6 +199,231 @@ func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
 	}
 }
 
+func TestSearchByResourceUsesTargetResolutionForProjectSections(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-grounded",
+			ResourceID: "resource-1",
+		},
+		sectionsByVersion: []postgres.ResourceSection{
+			{
+				ID:                  "section-campushub",
+				ResourceID:          "resource-1",
+				VersionID:           "version-grounded",
+				SectionKey:          "project-1",
+				SectionType:         "project",
+				SectionOrder:        1,
+				Title:               "CampusHub校园活动平台",
+				CanonicalEntityName: optionalRetrieverString("CampusHub"),
+				AliasesJSON:         []byte(`["CampusHub","CampusHub校园活动平台"]`),
+				Summary:             "面向校园活动的统一平台",
+				Content:             "负责活动发布、报名与签到全流程。",
+				MetadataJSON:        []byte(`{"tech_stack":["Go","Redis","gRPC"]}`),
+			},
+			{
+				ID:                  "section-shopflow",
+				ResourceID:          "resource-1",
+				VersionID:           "version-grounded",
+				SectionKey:          "project-2",
+				SectionType:         "project",
+				SectionOrder:        2,
+				Title:               "ShopFlow电商后台",
+				CanonicalEntityName: optionalRetrieverString("ShopFlow"),
+				AliasesJSON:         []byte(`["ShopFlow","ShopFlow电商后台"]`),
+				Summary:             "订单与库存管理后台",
+				Content:             "负责库存同步与售后流程治理。",
+				MetadataJSON:        []byte(`{"tech_stack":["Java","MySQL"]}`),
+			},
+		},
+		chunksByVersion: []postgres.ResourceChunk{
+			{
+				ID:             "chunk-project-1-summary",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "CampusHub校园活动平台",
+				Content:        "CampusHub校园活动平台\n面向校园活动的统一平台",
+				SectionID:      optionalRetrieverString("section-campushub"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("section_summary"),
+				WindowGroupID:  optionalRetrieverString("project-1"),
+				OrderInSection: optionalRetrieverInt(1),
+			},
+			{
+				ID:             "chunk-project-1-work",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "CampusHub校园活动平台",
+				Content:        "负责活动发布、报名与签到全流程。",
+				SectionID:      optionalRetrieverString("section-campushub"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("project_work"),
+				WindowGroupID:  optionalRetrieverString("project-1"),
+				OrderInSection: optionalRetrieverInt(5),
+			},
+			{
+				ID:             "chunk-project-1-tech",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "CampusHub校园活动平台",
+				Content:        "Go Redis gRPC",
+				SectionID:      optionalRetrieverString("section-campushub"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("tech_stack"),
+				WindowGroupID:  optionalRetrieverString("project-1"),
+				OrderInSection: optionalRetrieverInt(3),
+			},
+			{
+				ID:             "chunk-project-2-summary",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "ShopFlow电商后台",
+				Content:        "ShopFlow电商后台\n订单与库存管理后台",
+				SectionID:      optionalRetrieverString("section-shopflow"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("section_summary"),
+				WindowGroupID:  optionalRetrieverString("project-2"),
+				OrderInSection: optionalRetrieverInt(1),
+			},
+			{
+				ID:             "chunk-project-2-work",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "ShopFlow电商后台",
+				Content:        "负责库存同步与售后流程治理。",
+				SectionID:      optionalRetrieverString("section-shopflow"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("project_work"),
+				WindowGroupID:  optionalRetrieverString("project-2"),
+				OrderInSection: optionalRetrieverInt(5),
+			},
+			{
+				ID:             "chunk-project-2-tech",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "ShopFlow电商后台",
+				Content:        "Java MySQL",
+				SectionID:      optionalRetrieverString("section-shopflow"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("tech_stack"),
+				WindowGroupID:  optionalRetrieverString("project-2"),
+				OrderInSection: optionalRetrieverInt(3),
+			},
+		},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, nil)
+
+	t.Run("list sections", func(t *testing.T) {
+		citations, err := service.SearchByResource(context.Background(), "resource-1", "有哪些项目", 3)
+		if err != nil {
+			t.Fatalf("search by resource: %v", err)
+		}
+		if len(citations) != 2 {
+			t.Fatalf("expected 2 citations, got %d", len(citations))
+		}
+		if citations[0].SectionID != "section-campushub" || citations[1].SectionID != "section-shopflow" {
+			t.Fatalf("expected ordered section citations, got %#v", citations)
+		}
+	})
+
+	t.Run("detail by entity", func(t *testing.T) {
+		citations, err := service.SearchByResource(context.Background(), "resource-1", "CampusHub 做了什么", 3)
+		if err != nil {
+			t.Fatalf("search by resource: %v", err)
+		}
+		if len(citations) != 1 {
+			t.Fatalf("expected 1 citation, got %d", len(citations))
+		}
+		if citations[0].SectionID != "section-campushub" {
+			t.Fatalf("expected CampusHub section citation, got %#v", citations[0])
+		}
+		if citations[0].Window == nil || citations[0].Window.GroupID != "project-1" {
+			t.Fatalf("expected citation window to merge project-1, got %#v", citations[0].Window)
+		}
+		if !strings.Contains(citations[0].Snippet, "活动发布") {
+			t.Fatalf("expected merged section evidence, got %q", citations[0].Snippet)
+		}
+	})
+
+	t.Run("detail by ordinal", func(t *testing.T) {
+		citations, err := service.SearchByResource(context.Background(), "resource-1", "第一个项目做了什么", 3)
+		if err != nil {
+			t.Fatalf("search by resource: %v", err)
+		}
+		if len(citations) != 1 || citations[0].SectionID != "section-campushub" {
+			t.Fatalf("expected first project citation, got %#v", citations)
+		}
+	})
+
+	t.Run("aggregate tech stack", func(t *testing.T) {
+		citations, err := service.SearchByResource(context.Background(), "resource-1", "用了哪些技术栈", 3)
+		if err != nil {
+			t.Fatalf("search by resource: %v", err)
+		}
+		if len(citations) != 2 {
+			t.Fatalf("expected 2 citations, got %d", len(citations))
+		}
+		if !strings.Contains(citations[0].Snippet, "Go") || !strings.Contains(citations[1].Snippet, "Java") {
+			t.Fatalf("expected tech stack snippets, got %#v", citations)
+		}
+	})
+
+	if repo.currentVersionLookups != 4 {
+		t.Fatalf("expected 4 current version lookups, got %d", repo.currentVersionLookups)
+	}
+	if repo.listSectionsCalls != 4 {
+		t.Fatalf("expected 4 section lookups, got %d", repo.listSectionsCalls)
+	}
+	if repo.listChunksCalls != 3 {
+		t.Fatalf("expected 3 chunk lookups for detail/aggregate paths, got %d", repo.listChunksCalls)
+	}
+	if repo.searchByVersionCalls != 0 {
+		t.Fatalf("expected target-first retrieval to avoid legacy search, got %d calls", repo.searchByVersionCalls)
+	}
+}
+
+func TestSearchByResourceFallsBackToLegacyChunks(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-1",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-current",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "旧资源没有 sections，只能走 legacy chunk 检索。",
+			},
+		},
+		lexicalByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-current",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "旧资源没有 sections，只能走 legacy chunk 检索。",
+			},
+		},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, fakeRetrieverReranker{
+		results: []reranker.Result{
+			{Index: 0, RelevanceScore: 0.99},
+		},
+	})
+
+	citations, err := service.SearchByResource(context.Background(), "resource-1", "考勤", 3)
+	if err != nil {
+		t.Fatalf("search by resource: %v", err)
+	}
+	if len(citations) != 1 {
+		t.Fatalf("expected 1 citation, got %d", len(citations))
+	}
+	if repo.searchByVersionCalls == 0 {
+		t.Fatal("expected legacy version-scoped search to be used as fallback")
+	}
+}
+
 // TestSearchIntegration 验证导入文档后能够通过真实 embedding、reranker 和数据库完成一次检索。
 func TestSearchIntegration(t *testing.T) {
 	cfg := appconfig.Load()
@@ -305,9 +530,14 @@ func isLocalDatabaseHost(databaseURL string) bool {
 
 type fakeRetrieverRepo struct {
 	currentVersion        *postgres.ResourceVersion
+	sectionsByVersion     []postgres.ResourceSection
+	chunksByVersion       []postgres.ResourceChunk
 	semanticByVersion     []postgres.ResourceChunk
 	lexicalByVersion      []postgres.ResourceChunk
 	currentVersionLookups int
+	listSectionsCalls     int
+	listChunksCalls       int
+	searchByVersionCalls  int
 	lastVersionID         string
 	searchByResourceCalls int
 }
@@ -336,13 +566,27 @@ func (r *fakeRetrieverRepo) SearchChunksLexicalByResource(context.Context, strin
 }
 
 func (r *fakeRetrieverRepo) SearchChunksByVersion(_ context.Context, _ pgvector.Vector, _ int, versionID string) ([]postgres.ResourceChunk, error) {
+	r.searchByVersionCalls++
 	r.lastVersionID = versionID
 	return r.semanticByVersion, nil
 }
 
 func (r *fakeRetrieverRepo) SearchChunksLexicalByVersion(_ context.Context, _ string, _ int, versionID string) ([]postgres.ResourceChunk, error) {
+	r.searchByVersionCalls++
 	r.lastVersionID = versionID
 	return r.lexicalByVersion, nil
+}
+
+func (r *fakeRetrieverRepo) ListSectionsByVersion(_ context.Context, versionID string) ([]postgres.ResourceSection, error) {
+	r.listSectionsCalls++
+	r.lastVersionID = versionID
+	return append([]postgres.ResourceSection(nil), r.sectionsByVersion...), nil
+}
+
+func (r *fakeRetrieverRepo) ListChunksByVersion(_ context.Context, versionID string) ([]postgres.ResourceChunk, error) {
+	r.listChunksCalls++
+	r.lastVersionID = versionID
+	return append([]postgres.ResourceChunk(nil), r.chunksByVersion...), nil
 }
 
 type fakeRetrieverEmbedder struct{}
@@ -362,4 +606,21 @@ type fakeRetrieverReranker struct {
 
 func (r fakeRetrieverReranker) Rerank(context.Context, string, []string, int) ([]reranker.Result, error) {
 	return r.results, nil
+}
+
+func optionalRetrieverString(value string) *string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+
+	return &trimmed
+}
+
+func optionalRetrieverInt(value int) *int {
+	if value <= 0 {
+		return nil
+	}
+
+	return &value
 }

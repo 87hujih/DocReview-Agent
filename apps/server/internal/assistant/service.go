@@ -91,6 +91,7 @@ type sessionContextProjector interface {
 	ProjectSessionFileReady(ctx context.Context, projection SessionFileReadyProjection) error
 	ProjectTaskSuggestionCreated(ctx context.Context, projection TaskSuggestionProjection) error
 	ProjectTaskCreated(ctx context.Context, projection TaskCreatedProjection) error
+	ProjectGroundingState(ctx context.Context, projection GroundingStateProjection) error
 }
 
 // ServiceOption 允许按需注入上传原文件存储等扩展能力。
@@ -215,7 +216,7 @@ func (s *Service) StartConversation(ctx context.Context, content string) (*Conve
 		return nil, ErrMessageRequired
 	}
 
-	inputs, err := s.buildReplyInputs(ctx, "", nil, trimmed)
+	inputs, replyContext, err := s.buildReplyInputs(ctx, "", nil, trimmed)
 	if err != nil {
 		return nil, err
 	}
@@ -228,6 +229,9 @@ func (s *Service) StartConversation(ctx context.Context, content string) (*Conve
 		return nil, err
 	}
 	if err := s.projectPersistedMessages(ctx, session.ID, messages); err != nil {
+		return nil, err
+	}
+	if err := s.projectReplyGrounding(ctx, session.ID, replyContext); err != nil {
 		return nil, err
 	}
 
@@ -257,7 +261,7 @@ func (s *Service) AppendMessage(ctx context.Context, sessionID string, content s
 		return nil, err
 	}
 
-	inputs, err := s.buildReplyInputs(ctx, sessionID, history, trimmed)
+	inputs, replyContext, err := s.buildReplyInputs(ctx, sessionID, history, trimmed)
 	if err != nil {
 		return nil, err
 	}
@@ -267,6 +271,9 @@ func (s *Service) AppendMessage(ctx context.Context, sessionID string, content s
 		return nil, err
 	}
 	if err := s.projectPersistedMessages(ctx, sessionID, messages); err != nil {
+		return nil, err
+	}
+	if err := s.projectReplyGrounding(ctx, sessionID, replyContext); err != nil {
 		return nil, err
 	}
 	s.triggerSummaryRefresh(sessionID)
@@ -561,19 +568,18 @@ func (s *Service) buildReplyInputs(
 	sessionID string,
 	history []postgres.AssistantMessage,
 	content string,
-) ([]postgres.AssistantMessageInput, error) {
+) ([]postgres.AssistantMessageInput, *ReplyContext, error) {
 	userInput, err := buildUserTextInput(content)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	prepared, err := s.prepareTurnContext(ctx, history, content)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
 	if s.responder == nil {
-		return nil, errors.New("助手对话模型未配置")
+		return nil, nil, errors.New("助手对话模型未配置")
 	}
 
 	replyHistory := history
@@ -583,7 +589,11 @@ func (s *Service) buildReplyInputs(
 
 	replyContext, err := s.loadReplyContext(ctx, sessionID, replyHistory, content)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	replyContext, err = s.repairReplyContext(ctx, content, replyContext)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	taskDecision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
@@ -594,13 +604,14 @@ func (s *Service) buildReplyInputs(
 	reply, err := s.responder.Reply(ctx, ChatCompletionInput{
 		Snapshot:               replyContext.Snapshot,
 		Citations:              replyContext.Citations,
+		GroundedTarget:         replyContext.GroundedTarget,
 		History:                replyContext.History,
 		Message:                content,
 		Resource:               replyContext.ActiveResource,
 		TaskSuggestionDecision: &taskDecision,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	taskDecision = EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
@@ -611,7 +622,7 @@ func (s *Service) buildReplyInputs(
 
 	assistantInputs, err := buildAssistantReplyInputs(reply, taskDecision)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	inputs := []postgres.AssistantMessageInput{userInput}
@@ -620,7 +631,7 @@ func (s *Service) buildReplyInputs(
 	}
 	inputs = append(inputs, assistantInputs...)
 
-	return inputs, nil
+	return inputs, replyContext, nil
 }
 
 func (s *Service) buildUploadMessages(
@@ -934,6 +945,10 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 	if err != nil {
 		return err
 	}
+	replyContext, err = s.repairReplyContext(ctx, input.content, replyContext)
+	if err != nil {
+		return err
+	}
 
 	taskDecision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
 		CurrentMessage: input.content,
@@ -943,6 +958,7 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 	stream, err := s.responder.Stream(ctx, ChatCompletionInput{
 		Snapshot:               replyContext.Snapshot,
 		Citations:              replyContext.Citations,
+		GroundedTarget:         replyContext.GroundedTarget,
 		History:                replyContext.History,
 		Message:                input.content,
 		Resource:               replyContext.ActiveResource,
@@ -1011,6 +1027,9 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		return NewStreamError(StreamErrorCodeInternal, "助手暂时不可用，请稍后重试。", errors.New("assistant stream persisted no messages"))
 	}
 	if err := s.projectPersistedMessages(ctx, input.sessionID, messages); err != nil {
+		return err
+	}
+	if err := s.projectReplyGrounding(ctx, input.sessionID, replyContext); err != nil {
 		return err
 	}
 	s.triggerSummaryRefresh(input.sessionID)
@@ -1196,6 +1215,181 @@ func (s *Service) loadReplyContext(
 	}
 
 	return s.contextLoader.LoadForReply(ctx, sessionID, history, currentMessage)
+}
+
+func (s *Service) repairReplyContext(ctx context.Context, currentMessage string, replyContext *ReplyContext) (*ReplyContext, error) {
+	if replyContext == nil {
+		return nil, nil
+	}
+	if s == nil || s.retriever == nil || replyContext.ActiveResource == nil {
+		return replyContext, nil
+	}
+
+	ok, _ := EvaluateEvidenceQuality(EvidenceEvaluationInput{
+		QueryIntent:    replyContext.QueryIntent,
+		ResolvedTarget: replyContext.GroundedTarget,
+		Citations:      replyContext.Citations,
+	})
+	if ok {
+		return replyContext, nil
+	}
+
+	repairQuery := buildRepairRetrievalQuery(currentMessage, replyContext)
+	if strings.TrimSpace(repairQuery) == "" {
+		return replyContext, nil
+	}
+
+	repairedCitations, err := s.retriever.SearchByResource(ctx, replyContext.ActiveResource.ID, repairQuery, 4)
+	if err != nil {
+		return nil, err
+	}
+	if len(repairedCitations) == 0 {
+		return replyContext, nil
+	}
+
+	replyContext.Citations = repairedCitations
+	return replyContext, nil
+}
+
+func buildRepairRetrievalQuery(_ string, replyContext *ReplyContext) string {
+	if replyContext == nil || replyContext.GroundedTarget == nil {
+		return ""
+	}
+
+	entityName := strings.TrimSpace(replyContext.GroundedTarget.EntityName)
+	if entityName == "" {
+		return ""
+	}
+
+	switch strings.TrimSpace(replyContext.QueryIntent) {
+	case "detail_by_ordinal", "detail_by_entity":
+		return entityName + " 项目做了什么"
+	case "aggregate_attribute":
+		return entityName + " 技术栈"
+	default:
+		return ""
+	}
+}
+
+func (s *Service) projectReplyGrounding(ctx context.Context, sessionID string, replyContext *ReplyContext) error {
+	if s == nil || s.projector == nil || strings.TrimSpace(sessionID) == "" || replyContext == nil {
+		return nil
+	}
+
+	return s.projector.ProjectGroundingState(ctx, buildGroundingProjection(sessionID, replyContext))
+}
+
+func buildGroundingProjection(sessionID string, replyContext *ReplyContext) GroundingStateProjection {
+	projection := GroundingStateProjection{
+		SessionID:              strings.TrimSpace(sessionID),
+		LastCitationWindows:    buildCitationWindows(replyContext.Citations),
+		LastEnumeratedEntities: buildEnumeratedEntities(replyContext),
+		OrdinalReferenceFrame:  buildOrdinalReferenceFrame(replyContext),
+	}
+
+	if replyContext != nil && replyContext.GroundedTarget != nil {
+		projection.ActiveSectionID = strings.TrimSpace(replyContext.GroundedTarget.SectionID)
+		projection.ActiveSectionType = strings.TrimSpace(replyContext.GroundedTarget.SectionType)
+		projection.ActiveEntityName = strings.TrimSpace(replyContext.GroundedTarget.EntityName)
+	}
+	if projection.ActiveSectionID == "" && len(replyContext.Citations) > 0 {
+		first := replyContext.Citations[0]
+		projection.ActiveSectionID = strings.TrimSpace(first.SectionID)
+		projection.ActiveSectionType = strings.TrimSpace(first.SectionType)
+		projection.ActiveEntityName = deriveCitationEntityName(first)
+	}
+
+	return projection
+}
+
+func buildCitationWindows(citations []citation.Citation) []postgres.CitationWindow {
+	windows := make([]postgres.CitationWindow, 0, len(citations))
+	seen := make(map[string]struct{}, len(citations))
+	for _, item := range citations {
+		sectionID := strings.TrimSpace(item.SectionID)
+		if sectionID == "" {
+			continue
+		}
+
+		windowGroupID := ""
+		if item.Window != nil {
+			windowGroupID = strings.TrimSpace(item.Window.GroupID)
+		}
+		key := sectionID + "|" + windowGroupID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+
+		seen[key] = struct{}{}
+		windows = append(windows, postgres.CitationWindow{
+			SectionID:     sectionID,
+			SectionType:   strings.TrimSpace(item.SectionType),
+			WindowGroupID: windowGroupID,
+		})
+	}
+
+	return windows
+}
+
+func buildEnumeratedEntities(replyContext *ReplyContext) []postgres.EnumeratedEntity {
+	if replyContext == nil {
+		return nil
+	}
+
+	entities := make([]postgres.EnumeratedEntity, 0, len(replyContext.Citations))
+	seen := make(map[string]struct{}, len(replyContext.Citations))
+	for _, item := range replyContext.Citations {
+		sectionID := strings.TrimSpace(item.SectionID)
+		if sectionID == "" {
+			continue
+		}
+		if _, ok := seen[sectionID]; ok {
+			continue
+		}
+
+		seen[sectionID] = struct{}{}
+		entities = append(entities, postgres.EnumeratedEntity{
+			SectionID:   sectionID,
+			SectionType: strings.TrimSpace(item.SectionType),
+			EntityName:  deriveEntityName(replyContext, item),
+			Ordinal:     len(entities) + 1,
+		})
+	}
+
+	return entities
+}
+
+func buildOrdinalReferenceFrame(replyContext *ReplyContext) []postgres.OrdinalReference {
+	entities := buildEnumeratedEntities(replyContext)
+	frame := make([]postgres.OrdinalReference, 0, len(entities))
+	for _, entity := range entities {
+		frame = append(frame, postgres.OrdinalReference{
+			Ordinal:     entity.Ordinal,
+			SectionID:   entity.SectionID,
+			SectionType: entity.SectionType,
+			EntityName:  entity.EntityName,
+		})
+	}
+
+	return frame
+}
+
+func deriveEntityName(replyContext *ReplyContext, item citation.Citation) string {
+	if replyContext != nil && replyContext.GroundedTarget != nil &&
+		strings.TrimSpace(replyContext.GroundedTarget.SectionID) == strings.TrimSpace(item.SectionID) &&
+		strings.TrimSpace(replyContext.GroundedTarget.EntityName) != "" {
+		return strings.TrimSpace(replyContext.GroundedTarget.EntityName)
+	}
+
+	return deriveCitationEntityName(item)
+}
+
+func deriveCitationEntityName(item citation.Citation) string {
+	if title := strings.TrimSpace(item.SectionTitle); title != "" {
+		return title
+	}
+
+	return strings.TrimSpace(item.SectionID)
 }
 
 func snapshotReaderFromProjector(projector sessionContextProjector) sessionContextSnapshotReader {

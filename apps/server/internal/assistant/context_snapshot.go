@@ -33,15 +33,49 @@ type SnapshotLatestTask struct {
 	SourceMessageID string
 }
 
+// SnapshotActiveSection 表示当前会话聚焦的逻辑 section。
+type SnapshotActiveSection struct {
+	ID   string
+	Type string
+}
+
+// CitationWindow 表示最近一次回答中命中的 section 证据窗口。
+type CitationWindow struct {
+	SectionID     string `json:"section_id"`
+	SectionType   string `json:"section_type,omitempty"`
+	WindowGroupID string `json:"window_group_id,omitempty"`
+}
+
+// EnumeratedEntity 表示最近一次 assistant 列举出的实体项。
+type EnumeratedEntity struct {
+	SectionID   string `json:"section_id"`
+	SectionType string `json:"section_type,omitempty"`
+	EntityName  string `json:"entity_name,omitempty"`
+	Ordinal     int    `json:"ordinal,omitempty"`
+}
+
+// OrdinalReference 表示 ordinal 到 section 的映射。
+type OrdinalReference struct {
+	Ordinal     int    `json:"ordinal"`
+	SectionID   string `json:"section_id"`
+	SectionType string `json:"section_type,omitempty"`
+	EntityName  string `json:"entity_name,omitempty"`
+}
+
 // SessionContextSnapshot 表示助手回复所需的结构化会话上下文快照。
 type SessionContextSnapshot struct {
-	SessionID             string
-	ActiveResource        *SnapshotActiveResource
-	PendingTaskSuggestion *SnapshotPendingTaskSuggestion
-	LatestTask            *SnapshotLatestTask
-	ConfirmedConstraints  []ConfirmedConstraint
-	RollingSummary        *string
-	SummaryBaseSequenceNo int
+	SessionID              string
+	ActiveResource         *SnapshotActiveResource
+	ActiveSection          *SnapshotActiveSection
+	ActiveEntityName       *string
+	PendingTaskSuggestion  *SnapshotPendingTaskSuggestion
+	LatestTask             *SnapshotLatestTask
+	ConfirmedConstraints   []ConfirmedConstraint
+	LastCitationWindows    []CitationWindow
+	LastEnumeratedEntities []EnumeratedEntity
+	OrdinalReferenceFrame  []OrdinalReference
+	RollingSummary         *string
+	SummaryBaseSequenceNo  int
 }
 
 // SessionContextSnapshotFromRecord 把 PostgreSQL 记录转换成领域快照。
@@ -56,12 +90,34 @@ func SessionContextSnapshotFromRecord(record *postgres.SessionContextSnapshotRec
 			return nil, err
 		}
 	}
+	lastCitationWindows := make([]CitationWindow, 0)
+	if len(record.LastCitationWindowsJSON) > 0 {
+		if err := json.Unmarshal(record.LastCitationWindowsJSON, &lastCitationWindows); err != nil {
+			return nil, err
+		}
+	}
+	lastEnumeratedEntities := make([]EnumeratedEntity, 0)
+	if len(record.LastEnumeratedEntitiesJSON) > 0 {
+		if err := json.Unmarshal(record.LastEnumeratedEntitiesJSON, &lastEnumeratedEntities); err != nil {
+			return nil, err
+		}
+	}
+	ordinalReferenceFrame := make([]OrdinalReference, 0)
+	if len(record.OrdinalReferenceFrameJSON) > 0 {
+		if err := json.Unmarshal(record.OrdinalReferenceFrameJSON, &ordinalReferenceFrame); err != nil {
+			return nil, err
+		}
+	}
 
 	snapshot := &SessionContextSnapshot{
-		SessionID:             record.SessionID,
-		ConfirmedConstraints:  constraints,
-		RollingSummary:        cloneOptionalString(record.RollingSummary),
-		SummaryBaseSequenceNo: record.SummaryBaseSequenceNo,
+		SessionID:              record.SessionID,
+		ActiveEntityName:       cloneOptionalString(record.ActiveEntityName),
+		ConfirmedConstraints:   constraints,
+		LastCitationWindows:    lastCitationWindows,
+		LastEnumeratedEntities: lastEnumeratedEntities,
+		OrdinalReferenceFrame:  ordinalReferenceFrame,
+		RollingSummary:         cloneOptionalString(record.RollingSummary),
+		SummaryBaseSequenceNo:  record.SummaryBaseSequenceNo,
 	}
 
 	if record.ActiveResourceID != nil && record.ActiveResourceTitle != nil && record.ActiveResourceSourceType != nil {
@@ -79,6 +135,15 @@ func SessionContextSnapshotFromRecord(record *postgres.SessionContextSnapshotRec
 		snapshot.PendingTaskSuggestion = &SnapshotPendingTaskSuggestion{
 			MessageID:   *record.PendingTaskSuggestionMessageID,
 			Instruction: *record.PendingTaskInstruction,
+		}
+	}
+
+	if record.ActiveSectionID != nil {
+		snapshot.ActiveSection = &SnapshotActiveSection{
+			ID: *record.ActiveSectionID,
+		}
+		if record.ActiveSectionType != nil {
+			snapshot.ActiveSection.Type = *record.ActiveSectionType
 		}
 	}
 

@@ -233,6 +233,96 @@ func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testin
 	}
 }
 
+func TestAppendMessageUsesOrdinalGroundingBeforeAnsweringForFirstProject(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("项目问答")
+	projector := &fakeSessionContextProjector{}
+	retriever := &fakeResourceCitationRetriever{
+		search: func(_ context.Context, resourceID string, query string, _ int) ([]citation.Citation, error) {
+			switch query {
+			case "针对第一个项目，给出修改示例":
+				return []citation.Citation{
+					{
+						CitationID:   "cite_1",
+						ResourceID:   resourceID,
+						SectionTitle: "全文",
+						Snippet:      "项目描述：",
+					},
+				}, nil
+			case "CampusHub 项目做了什么":
+				return []citation.Citation{
+					{
+						CitationID:   "cite_1",
+						ResourceID:   resourceID,
+						SectionID:    "section-campushub",
+						SectionType:  "project",
+						SectionTitle: "CampusHub",
+						Snippet:      "负责活动发布、报名与签到全流程。",
+						Window:       &citation.Window{GroupID: "project-1"},
+					},
+				}, nil
+			default:
+				return nil, nil
+			}
+		},
+	}
+	loader := NewContextLoader(&fakeSessionContextSnapshotReader{
+		record: &postgres.SessionContextSnapshotRecord{
+			SessionID:                session.ID,
+			ActiveResourceID:         stringPointer("resource-1"),
+			ActiveResourceTitle:      stringPointer("项目资料"),
+			ActiveResourceSourceType: stringPointer("upload"),
+			ConfirmedConstraintsJSON: []byte("[]"),
+			OrdinalReferenceFrameJSON: []byte(`[{
+				"ordinal":1,
+				"section_id":"section-campushub",
+				"section_type":"project",
+				"entity_name":"CampusHub"
+			}]`),
+		},
+	}, retriever, repo)
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "可以先从活动发布、报名和签到三个模块拆分改动。",
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		retriever,
+		WithReplyContextLoader(loader),
+		WithSessionContextProjector(projector),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "针对第一个项目，给出修改示例"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if retriever.calls != 2 {
+		t.Fatalf("expected retriever to run original query and repair query, got %d calls", retriever.calls)
+	}
+	if len(retriever.queries) != 2 || retriever.queries[0] != "针对第一个项目，给出修改示例" || retriever.queries[1] != "CampusHub 项目做了什么" {
+		t.Fatalf("expected ordinal repair query sequence, got %#v", retriever.queries)
+	}
+	if responder.lastInput == nil || responder.lastInput.GroundedTarget == nil {
+		t.Fatalf("expected responder to receive grounded target, got %#v", responder.lastInput)
+	}
+	if responder.lastInput.GroundedTarget.SectionID != "section-campushub" {
+		t.Fatalf("expected grounded target section, got %#v", responder.lastInput.GroundedTarget)
+	}
+	if len(responder.lastInput.Citations) != 1 || responder.lastInput.Citations[0].SectionID != "section-campushub" {
+		t.Fatalf("expected repaired section evidence, got %#v", responder.lastInput.Citations)
+	}
+	if len(projector.groundingCalls) != 1 {
+		t.Fatalf("expected 1 grounding projection, got %d", len(projector.groundingCalls))
+	}
+	if projector.groundingCalls[0].ActiveSectionID != "section-campushub" || projector.groundingCalls[0].ActiveEntityName != "CampusHub" {
+		t.Fatalf("expected projector to persist ordinal grounding, got %#v", projector.groundingCalls[0])
+	}
+}
+
 func TestAppendMessageTriggersAsyncSummaryRefreshAfterPersistingAssistantReply(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("长上下文会话")
@@ -1822,12 +1912,14 @@ func (s *fakeChatStream) Close() error {
 
 type fakeResourceCitationRetriever struct {
 	result []citation.Citation
+	search func(context.Context, string, string, int) ([]citation.Citation, error)
 	err    error
 
 	calls      int
 	resourceID string
 	query      string
 	limit      int
+	queries    []string
 }
 
 func (r *fakeResourceCitationRetriever) SearchByResource(_ context.Context, resourceID string, query string, limit int) ([]citation.Citation, error) {
@@ -1835,6 +1927,10 @@ func (r *fakeResourceCitationRetriever) SearchByResource(_ context.Context, reso
 	r.resourceID = resourceID
 	r.query = query
 	r.limit = limit
+	r.queries = append(r.queries, query)
+	if r.search != nil {
+		return r.search(context.Background(), resourceID, query, limit)
+	}
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -1922,6 +2018,7 @@ type fakeSessionContextProjector struct {
 	fileReadyCalls      []SessionFileReadyProjection
 	taskSuggestionCalls []TaskSuggestionProjection
 	taskCreatedCalls    []TaskCreatedProjection
+	groundingCalls      []GroundingStateProjection
 }
 
 func (p *fakeSessionContextProjector) InitSession(_ context.Context, sessionID string) error {
@@ -1957,6 +2054,15 @@ func (p *fakeSessionContextProjector) ProjectTaskCreated(_ context.Context, proj
 	}
 
 	p.taskCreatedCalls = append(p.taskCreatedCalls, projection)
+	return nil
+}
+
+func (p *fakeSessionContextProjector) ProjectGroundingState(_ context.Context, projection GroundingStateProjection) error {
+	if p.err != nil {
+		return p.err
+	}
+
+	p.groundingCalls = append(p.groundingCalls, projection)
 	return nil
 }
 

@@ -4,7 +4,7 @@
 
 ## 核心功能
 
-- **Citation-aware RAG**：基于 pgvector 的语义检索 + pg_trgm 词法检索 + Reranker 混合排序，chunk 级别引用追踪
+- **Citation-aware RAG**：基于 pgvector 的语义检索 + pg_trgm 词法检索 + Reranker 混合排序，支持 grounded section-aware / ordinal-aware 文档问答
 - **任务驱动多 Agent 工作流**：Planner → Retriever → Reviewer → Editor 四步编排，每步产出结构化 artifact
 - **Human-in-the-loop 审批**：Agent 产出的修订方案需人工审批确认后才执行，支持批准与拒绝
 - **异步执行与文档版本管理**：channel-based worker pool，审批通过后异步将 diff 应用到文档，生成新版本
@@ -67,6 +67,12 @@ pwsh -File scripts/dev/start-local.ps1
 
 助手上传入口会按当前 `DOCUMENT_PARSER` 动态收紧支持格式：默认 `DOCUMENT_PARSER=text` 只接受 `.md` / `.txt`；配置 `DOCUMENT_PARSER=tika` 且提供 `TIKA_URL` 后，后端入口才接受 `.doc` / `.docx` / `.pdf` / `.rtf` / `.odt`。
 
+Grounded Structured Document RAG Phase 1 已接入上传问答链：
+
+- born-digital `.pdf` / `.doc` / `.docx` / `.md` / `.txt` 会先走 structured parse，再归一化成 section graph 和 section-aware chunk
+- 助手会优先按 section 和承接引用检索，支持 `有哪些项目`、`第一个项目做了什么`、`针对第一个项目，给出修改示例` 这类 grounded 问答
+- 扫描版 PDF / OCR 不足的材料当前只会标记质量不足（如 `requires_ocr`），不保证一定可答
+
 ```bash
 DOCUMENT_PARSER=tika
 TIKA_URL=http://127.0.0.1:9998
@@ -98,7 +104,7 @@ go run ./apps/server/cmd/resource-reindex --resource-id <resource_uuid>
 go run ./apps/server/cmd/resource-reindex --missing-current
 ```
 
-该命令复用 `.env` / 环境变量中的 `DATABASE_URL`、`SILICONFLOW_API_KEY`、`EMBEDDING_MODEL` 和 `EMBEDDING_DIM`。命令只重建资源的**当前版本**索引，不回填历史版本，也不会修改资源正文。运行后可用资源搜索接口验证 citation 是否恢复。
+该命令复用 `.env` / 环境变量中的 `DATABASE_URL`、`SILICONFLOW_API_KEY`、`EMBEDDING_MODEL` 和 `EMBEDDING_DIM`。命令只重建资源的**当前版本** grounded index（section graph + section-aware chunks），不回填历史版本，也不会修改资源正文。运行后可用资源搜索接口验证 citation 是否恢复。
 
 ## 演示走查
 

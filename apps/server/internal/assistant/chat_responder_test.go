@@ -219,6 +219,38 @@ func TestBuildChatMessagesIncludesRollingSummaryBeforeRecentTurns(t *testing.T) 
 	}
 }
 
+func TestBuildChatMessagesIncludesGroundedTargetAndSectionAwareCitations(t *testing.T) {
+	messages := buildChatMessages(ChatCompletionInput{
+		GroundedTarget: &ResolvedReference{
+			SectionID:   "section-campushub",
+			SectionType: "project",
+			EntityName:  "CampusHub",
+			Reason:      "ordinal_reference",
+		},
+		Citations: []citation.Citation{
+			{
+				SectionID:    "section-campushub",
+				SectionType:  "project",
+				SectionTitle: "CampusHub校园活动平台",
+				Snippet:      "负责活动发布、报名与签到全流程。",
+				Window:       &citation.Window{GroupID: "project-1"},
+			},
+		},
+		Message: "针对第一个项目，给出修改示例",
+	})
+
+	systemPrompt := messages[0].Content
+	if !strings.Contains(systemPrompt, "本轮 grounding 目标：section_id=section-campushub；section_type=project。") {
+		t.Fatalf("expected grounded target in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "目标实体：CampusHub") {
+		t.Fatalf("expected grounded entity in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "section=project/section-campushub") || !strings.Contains(systemPrompt, "window=project-1") {
+		t.Fatalf("expected section-aware citation label, got %q", systemPrompt)
+	}
+}
+
 func TestBuildHistoryMessagesDropsStructuredMessagesFromRecentWindow(t *testing.T) {
 	history := []postgres.AssistantMessage{
 		{

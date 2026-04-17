@@ -61,6 +61,7 @@ type chatStreamResultProvider interface {
 type ChatCompletionInput struct {
 	Snapshot               *SessionContextSnapshot
 	Citations              []citation.Citation
+	GroundedTarget         *ResolvedReference
 	History                []postgres.AssistantMessage
 	Message                string
 	Resource               *resourceContext
@@ -263,15 +264,37 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 			input.Resource.ID,
 		))
 	}
+	if input.GroundedTarget != nil {
+		lines := []string{
+			fmt.Sprintf("本轮 grounding 目标：section_id=%s；section_type=%s。",
+				strings.TrimSpace(input.GroundedTarget.SectionID),
+				strings.TrimSpace(input.GroundedTarget.SectionType),
+			),
+		}
+		if entity := strings.TrimSpace(input.GroundedTarget.EntityName); entity != "" {
+			lines = append(lines, "目标实体："+entity)
+		}
+		if reason := strings.TrimSpace(input.GroundedTarget.Reason); reason != "" {
+			lines = append(lines, "定位原因："+reason)
+		}
+		sections = append(sections, strings.Join(lines, "\n"))
+	}
 
 	if len(input.Citations) > 0 {
 		lines := make([]string, 0, len(input.Citations)+1)
 		lines = append(lines, "与本轮用户问题最相关的资源片段：")
 		for index, item := range input.Citations {
+			labelParts := []string{fallbackSectionTitle(item.SectionTitle)}
+			if strings.TrimSpace(item.SectionType) != "" || strings.TrimSpace(item.SectionID) != "" {
+				labelParts = append(labelParts, fmt.Sprintf("section=%s/%s", strings.TrimSpace(item.SectionType), strings.TrimSpace(item.SectionID)))
+			}
+			if item.Window != nil && strings.TrimSpace(item.Window.GroupID) != "" {
+				labelParts = append(labelParts, "window="+strings.TrimSpace(item.Window.GroupID))
+			}
 			lines = append(lines, fmt.Sprintf(
 				"%d. [%s] %s",
 				index+1,
-				fallbackSectionTitle(item.SectionTitle),
+				strings.Join(labelParts, "；"),
 				strings.TrimSpace(item.Snippet),
 			))
 		}
@@ -298,6 +321,14 @@ func buildSnapshotProjection(snapshot *SessionContextSnapshot) string {
 		))
 	} else {
 		lines = append(lines, "- 当前活跃资源：未记录。")
+	}
+	if snapshot.ActiveSection != nil {
+		entity := strings.TrimSpace(optionalStringValue(snapshot.ActiveEntityName))
+		if entity != "" {
+			lines = append(lines, fmt.Sprintf("- 当前 grounding：section=%s（type=%s，entity=%s）。", snapshot.ActiveSection.ID, snapshot.ActiveSection.Type, entity))
+		} else {
+			lines = append(lines, fmt.Sprintf("- 当前 grounding：section=%s（type=%s）。", snapshot.ActiveSection.ID, snapshot.ActiveSection.Type))
+		}
 	}
 
 	if snapshot.PendingTaskSuggestion != nil {

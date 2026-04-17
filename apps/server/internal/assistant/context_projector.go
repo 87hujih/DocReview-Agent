@@ -15,6 +15,7 @@ type sessionContextSnapshotProjectorRepo interface {
 	UpsertPendingTaskSuggestion(ctx context.Context, params postgres.UpsertPendingTaskSuggestionParams) error
 	UpsertLatestTask(ctx context.Context, params postgres.UpsertLatestTaskParams) error
 	ClearPendingTaskSuggestion(ctx context.Context, sessionID string) error
+	UpdateGroundingState(ctx context.Context, params postgres.UpdateGroundingStateParams) error
 }
 
 type sessionContextSnapshotTaskStatusRepo interface {
@@ -43,6 +44,17 @@ type TaskCreatedProjection struct {
 	TaskID          string
 	Status          string
 	SourceMessageID string
+}
+
+// GroundingStateProjection 描述当前会话 grounding 状态投影。
+type GroundingStateProjection struct {
+	SessionID              string
+	ActiveSectionID        string
+	ActiveSectionType      string
+	ActiveEntityName       string
+	LastCitationWindows    []postgres.CitationWindow
+	LastEnumeratedEntities []postgres.EnumeratedEntity
+	OrdinalReferenceFrame  []postgres.OrdinalReference
 }
 
 // SessionContextProjector 负责把结构化事件折叠为会话上下文快照。
@@ -146,6 +158,24 @@ func (p *SessionContextProjector) ProjectTaskStatusChanged(ctx context.Context, 
 	}
 
 	return p.taskStatusRepo.UpdateLatestTaskStatusBySourceMessageID(ctx, strings.TrimSpace(*sourceMessageID), strings.TrimSpace(status))
+}
+
+// ProjectGroundingState 折叠当前轮 grounding 结果。
+func (p *SessionContextProjector) ProjectGroundingState(ctx context.Context, projection GroundingStateProjection) error {
+	trimmedSessionID := strings.TrimSpace(projection.SessionID)
+	if trimmedSessionID == "" {
+		return fmt.Errorf("session_id 不能为空")
+	}
+
+	return p.repo.UpdateGroundingState(ctx, postgres.UpdateGroundingStateParams{
+		SessionID:              trimmedSessionID,
+		ActiveSectionID:        optionalStringPointer(projection.ActiveSectionID),
+		ActiveSectionType:      optionalStringPointer(projection.ActiveSectionType),
+		ActiveEntityName:       optionalStringPointer(projection.ActiveEntityName),
+		LastCitationWindows:    projection.LastCitationWindows,
+		LastEnumeratedEntities: projection.LastEnumeratedEntities,
+		OrdinalReferenceFrame:  projection.OrdinalReferenceFrame,
+	})
 }
 
 func optionalStringPointer(value string) *string {
