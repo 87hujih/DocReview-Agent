@@ -282,25 +282,35 @@ func (s *Service) saveDocument(
 		return nil, nil, err
 	}
 
-	if err := s.persistStructuredDocument(ctx, resource.ID, version.ID, parsedDocument); err != nil {
+	persistedSections, err := s.persistStructuredDocument(ctx, resource.ID, version.ID, parsedDocument)
+	if err != nil {
 		return nil, nil, err
+	}
+	if len(persistedSections) > 0 {
+		if err := s.indexer.ReindexVersion(ctx, indexer.Input{
+			Resource: *resource,
+			Version:  *version,
+			Sections: persistedSections,
+		}); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return resource, version, nil
 }
 
-func (s *Service) persistStructuredDocument(ctx context.Context, resourceID string, versionID string, parsedDocument *documentparser.ParsedDocument) error {
+func (s *Service) persistStructuredDocument(ctx context.Context, resourceID string, versionID string, parsedDocument *documentparser.ParsedDocument) ([]postgres.ResourceSection, error) {
 	if parsedDocument == nil || s.structureRepo == nil {
-		return nil
+		return nil, nil
 	}
 
 	documentJSON, err := json.Marshal(parsedDocument)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	qualityFlagsJSON, err := json.Marshal(parsedDocument.QualityFlags)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if _, err := s.structureRepo.CreateVersionStructure(ctx, postgres.CreateVersionStructureParams{
@@ -311,20 +321,19 @@ func (s *Service) persistStructuredDocument(ctx context.Context, resourceID stri
 		DocumentJSON:     documentJSON,
 		QualityFlagsJSON: qualityFlagsJSON,
 	}); err != nil {
-		return err
+		return nil, err
 	}
 
 	if s.normalizer == nil {
-		return nil
+		return nil, nil
 	}
 
 	normalizedDocument := s.normalizer.Normalize(*parsedDocument)
 	sections, err := buildSectionInputs(normalizedDocument.Sections)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = s.structureRepo.ReplaceSectionsForVersion(ctx, versionID, resourceID, sections)
-	return err
+	return s.structureRepo.ReplaceSectionsForVersion(ctx, versionID, resourceID, sections)
 }
 
 func buildSectionInputs(sections []documentnormalize.NormalizedSection) ([]postgres.ResourceSectionInput, error) {

@@ -45,6 +45,7 @@ func main() {
 	}
 
 	resourceRepo := postgres.NewResourceRepo(pool)
+	resourceStructureRepo := postgres.NewResourceStructureRepo(pool)
 	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
 	if err != nil {
 		log.Fatalf("向量嵌入器初始化失败：%v", err)
@@ -52,14 +53,14 @@ func main() {
 	versionIndexer := indexer.NewService(resourceRepo, emb)
 
 	if mode.ResourceID != "" {
-		if err := reindexSingleCurrentVersion(ctx, resourceRepo, versionIndexer, mode.ResourceID); err != nil {
+		if err := reindexSingleCurrentVersion(ctx, resourceRepo, resourceStructureRepo, versionIndexer, mode.ResourceID); err != nil {
 			log.Fatalf("重建资源索引失败：%v", err)
 		}
 		log.Printf("资源当前版本索引已重建：%s", mode.ResourceID)
 		return
 	}
 
-	count, err := reindexMissingCurrentVersions(ctx, resourceRepo, versionIndexer)
+	count, err := reindexMissingCurrentVersions(ctx, resourceRepo, resourceStructureRepo, versionIndexer)
 	if err != nil {
 		log.Fatalf("重建缺失索引失败：%v", err)
 	}
@@ -114,7 +115,7 @@ func validateForReindex(cfg appconfig.Config) error {
 	return nil
 }
 
-func reindexSingleCurrentVersion(ctx context.Context, repo *postgres.ResourceRepo, versionIndexer *indexer.Service, resourceID string) error {
+func reindexSingleCurrentVersion(ctx context.Context, repo *postgres.ResourceRepo, structureRepo *postgres.ResourceStructureRepo, versionIndexer *indexer.Service, resourceID string) error {
 	resource, err := repo.GetByID(ctx, resourceID)
 	if err != nil {
 		return err
@@ -131,13 +132,19 @@ func reindexSingleCurrentVersion(ctx context.Context, repo *postgres.ResourceRep
 		return fmt.Errorf("资源当前版本不存在：%s", resourceID)
 	}
 
+	structuredSections, err := structureRepo.ListSectionsByVersion(ctx, version.ID)
+	if err != nil {
+		return err
+	}
+
 	return versionIndexer.ReindexVersion(ctx, indexer.Input{
 		Resource: *resource,
 		Version:  *version,
+		Sections: structuredSections,
 	})
 }
 
-func reindexMissingCurrentVersions(ctx context.Context, repo *postgres.ResourceRepo, versionIndexer *indexer.Service) (int, error) {
+func reindexMissingCurrentVersions(ctx context.Context, repo *postgres.ResourceRepo, structureRepo *postgres.ResourceStructureRepo, versionIndexer *indexer.Service) (int, error) {
 	resources, err := repo.List(ctx)
 	if err != nil {
 		return 0, err
@@ -162,9 +169,15 @@ func reindexMissingCurrentVersions(ctx context.Context, repo *postgres.ResourceR
 			continue
 		}
 
+		structuredSections, err := structureRepo.ListSectionsByVersion(ctx, version.ID)
+		if err != nil {
+			return reindexed, err
+		}
+
 		if err := versionIndexer.ReindexVersion(ctx, indexer.Input{
 			Resource: resource,
 			Version:  *version,
+			Sections: structuredSections,
 		}); err != nil {
 			return reindexed, err
 		}

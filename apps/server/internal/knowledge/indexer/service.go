@@ -23,6 +23,7 @@ type embedderClient interface {
 type Input struct {
 	Resource postgres.Resource
 	Version  postgres.ResourceVersion
+	Sections []postgres.ResourceSection
 }
 
 // Service 负责把某个资源版本重建为一组可检索分块。
@@ -46,7 +47,18 @@ func (s *Service) BuildVersionChunks(ctx context.Context, input Input) ([]postgr
 		return nil, nil
 	}
 
-	chunks := chunker.ChunkMarkdown(content)
+	chunks := buildSectionAwareChunkInputs(input.Sections)
+	if len(chunks) == 0 {
+		legacyChunks := chunker.ChunkMarkdown(content)
+		chunks = make([]postgres.ResourceChunkInput, 0, len(legacyChunks))
+		for _, chunk := range legacyChunks {
+			chunks = append(chunks, postgres.ResourceChunkInput{
+				ChunkIndex:   chunk.ChunkIndex,
+				SectionTitle: chunk.SectionTitle,
+				Content:      chunk.Content,
+			})
+		}
+	}
 
 	texts := make([]string, 0, len(chunks))
 	for _, chunk := range chunks {
@@ -63,12 +75,8 @@ func (s *Service) BuildVersionChunks(ctx context.Context, input Input) ([]postgr
 
 	inputChunks := make([]postgres.ResourceChunkInput, 0, len(chunks))
 	for index, chunk := range chunks {
-		inputChunks = append(inputChunks, postgres.ResourceChunkInput{
-			ChunkIndex:   chunk.ChunkIndex,
-			SectionTitle: chunk.SectionTitle,
-			Content:      chunk.Content,
-			Embedding:    pgvector.NewVector(vectors[index]),
-		})
+		chunk.Embedding = pgvector.NewVector(vectors[index])
+		inputChunks = append(inputChunks, chunk)
 	}
 
 	return inputChunks, nil

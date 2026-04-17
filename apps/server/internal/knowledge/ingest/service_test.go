@@ -116,6 +116,7 @@ func TestImportDocumentPersistsStructuredDocumentWhenParserConfigured(t *testing
 		},
 	}
 	structureRepo := &fakeResourceStructureRepo{}
+	versionIndexer := &fakeVersionIndexer{}
 	normalizer := fakeDocumentNormalizer{
 		result: documentnormalize.NormalizedDocument{
 			Sections: []documentnormalize.NormalizedSection{
@@ -137,6 +138,7 @@ func TestImportDocumentPersistsStructuredDocumentWhenParserConfigured(t *testing
 	service := NewService(
 		repo,
 		fakeEmbedder{},
+		WithIndexer(versionIndexer),
 		WithParser(fakeDocumentParser{
 			result: &documentparser.Result{
 				Text: "CampusHub校园活动平台\n负责活动发布与报名。",
@@ -177,6 +179,12 @@ func TestImportDocumentPersistsStructuredDocumentWhenParserConfigured(t *testing
 	}
 	if structureRepo.lastSections[0].SectionType != string(documentnormalize.SectionTypeProject) {
 		t.Fatalf("expected persisted section type %q, got %#v", documentnormalize.SectionTypeProject, structureRepo.lastSections[0].SectionType)
+	}
+	if versionIndexer.reindexCalls != 1 {
+		t.Fatalf("expected grounded chunk reindex to run once, got %d", versionIndexer.reindexCalls)
+	}
+	if len(versionIndexer.lastInput.Sections) != 1 {
+		t.Fatalf("expected reindex to receive 1 section, got %d", len(versionIndexer.lastInput.Sections))
 	}
 }
 
