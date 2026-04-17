@@ -13,21 +13,27 @@ import (
 
 // SessionContextSnapshotRecord 表示会话上下文快照在 PostgreSQL 中的持久化形态。
 type SessionContextSnapshotRecord struct {
-	SessionID                        string
-	ActiveResourceID                 *string
-	ActiveResourceTitle              *string
-	ActiveResourceSourceType         *string
-	ActiveResourceSourceMessageID    *string
-	PendingTaskSuggestionMessageID   *string
-	PendingTaskInstruction           *string
-	LatestTaskID                     *string
-	LatestTaskStatus                 *string
-	LatestTaskSourceMessageID        *string
-	ConfirmedConstraintsJSON         []byte
-	RollingSummary                   *string
-	SummaryBaseSequenceNo            int
-	CreatedAt                        time.Time
-	UpdatedAt                        time.Time
+	SessionID                      string
+	ActiveResourceID               *string
+	ActiveResourceTitle            *string
+	ActiveResourceSourceType       *string
+	ActiveResourceSourceMessageID  *string
+	ActiveSectionID                *string
+	ActiveSectionType              *string
+	ActiveEntityName               *string
+	PendingTaskSuggestionMessageID *string
+	PendingTaskInstruction         *string
+	LatestTaskID                   *string
+	LatestTaskStatus               *string
+	LatestTaskSourceMessageID      *string
+	ConfirmedConstraintsJSON       []byte
+	LastCitationWindowsJSON        []byte
+	LastEnumeratedEntitiesJSON     []byte
+	OrdinalReferenceFrameJSON      []byte
+	RollingSummary                 *string
+	SummaryBaseSequenceNo          int
+	CreatedAt                      time.Time
+	UpdatedAt                      time.Time
 }
 
 // UpsertActiveResourceParams 描述活跃资源投影需要刷新的字段。
@@ -54,6 +60,40 @@ type UpsertLatestTaskParams struct {
 	SourceMessageID *string
 }
 
+// CitationWindow 描述一次回答中围绕某个 section 取出的证据窗口。
+type CitationWindow struct {
+	SectionID     string `json:"section_id"`
+	SectionType   string `json:"section_type,omitempty"`
+	WindowGroupID string `json:"window_group_id,omitempty"`
+}
+
+// EnumeratedEntity 描述最近一次 assistant 列举出的实体项。
+type EnumeratedEntity struct {
+	SectionID   string `json:"section_id"`
+	SectionType string `json:"section_type,omitempty"`
+	EntityName  string `json:"entity_name,omitempty"`
+	Ordinal     int    `json:"ordinal,omitempty"`
+}
+
+// OrdinalReference 保存 ordinal 到具体 section 的映射。
+type OrdinalReference struct {
+	Ordinal     int    `json:"ordinal"`
+	SectionID   string `json:"section_id"`
+	SectionType string `json:"section_type,omitempty"`
+	EntityName  string `json:"entity_name,omitempty"`
+}
+
+// UpdateGroundingStateParams 描述 grounding 状态更新所需的最小字段。
+type UpdateGroundingStateParams struct {
+	SessionID              string
+	ActiveSectionID        *string
+	ActiveSectionType      *string
+	ActiveEntityName       *string
+	LastCitationWindows    []CitationWindow
+	LastEnumeratedEntities []EnumeratedEntity
+	OrdinalReferenceFrame  []OrdinalReference
+}
+
 // SessionContextSnapshotRepo 封装会话上下文快照表的最小读写能力。
 type SessionContextSnapshotRepo struct {
 	pool *pgxpool.Pool
@@ -76,12 +116,18 @@ func (r *SessionContextSnapshotRepo) CreateEmpty(ctx context.Context, sessionID 
 		          active_resource_title,
 		          active_resource_source_type,
 		          active_resource_source_message_id,
+		          active_section_id,
+		          active_section_type,
+		          active_entity_name,
 		          pending_task_suggestion_message_id,
 		          pending_task_instruction,
 		          latest_task_id,
 		          latest_task_status,
 		          latest_task_source_message_id,
 		          confirmed_constraints_json,
+		          last_citation_windows_json,
+		          last_enumerated_entities_json,
+		          ordinal_reference_frame_json,
 		          rolling_summary,
 		          summary_base_sequence_no,
 		          created_at,
@@ -102,12 +148,18 @@ func (r *SessionContextSnapshotRepo) GetBySessionID(ctx context.Context, session
 		       active_resource_title,
 		       active_resource_source_type,
 		       active_resource_source_message_id,
+		       active_section_id,
+		       active_section_type,
+		       active_entity_name,
 		       pending_task_suggestion_message_id,
 		       pending_task_instruction,
 		       latest_task_id,
 		       latest_task_status,
 		       latest_task_source_message_id,
 		       confirmed_constraints_json,
+		       last_citation_windows_json,
+		       last_enumerated_entities_json,
+		       ordinal_reference_frame_json,
 		       rolling_summary,
 		       summary_base_sequence_no,
 		       created_at,
@@ -256,6 +308,52 @@ func (r *SessionContextSnapshotRepo) UpdateLatestTaskStatusBySourceMessageID(ctx
 	return err
 }
 
+// UpdateGroundingState 更新当前会话的 grounding 状态。
+func (r *SessionContextSnapshotRepo) UpdateGroundingState(ctx context.Context, params UpdateGroundingStateParams) error {
+	lastCitationWindowsJSON, err := marshalSnapshotJSON(params.LastCitationWindows, []byte("[]"))
+	if err != nil {
+		return err
+	}
+	lastEnumeratedEntitiesJSON, err := marshalSnapshotJSON(params.LastEnumeratedEntities, []byte("[]"))
+	if err != nil {
+		return err
+	}
+	ordinalReferenceFrameJSON, err := marshalSnapshotJSON(params.OrdinalReferenceFrame, []byte("[]"))
+	if err != nil {
+		return err
+	}
+
+	_, err = r.pool.Exec(ctx, `
+		INSERT INTO session_context_snapshots (
+		    session_id,
+		    active_section_id,
+		    active_section_type,
+		    active_entity_name,
+		    last_citation_windows_json,
+		    last_enumerated_entities_json,
+		    ordinal_reference_frame_json
+		)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb)
+		ON CONFLICT (session_id) DO UPDATE
+		SET active_section_id = EXCLUDED.active_section_id,
+		    active_section_type = EXCLUDED.active_section_type,
+		    active_entity_name = EXCLUDED.active_entity_name,
+		    last_citation_windows_json = EXCLUDED.last_citation_windows_json,
+		    last_enumerated_entities_json = EXCLUDED.last_enumerated_entities_json,
+		    ordinal_reference_frame_json = EXCLUDED.ordinal_reference_frame_json,
+		    updated_at = now()
+	`,
+		params.SessionID,
+		params.ActiveSectionID,
+		trimOptionalString(params.ActiveSectionType),
+		trimOptionalString(params.ActiveEntityName),
+		string(lastCitationWindowsJSON),
+		string(lastEnumeratedEntitiesJSON),
+		string(ordinalReferenceFrameJSON),
+	)
+	return err
+}
+
 func scanSessionContextSnapshot(row pgx.Row) (SessionContextSnapshotRecord, error) {
 	var record SessionContextSnapshotRecord
 
@@ -265,12 +363,18 @@ func scanSessionContextSnapshot(row pgx.Row) (SessionContextSnapshotRecord, erro
 		&record.ActiveResourceTitle,
 		&record.ActiveResourceSourceType,
 		&record.ActiveResourceSourceMessageID,
+		&record.ActiveSectionID,
+		&record.ActiveSectionType,
+		&record.ActiveEntityName,
 		&record.PendingTaskSuggestionMessageID,
 		&record.PendingTaskInstruction,
 		&record.LatestTaskID,
 		&record.LatestTaskStatus,
 		&record.LatestTaskSourceMessageID,
 		&record.ConfirmedConstraintsJSON,
+		&record.LastCitationWindowsJSON,
+		&record.LastEnumeratedEntitiesJSON,
+		&record.OrdinalReferenceFrameJSON,
 		&record.RollingSummary,
 		&record.SummaryBaseSequenceNo,
 		&record.CreatedAt,

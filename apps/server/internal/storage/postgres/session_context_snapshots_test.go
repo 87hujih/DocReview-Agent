@@ -126,8 +126,8 @@ func TestSessionContextSnapshotRepoUpsertActiveResourceAndPendingTaskSuggestion(
 		"status_message": "资源已明确，可以创建任务。",
 	})
 	if err := snapshotRepo.UpsertPendingTaskSuggestion(ctx, UpsertPendingTaskSuggestionParams{
-		SessionID: session.ID,
-		MessageID: firstSuggestion.ID,
+		SessionID:   session.ID,
+		MessageID:   firstSuggestion.ID,
 		Instruction: "先整理第一版资源",
 	}); err != nil {
 		t.Fatalf("upsert first pending suggestion: %v", err)
@@ -143,9 +143,9 @@ func TestSessionContextSnapshotRepoUpsertActiveResourceAndPendingTaskSuggestion(
 		"status_message": "资源已切换到第二版。",
 	})
 	if err := snapshotRepo.UpsertPendingTaskSuggestion(ctx, UpsertPendingTaskSuggestionParams{
-		SessionID:    session.ID,
-		MessageID:    secondSuggestion.ID,
-		Instruction:  "改成整理第二版资源",
+		SessionID:   session.ID,
+		MessageID:   secondSuggestion.ID,
+		Instruction: "改成整理第二版资源",
 	}); err != nil {
 		t.Fatalf("upsert second pending suggestion: %v", err)
 	}
@@ -384,6 +384,83 @@ func TestSessionContextSnapshotRepoAdvanceRollingSummaryRejectsStaleBase(t *test
 	}
 }
 
+func TestSessionContextSnapshotRepoPersistsOrdinalReferenceFrame(t *testing.T) {
+	pool := newTestPool(t)
+	assistantRepo := NewAssistantRepo(pool)
+	snapshotRepo := NewSessionContextSnapshotRepo(pool)
+	ctx := testContext(t)
+
+	session, _, err := assistantRepo.CreateSessionWithMessages(ctx, "grounding 状态持久化", nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup session: %v", err)
+		}
+	})
+
+	err = snapshotRepo.UpdateGroundingState(ctx, UpdateGroundingStateParams{
+		SessionID:         session.ID,
+		ActiveSectionID:   stringPointer("00000000-0000-0000-0000-000000000001"),
+		ActiveSectionType: stringPointer("project"),
+		ActiveEntityName:  stringPointer("CampusHub"),
+		LastCitationWindows: []CitationWindow{
+			{SectionID: "00000000-0000-0000-0000-000000000001", SectionType: "project", WindowGroupID: "project-1"},
+		},
+		LastEnumeratedEntities: []EnumeratedEntity{
+			{SectionID: "00000000-0000-0000-0000-000000000001", SectionType: "project", EntityName: "CampusHub", Ordinal: 1},
+		},
+		OrdinalReferenceFrame: []OrdinalReference{
+			{Ordinal: 1, SectionID: "00000000-0000-0000-0000-000000000001", SectionType: "project", EntityName: "CampusHub"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("update grounding state: %v", err)
+	}
+
+	record, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get snapshot: %v", err)
+	}
+	if record == nil {
+		t.Fatal("expected snapshot record, got nil")
+	}
+	if record.ActiveSectionID == nil || *record.ActiveSectionID != "00000000-0000-0000-0000-000000000001" {
+		t.Fatalf("expected active section id, got %#v", record.ActiveSectionID)
+	}
+	if record.ActiveSectionType == nil || *record.ActiveSectionType != "project" {
+		t.Fatalf("expected active section type, got %#v", record.ActiveSectionType)
+	}
+	if record.ActiveEntityName == nil || *record.ActiveEntityName != "CampusHub" {
+		t.Fatalf("expected active entity name, got %#v", record.ActiveEntityName)
+	}
+
+	var citationWindows []CitationWindow
+	if err := json.Unmarshal(record.LastCitationWindowsJSON, &citationWindows); err != nil {
+		t.Fatalf("unmarshal last_citation_windows_json: %v", err)
+	}
+	if len(citationWindows) != 1 || citationWindows[0].WindowGroupID != "project-1" {
+		t.Fatalf("expected citation window to persist, got %#v", citationWindows)
+	}
+
+	var enumeratedEntities []EnumeratedEntity
+	if err := json.Unmarshal(record.LastEnumeratedEntitiesJSON, &enumeratedEntities); err != nil {
+		t.Fatalf("unmarshal last_enumerated_entities_json: %v", err)
+	}
+	if len(enumeratedEntities) != 1 || enumeratedEntities[0].EntityName != "CampusHub" {
+		t.Fatalf("expected enumerated entity to persist, got %#v", enumeratedEntities)
+	}
+
+	var ordinalFrame []OrdinalReference
+	if err := json.Unmarshal(record.OrdinalReferenceFrameJSON, &ordinalFrame); err != nil {
+		t.Fatalf("unmarshal ordinal_reference_frame_json: %v", err)
+	}
+	if len(ordinalFrame) != 1 || ordinalFrame[0].SectionID != "00000000-0000-0000-0000-000000000001" {
+		t.Fatalf("expected ordinal frame to persist, got %#v", ordinalFrame)
+	}
+}
+
 func appendAssistantMessage(
 	t *testing.T,
 	ctx context.Context,
@@ -433,8 +510,20 @@ func assertEmptySessionContextSnapshot(t *testing.T, snapshot *SessionContextSna
 	if snapshot.LatestTaskID != nil || snapshot.LatestTaskStatus != nil {
 		t.Fatalf("expected latest task fields to be empty, got %#v", snapshot)
 	}
+	if snapshot.ActiveSectionID != nil || snapshot.ActiveSectionType != nil || snapshot.ActiveEntityName != nil {
+		t.Fatalf("expected grounding fields to be empty, got %#v", snapshot)
+	}
 	if string(snapshot.ConfirmedConstraintsJSON) != "[]" {
 		t.Fatalf("expected confirmed_constraints_json to default to [], got %s", string(snapshot.ConfirmedConstraintsJSON))
+	}
+	if string(snapshot.LastCitationWindowsJSON) != "[]" {
+		t.Fatalf("expected last_citation_windows_json to default to [], got %s", string(snapshot.LastCitationWindowsJSON))
+	}
+	if string(snapshot.LastEnumeratedEntitiesJSON) != "[]" {
+		t.Fatalf("expected last_enumerated_entities_json to default to [], got %s", string(snapshot.LastEnumeratedEntitiesJSON))
+	}
+	if string(snapshot.OrdinalReferenceFrameJSON) != "[]" {
+		t.Fatalf("expected ordinal_reference_frame_json to default to [], got %s", string(snapshot.OrdinalReferenceFrameJSON))
 	}
 	if snapshot.SummaryBaseSequenceNo != 0 {
 		t.Fatalf("expected summary_base_sequence_no 0, got %d", snapshot.SummaryBaseSequenceNo)
