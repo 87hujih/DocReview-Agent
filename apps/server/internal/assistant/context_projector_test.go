@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"agent_project/apps/server/internal/storage/postgres"
@@ -80,9 +81,9 @@ func TestSessionContextProjectorProjectsTaskSuggestionAndTaskCreated(t *testing.
 	}
 
 	if err := projector.ProjectTaskSuggestionCreated(ctx, TaskSuggestionProjection{
-		SessionID:    "session-1",
-		MessageID:    "suggestion-1",
-		Instruction:  "请整理学生守则第二章",
+		SessionID:   "session-1",
+		MessageID:   "suggestion-1",
+		Instruction: "请整理学生守则第二章",
 	}); err != nil {
 		t.Fatalf("project task suggestion: %v", err)
 	}
@@ -153,6 +154,42 @@ func TestSessionContextProjectorProjectsTaskStatusIdempotently(t *testing.T) {
 	}
 	if repo.changeCount != beforeChanges+1 {
 		t.Fatalf("expected only one effective state change after duplicated status projection, got changeCount=%d before=%d", repo.changeCount, beforeChanges)
+	}
+}
+
+func TestSessionContextProjectorProjectsGroundingState(t *testing.T) {
+	repo := newFakeSessionContextSnapshotProjectorRepo()
+	projector := NewSessionContextProjector(repo)
+	ctx := context.Background()
+
+	if err := projector.InitSession(ctx, "session-1"); err != nil {
+		t.Fatalf("init session: %v", err)
+	}
+
+	if err := projector.ProjectGroundingState(ctx, GroundingStateProjection{
+		SessionID:         "session-1",
+		ActiveSectionID:   "section-campushub",
+		ActiveSectionType: "project",
+		ActiveEntityName:  "CampusHub",
+		LastEnumeratedEntities: []postgres.EnumeratedEntity{
+			{SectionID: "section-campushub", SectionType: "project", EntityName: "CampusHub", Ordinal: 1},
+		},
+		OrdinalReferenceFrame: []postgres.OrdinalReference{
+			{Ordinal: 1, SectionID: "section-campushub", SectionType: "project", EntityName: "CampusHub"},
+		},
+	}); err != nil {
+		t.Fatalf("project grounding state: %v", err)
+	}
+
+	snapshot := repo.mustGet("session-1")
+	if snapshot.ActiveSectionID == nil || *snapshot.ActiveSectionID != "section-campushub" {
+		t.Fatalf("expected active section id %q, got %#v", "section-campushub", snapshot.ActiveSectionID)
+	}
+	if snapshot.ActiveEntityName == nil || *snapshot.ActiveEntityName != "CampusHub" {
+		t.Fatalf("expected active entity name %q, got %#v", "CampusHub", snapshot.ActiveEntityName)
+	}
+	if string(snapshot.OrdinalReferenceFrameJSON) == "[]" {
+		t.Fatalf("expected ordinal reference frame to be stored, got %s", string(snapshot.OrdinalReferenceFrameJSON))
 	}
 }
 
@@ -264,6 +301,18 @@ func (r *fakeSessionContextSnapshotProjectorRepo) UpdateLatestTaskStatusBySource
 	return nil
 }
 
+func (r *fakeSessionContextSnapshotProjectorRepo) UpdateGroundingState(_ context.Context, params postgres.UpdateGroundingStateParams) error {
+	record := r.ensureRecord(params.SessionID)
+	record.ActiveSectionID = cloneStringPointer(params.ActiveSectionID)
+	record.ActiveSectionType = cloneStringPointer(params.ActiveSectionType)
+	record.ActiveEntityName = cloneStringPointer(params.ActiveEntityName)
+	record.LastCitationWindowsJSON = mustMarshalGroundingJSON(params.LastCitationWindows)
+	record.LastEnumeratedEntitiesJSON = mustMarshalGroundingJSON(params.LastEnumeratedEntities)
+	record.OrdinalReferenceFrameJSON = mustMarshalGroundingJSON(params.OrdinalReferenceFrame)
+	r.changeCount++
+	return nil
+}
+
 func (r *fakeSessionContextSnapshotProjectorRepo) ensureRecord(sessionID string) *postgres.SessionContextSnapshotRecord {
 	if existing, ok := r.records[sessionID]; ok {
 		return existing
@@ -296,6 +345,9 @@ func cloneSnapshotRecord(record *postgres.SessionContextSnapshotRecord) *postgre
 	cloned.ActiveResourceTitle = cloneStringPointer(record.ActiveResourceTitle)
 	cloned.ActiveResourceSourceType = cloneStringPointer(record.ActiveResourceSourceType)
 	cloned.ActiveResourceSourceMessageID = cloneStringPointer(record.ActiveResourceSourceMessageID)
+	cloned.ActiveSectionID = cloneStringPointer(record.ActiveSectionID)
+	cloned.ActiveSectionType = cloneStringPointer(record.ActiveSectionType)
+	cloned.ActiveEntityName = cloneStringPointer(record.ActiveEntityName)
 	cloned.PendingTaskSuggestionMessageID = cloneStringPointer(record.PendingTaskSuggestionMessageID)
 	cloned.PendingTaskInstruction = cloneStringPointer(record.PendingTaskInstruction)
 	cloned.LatestTaskID = cloneStringPointer(record.LatestTaskID)
@@ -303,6 +355,15 @@ func cloneSnapshotRecord(record *postgres.SessionContextSnapshotRecord) *postgre
 	cloned.LatestTaskSourceMessageID = cloneStringPointer(record.LatestTaskSourceMessageID)
 	if record.ConfirmedConstraintsJSON != nil {
 		cloned.ConfirmedConstraintsJSON = append([]byte(nil), record.ConfirmedConstraintsJSON...)
+	}
+	if record.LastCitationWindowsJSON != nil {
+		cloned.LastCitationWindowsJSON = append([]byte(nil), record.LastCitationWindowsJSON...)
+	}
+	if record.LastEnumeratedEntitiesJSON != nil {
+		cloned.LastEnumeratedEntitiesJSON = append([]byte(nil), record.LastEnumeratedEntitiesJSON...)
+	}
+	if record.OrdinalReferenceFrameJSON != nil {
+		cloned.OrdinalReferenceFrameJSON = append([]byte(nil), record.OrdinalReferenceFrameJSON...)
 	}
 	cloned.RollingSummary = cloneStringPointer(record.RollingSummary)
 	return &cloned
@@ -331,4 +392,12 @@ func sameOptionalPointer(current *string, next *string) bool {
 	}
 
 	return *current == *next
+}
+
+func mustMarshalGroundingJSON(value any) []byte {
+	body, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return body
 }
