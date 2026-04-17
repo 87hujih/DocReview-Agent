@@ -222,6 +222,82 @@ func TestGetTaskByIDHandler(t *testing.T) {
 	}
 }
 
+func TestTaskToDetailResponseIncludesSourceSessionID(t *testing.T) {
+	sourceSessionID := "session-1"
+	response := taskToDetailResponse(postgres.Task{
+		ID:              "task-1",
+		ResourceID:      "resource-1",
+		Instruction:     "请整理详情接口",
+		SourceSessionID: &sourceSessionID,
+		Status:          "completed",
+	})
+
+	if response.SourceSessionID == nil || *response.SourceSessionID != sourceSessionID {
+		t.Fatalf("expected source_session_id %q, got %#v", sourceSessionID, response.SourceSessionID)
+	}
+}
+
+func TestGetTaskByIDHandlerIncludesAssistantSourceSessionID(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	assistantRepo := postgres.NewAssistantRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
+	engine := server.New()
+	engine.GET("/api/tasks/:id", handler.GetByID)
+
+	ctx := testContext(t)
+	resource, err := resourceRepo.Create(ctx, "任务详情原会话测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "当前版本内容", "original"); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	session, messages, err := assistantRepo.CreateSessionWithMessages(ctx, "任务来源会话", []postgres.AssistantMessageInput{{
+		Role:    "assistant",
+		Kind:    "task_suggestion",
+		Payload: []byte(`{"action_label":"确认创建任务","can_create":true,"instruction":"请整理详情接口","resource_id":"` + resource.ID + `","resource_label":"测试资源 · upload","status_message":"资源已明确，可以创建任务。","title":"建议创建任务"}`),
+	}})
+	if err != nil {
+		t.Fatalf("create assistant session with suggestion: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup assistant session %q: %v", session.ID, err)
+		}
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 assistant message, got %d", len(messages))
+	}
+
+	task, created, err := taskRepo.CreateFromAssistantSuggestion(ctx, resource.ID, "请整理详情接口", messages[0].ID)
+	if err != nil {
+		t.Fatalf("create assistant-originated task: %v", err)
+	}
+	if !created {
+		t.Fatal("expected assistant-originated task to be newly created")
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/tasks/"+task.ID, nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	body := string(response.Body())
+	if !strings.Contains(body, `"source_session_id":"`+session.ID+`"`) {
+		t.Fatalf("expected source_session_id %q in response, got %q", session.ID, body)
+	}
+}
+
 func TestGetTaskByIDHandlerIncludesErrorMessages(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)

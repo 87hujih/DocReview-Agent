@@ -5,6 +5,7 @@ export interface Task {
   id: string;
   resource_id: string;
   instruction: string;
+  source_session_id?: string | null;
   status: string;
   error_message?: string | null;
   created_at: string;

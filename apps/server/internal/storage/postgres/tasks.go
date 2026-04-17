@@ -15,6 +15,7 @@ type Task struct {
 	ResourceID      string
 	Instruction     string
 	SourceMessageID *string
+	SourceSessionID *string
 	Status          string
 	ErrorMessage    *string
 	CreatedAt       time.Time
@@ -132,6 +133,26 @@ func (r *TaskRepo) GetByID(ctx context.Context, id string) (*Task, error) {
 	}
 
 	return &task, nil
+}
+
+// GetSourceSessionIDBySourceMessageID 根据任务来源建议消息 ID 反查助手会话 ID。
+func (r *TaskRepo) GetSourceSessionIDBySourceMessageID(ctx context.Context, sourceMessageID string) (*string, error) {
+	var sessionID *string
+
+	err := r.pool.QueryRow(ctx, `
+		SELECT session_id
+		FROM assistant_messages
+		WHERE id = $1
+	`, sourceMessageID).Scan(&sessionID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return sessionID, nil
 }
 
 // List 按创建时间倒序返回任务列表。

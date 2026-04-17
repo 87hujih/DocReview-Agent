@@ -36,13 +36,14 @@ type taskSummaryResponse struct {
 }
 
 type taskDetailResponse struct {
-	ID           string    `json:"id"`
-	ResourceID   string    `json:"resource_id"`
-	Instruction  string    `json:"instruction"`
-	Status       string    `json:"status"`
-	ErrorMessage *string   `json:"error_message"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	ResourceID      string    `json:"resource_id"`
+	Instruction     string    `json:"instruction"`
+	SourceSessionID *string   `json:"source_session_id,omitempty"`
+	Status          string    `json:"status"`
+	ErrorMessage    *string   `json:"error_message"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type taskStepResponse struct {
@@ -182,6 +183,14 @@ func (h *TaskHandler) GetByID(requestCtx context.Context, ctx *app.RequestContex
 		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "任务不存在"})
 		return
 	}
+	if task.SourceMessageID != nil && strings.TrimSpace(*task.SourceMessageID) != "" {
+		sourceSessionID, sourceErr := h.taskRepo.GetSourceSessionIDBySourceMessageID(requestCtx, strings.TrimSpace(*task.SourceMessageID))
+		if sourceErr != nil {
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务失败"})
+			return
+		}
+		task.SourceSessionID = sourceSessionID
+	}
 
 	response := getTaskResponse{
 		Task:  taskToDetailResponse(*task),
@@ -273,13 +282,14 @@ func taskToSummaryResponse(task postgres.Task) taskSummaryResponse {
 
 func taskToDetailResponse(task postgres.Task) taskDetailResponse {
 	return taskDetailResponse{
-		ID:           task.ID,
-		ResourceID:   task.ResourceID,
-		Instruction:  task.Instruction,
-		Status:       task.Status,
-		ErrorMessage: task.ErrorMessage,
-		CreatedAt:    task.CreatedAt,
-		UpdatedAt:    task.UpdatedAt,
+		ID:              task.ID,
+		ResourceID:      task.ResourceID,
+		Instruction:     task.Instruction,
+		SourceSessionID: task.SourceSessionID,
+		Status:          task.Status,
+		ErrorMessage:    task.ErrorMessage,
+		CreatedAt:       task.CreatedAt,
+		UpdatedAt:       task.UpdatedAt,
 	}
 }
 

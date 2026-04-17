@@ -136,6 +136,34 @@ describe("TaskDetailPage", () => {
     );
   });
 
+  it("falls back to the task source session when the URL does not carry a session query", async () => {
+    mockedGetTask.mockResolvedValue({
+      steps: [],
+      task: {
+        created_at: "2026-04-13T10:00:00Z",
+        id: "task-1",
+        instruction: "修订学生守则",
+        resource_id: "resource-1",
+        source_session_id: "session-origin",
+        status: "completed",
+        updated_at: "2026-04-13T10:20:00Z"
+      }
+    });
+    mockedGetTaskArtifacts.mockResolvedValue([]);
+    mockedGetTaskEvents.mockResolvedValue([]);
+
+    render(<TaskDetailPage />);
+
+    expect(await screen.findByRole("link", { name: "返回原会话" })).toHaveAttribute(
+      "href",
+      "/?session=session-origin"
+    );
+    expect(screen.getByRole("link", { name: "查看修订结果" })).toHaveAttribute(
+      "href",
+      "/resources/resource-1?session=session-origin"
+    );
+  });
+
   it("shows a pure error state when the initial task load fails", async () => {
     mockedGetTask.mockRejectedValue(new Error("任务不存在"));
     mockedGetTaskArtifacts.mockResolvedValue([]);

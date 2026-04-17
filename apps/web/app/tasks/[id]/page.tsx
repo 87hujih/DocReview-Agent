@@ -201,10 +201,11 @@ export default function TaskDetailPage() {
   const diffPreview = getDiffPreviewArtifact(artifacts);
   const isCompletedTask = task?.status === "completed";
   const hasResultResource = isCompletedTask && Boolean(task?.resource_id.trim());
-  const assistantHref = buildAssistantSessionHref(sessionId);
-  const assistantLabel = sessionId ? "返回原会话" : "返回助手";
+  const effectiveSessionId = sessionId ?? normalizeSessionId(task?.source_session_id ?? null);
+  const assistantHref = buildAssistantSessionHref(effectiveSessionId);
+  const assistantLabel = effectiveSessionId ? "返回原会话" : "返回助手";
   const resultHref =
-    hasResultResource && task ? withSessionQuery(`/resources/${task.resource_id}`, sessionId) : null;
+    hasResultResource && task ? withSessionQuery(`/resources/${task.resource_id}`, effectiveSessionId) : null;
   const showArtifactsPlaceholder =
     artifactsLoaded && citations.length === 0 && !reviewSummary && !diffPreview && !isCompletedTask;
   const showErrorOnly = !isLoading && !task && Boolean(taskError);
