@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agent_project/apps/server/internal/agent/editor"
@@ -70,7 +71,23 @@ func main() {
 	}
 
 	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
-	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient)
+	retrieverOptions := []retriever.ServiceOption{
+		retriever.WithSearchBackend(cfg.SearchBackend),
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.SearchBackend), "opensearch_bm25") {
+		lexicalBackend := retriever.NewOpenSearchBM25Backend(retriever.OpenSearchBM25BackendOptions{
+			BaseURL:     cfg.OpenSearchURL,
+			IndexChunks: cfg.OpenSearchIndexChunks,
+			Username:    cfg.OpenSearchUsername,
+			Password:    cfg.OpenSearchPassword,
+			TLSInsecure: cfg.OpenSearchTLSInsecure,
+		})
+		if lexicalBackend == nil {
+			log.Fatalf("OpenSearch 词法检索 backend 初始化失败")
+		}
+		retrieverOptions = append(retrieverOptions, retriever.WithLexicalBackend(lexicalBackend))
+	}
+	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient, retrieverOptions...)
 	searchClient := searchindex.NewClient(searchindex.ClientOptions{
 		BaseURL:     cfg.OpenSearchURL,
 		IndexChunks: cfg.OpenSearchIndexChunks,
