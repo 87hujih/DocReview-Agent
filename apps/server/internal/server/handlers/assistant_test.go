@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"mime/multipart"
 	"net/textproto"
 	"strings"
@@ -301,6 +302,47 @@ func TestCreateConversationStreamHandler(t *testing.T) {
 	}
 	if sessionPayload.Session.ID != "session-stream" {
 		t.Fatalf("expected session id %q, got %q", "session-stream", sessionPayload.Session.ID)
+	}
+}
+
+func TestWriteAssistantStreamEventSupportsSessionFile(t *testing.T) {
+	reader, writer := io.Pipe()
+	done := make(chan string, 1)
+
+	go func() {
+		body, _ := io.ReadAll(reader)
+		done <- string(body)
+	}()
+
+	err := writeAssistantStreamEvent(writer, assistant.StreamEvent{
+		Type: assistant.StreamEventSessionFile,
+		Message: &postgres.AssistantMessage{
+			ID:         "message-file",
+			SessionID:  "session-1",
+			Role:       assistant.RoleAssistant,
+			Kind:       assistant.KindSessionFile,
+			SequenceNo: 2,
+			Payload: mustMarshalHandlerJSON(t, assistant.SessionFilePayload{
+				FileName:      "对话粘贴正文.md",
+				ResourceID:    "resource-inline",
+				ResourceTitle: "对话粘贴正文",
+				SourceType:    "inline_text",
+				Status:        "ready",
+			}),
+			CreatedAt: time.Unix(1710000001, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("write assistant stream event: %v", err)
+	}
+	_ = writer.Close()
+
+	body := <-done
+	if !strings.Contains(body, "event: session_file") {
+		t.Fatalf("expected session_file event name, got %q", body)
+	}
+	if !strings.Contains(body, "\"kind\":\"session_file\"") {
+		t.Fatalf("expected session_file message payload, got %q", body)
 	}
 }
 

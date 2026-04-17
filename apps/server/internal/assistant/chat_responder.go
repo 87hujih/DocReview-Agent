@@ -31,10 +31,7 @@ const assistantSystemPrompt = `你是中文个人助手。
 要求：
 1. 基于会话历史继续自然对话，回答直接、简洁、有帮助。
 2. 不要声称已经创建任务、上传文件或修改资源。
-3. 如果提供了资源片段，只能基于片段回答；证据不足时明确说明。
-
-只输出 JSON：
-{"reply":"给用户的回复"}`
+3. 如果提供了资源片段，只能基于片段回答；证据不足时明确说明。`
 
 type chatResponder interface {
 	Reply(ctx context.Context, input ChatCompletionInput) (*ChatCompletionResult, error)
@@ -62,11 +59,12 @@ type chatStreamResultProvider interface {
 
 // ChatCompletionInput 描述一次助手回复所需的会话上下文。
 type ChatCompletionInput struct {
-	Snapshot  *SessionContextSnapshot
-	Citations []citation.Citation
-	History   []postgres.AssistantMessage
-	Message   string
-	Resource  *resourceContext
+	Snapshot               *SessionContextSnapshot
+	Citations              []citation.Citation
+	History                []postgres.AssistantMessage
+	Message                string
+	Resource               *resourceContext
+	TaskSuggestionDecision *TaskSuggestionDecision
 }
 
 // ChatCompletionResult 表示模型返回的自然语言回复与可选任务建议。
@@ -231,12 +229,20 @@ func buildChatMessages(input ChatCompletionInput) []*schema.Message {
 }
 
 func buildSystemPrompt(input ChatCompletionInput) string {
-	parts := []string{assistantSystemPrompt}
+	parts := []string{assistantSystemPrompt, buildAssistantResponseSchemaPrompt(input.TaskSuggestionDecision)}
 	if runtimeContext := buildRuntimeContext(input); runtimeContext != "" {
 		parts = append(parts, runtimeContext)
 	}
 
 	return strings.Join(parts, "\n\n")
+}
+
+func buildAssistantResponseSchemaPrompt(decision *TaskSuggestionDecision) string {
+	if decision != nil && decision.ReadinessState == ReadinessStateReadyForTask {
+		return "只输出 JSON：\n{\"reply\":\"给用户的回复\",\"task_instruction\":\"仅当用户要求立即开始执行且材料已明确时才填写，可选\"}"
+	}
+
+	return "只输出 JSON：\n{\"reply\":\"给用户的回复\"}"
 }
 
 func buildRuntimeContext(input ChatCompletionInput) string {

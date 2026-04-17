@@ -82,8 +82,11 @@ func WithIndexer(indexer versionIndexer) ServiceOption {
 
 // ImportDocument 把单个上传文件直接导入资源库。
 type ImportDocumentInput struct {
-	FileName string
-	Content  []byte
+	FileName      string
+	Content       []byte
+	SourceType    string
+	SourceRef     *string
+	VersionSource string
 }
 
 // ImportDocumentResult 返回导入后生成的资源与版本。
@@ -143,8 +146,23 @@ func (s *Service) ImportDocument(ctx context.Context, input ImportDocumentInput)
 	}
 
 	title := extractTitleFromContent(content, input.FileName)
-	sourceRef := strings.TrimSpace(input.FileName)
-	resource, version, err := s.saveDocument(ctx, title, "upload", stringPointer(sourceRef), content, "assistant_upload")
+	sourceType := strings.TrimSpace(input.SourceType)
+	if sourceType == "" {
+		sourceType = "upload"
+	}
+	versionSource := strings.TrimSpace(input.VersionSource)
+	if versionSource == "" {
+		versionSource = "assistant_upload"
+	}
+	sourceRef := input.SourceRef
+	if sourceRef == nil {
+		trimmedFileName := strings.TrimSpace(input.FileName)
+		if trimmedFileName != "" {
+			sourceRef = stringPointer(trimmedFileName)
+		}
+	}
+
+	resource, version, err := s.saveDocument(ctx, title, sourceType, sourceRef, content, versionSource)
 	if err != nil {
 		return nil, err
 	}

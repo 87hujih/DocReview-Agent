@@ -1,5 +1,6 @@
 import type {
   AssistantMessage,
+  AssistantSessionFileMessage,
   AssistantSession,
   AssistantStreamEvent,
   AssistantStreamRunResult,
@@ -262,6 +263,13 @@ function parseAssistantStreamEvent(frame: ParsedSSEFrame): AssistantStreamEvent 
     }
     case "message_started":
       return { type: "message_started" };
+    case "session_file": {
+      const payload = parseJSON<StreamMessagePayload>(frame.data);
+      return {
+        message: payload.message as AssistantSessionFileMessage,
+        type: "session_file"
+      };
+    }
     case "message_delta": {
       const payload = parseJSON<StreamDeltaPayload>(frame.data);
       return {

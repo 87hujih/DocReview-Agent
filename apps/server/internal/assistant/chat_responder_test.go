@@ -60,6 +60,50 @@ func TestBuildChatMessagesMergesRuntimeContextIntoSingleSystemPrompt(t *testing.
 	}
 }
 
+func TestReplyParsesOptionalTaskInstruction(t *testing.T) {
+	responder := newChatResponderWithClient(fakeAssistantLLMClient{
+		generate: func(_ context.Context, _ []*schema.Message) (*schema.Message, error) {
+			return &schema.Message{Content: `{"reply":"可以开始。","task_instruction":"请把这份简历改成产品经理版本"}`}, nil
+		},
+	}, llmclient.Config{TimeoutMS: 1400})
+
+	result, err := responder.Reply(context.Background(), ChatCompletionInput{Message: "请直接开始"})
+	if err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+
+	if result.Reply != "可以开始。" {
+		t.Fatalf("expected reply %q, got %q", "可以开始。", result.Reply)
+	}
+	if result.TaskInstruction == nil || *result.TaskInstruction != "请把这份简历改成产品经理版本" {
+		t.Fatalf("expected optional task instruction to be parsed, got %#v", result.TaskInstruction)
+	}
+}
+
+func TestBuildChatMessagesPromptMentionsTaskInstructionIsOptionalOnlyWhenReady(t *testing.T) {
+	readyMessages := buildChatMessages(ChatCompletionInput{
+		Message: "请直接把这份简历改成产品经理版本",
+		TaskSuggestionDecision: &TaskSuggestionDecision{
+			ReadinessState: ReadinessStateReadyForTask,
+		},
+	})
+	readyPrompt := readyMessages[0].Content
+	if !strings.Contains(readyPrompt, `"task_instruction":"仅当用户要求立即开始执行且材料已明确时才填写，可选"`) {
+		t.Fatalf("expected ready prompt to mention optional task_instruction, got %q", readyPrompt)
+	}
+
+	notReadyMessages := buildChatMessages(ChatCompletionInput{
+		Message: "这份简历还有什么需要优化的吗",
+		TaskSuggestionDecision: &TaskSuggestionDecision{
+			ReadinessState: ReadinessStateReadyButNotExecuting,
+		},
+	})
+	notReadyPrompt := notReadyMessages[0].Content
+	if strings.Contains(notReadyPrompt, "task_instruction") {
+		t.Fatalf("expected non-ready prompt to avoid task_instruction hint, got %q", notReadyPrompt)
+	}
+}
+
 func TestBuildChatMessagesIncludesSnapshotProjection(t *testing.T) {
 	messages := buildChatMessages(ChatCompletionInput{
 		Snapshot: &SessionContextSnapshot{

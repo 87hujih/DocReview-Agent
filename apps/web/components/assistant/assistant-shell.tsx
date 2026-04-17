@@ -266,6 +266,20 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
             setMessages((current) => updateLocalStreamingMessage(current, localAssistantMessage.id, event.delta));
           });
           return;
+        case "session_file":
+          if (sessionSnapshot) {
+            sessionSnapshot = patchSessionTimestamp(sessionSnapshot, event.message.created_at);
+          }
+          startTransition(() => {
+            setMessages((current) =>
+              insertMessageBeforeStreamingPlaceholder(current, localAssistantMessage.id, event.message)
+            );
+            if (sessionSnapshot) {
+              setCurrentSession(sessionSnapshot);
+              setSessions((current) => upsertSession(current, sessionSnapshot!));
+            }
+          });
+          return;
         case "message_completed":
           if (sessionSnapshot) {
             sessionSnapshot = patchSessionTimestamp(sessionSnapshot, event.message.created_at);
@@ -539,6 +553,23 @@ function replaceLocalMessage(
   nextMessage: AssistantMessage
 ): AssistantRenderableMessage[] {
   return current.map((message) => (message.id === localMessageId ? nextMessage : message));
+}
+
+function insertMessageBeforeStreamingPlaceholder(
+  current: AssistantRenderableMessage[],
+  localMessageId: string,
+  nextMessage: AssistantMessage
+): AssistantRenderableMessage[] {
+  const placeholderIndex = current.findIndex((message) => message.id === localMessageId);
+  if (placeholderIndex === -1) {
+    return [...current, nextMessage];
+  }
+
+  return [
+    ...current.slice(0, placeholderIndex),
+    nextMessage,
+    ...current.slice(placeholderIndex)
+  ];
 }
 
 function updateLocalStreamingMessage(

@@ -19,8 +19,11 @@ func NewIngestDocumentImporter(service *ingest.Service) *IngestDocumentImporter 
 // ImportDocument 调用知识层导入逻辑，并转成助手领域结果。
 func (i *IngestDocumentImporter) ImportDocument(ctx context.Context, input ImportDocumentInput) (*ImportDocumentResult, error) {
 	result, err := i.service.ImportDocument(ctx, ingest.ImportDocumentInput{
-		FileName: input.FileName,
-		Content:  input.Content,
+		FileName:      input.FileName,
+		Content:       input.Content,
+		SourceType:    input.SourceType,
+		SourceRef:     input.SourceRef,
+		VersionSource: input.VersionSource,
 	})
 	if err != nil {
 		return nil, err

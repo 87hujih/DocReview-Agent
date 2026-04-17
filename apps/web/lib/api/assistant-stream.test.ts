@@ -77,6 +77,90 @@ describe("assistant-stream", () => {
     ]);
   });
 
+  it("parses session_file before message_completed and task_suggestion", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        createResponse(
+          sse("session_created", {
+            session: {
+              created_at: "2026-04-10T10:30:00Z",
+              id: "session-1",
+              last_message_at: "2026-04-10T10:30:00Z",
+              title: "流式会话",
+              updated_at: "2026-04-10T10:30:00Z"
+            }
+          }) +
+            sse("session_file", {
+              message: {
+                created_at: "2026-04-10T10:30:01Z",
+                id: "message-file",
+                kind: "session_file",
+                payload: {
+                  file_name: "对话粘贴正文.md",
+                  resource_id: "resource-inline",
+                  resource_title: "对话粘贴正文",
+                  source_type: "inline_text",
+                  status: "ready"
+                },
+                role: "assistant",
+                sequence_no: 2
+              }
+            }) +
+            sse("message_started", {}) +
+            sse("message_completed", {
+              message: {
+                created_at: "2026-04-10T10:30:02Z",
+                id: "message-2",
+                kind: "text",
+                payload: {
+                  content: "我先看这段正文。"
+                },
+                role: "assistant",
+                sequence_no: 3
+              }
+            }) +
+            sse("task_suggestion", {
+              message: {
+                created_at: "2026-04-10T10:30:03Z",
+                id: "message-3",
+                kind: "task_suggestion",
+                payload: {
+                  action_label: "确认创建任务",
+                  can_create: true,
+                  instruction: "请把这份简历改成产品经理版本",
+                  resource_id: "resource-inline",
+                  resource_label: "对话粘贴正文 · inline_text",
+                  status_message: "资源已明确，可以创建任务。",
+                  title: "建议创建任务"
+                },
+                role: "assistant",
+                sequence_no: 4
+              }
+            }) +
+            sse("done", {})
+        )
+      )
+    );
+
+    const events: Array<{ type: string }> = [];
+    const result = await streamAssistantConversation("请直接处理这段正文", {
+      onEvent: (event) => {
+        events.push({ type: event.type });
+      }
+    });
+
+    expect(result.status).toBe("completed");
+    expect(events.map((event) => event.type)).toEqual([
+      "session_created",
+      "session_file",
+      "message_started",
+      "message_completed",
+      "task_suggestion",
+      "done"
+    ]);
+  });
+
   it("returns a stopped result when AbortController aborts the request", async () => {
     vi.stubGlobal(
       "fetch",

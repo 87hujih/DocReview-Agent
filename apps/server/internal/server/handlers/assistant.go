@@ -564,7 +564,7 @@ func writeAssistantStreamEvent(writer *io.PipeWriter, event assistant.StreamEven
 		return writeAssistantSSEEvent(writer, event.Type, assistantStreamDeltaResponse{
 			Delta: event.Delta,
 		})
-	case assistant.StreamEventMessageCompleted, assistant.StreamEventTaskSuggestion:
+	case assistant.StreamEventSessionFile, assistant.StreamEventMessageCompleted, assistant.StreamEventTaskSuggestion:
 		if event.Message == nil {
 			return writeAssistantSSEEvent(writer, event.Type, struct{}{})
 		}
