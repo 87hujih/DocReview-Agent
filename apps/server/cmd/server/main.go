@@ -32,7 +32,7 @@ import (
 	"agent_project/apps/server/internal/task/workflow"
 )
 
-// main 负责装配配置、数据库、检索能力和 HTTP 服务入口。
+// main 负责装配配置、数据库、检索能力和 HTTP 服务入口
 func main() {
 	cfg := appconfig.Load()
 	logger := logging.NewLogger("server", cfg.LogLevel, cfg.LogFormat, cfg.LogAddSource, os.Stdout)
