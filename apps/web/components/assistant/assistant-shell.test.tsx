@@ -336,6 +336,96 @@ describe("AssistantShell", () => {
     expect(screen.queryByRole("button", { name: "停止生成" })).not.toBeInTheDocument();
   });
 
+  it("inserts streamed session_file before the local assistant placeholder is finalized", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([]);
+    let resolveStream: ((value: { status: "completed" }) => void) | null = null;
+    let onEvent: ((event: any) => void) | null = null;
+
+    mockedStreamAssistantConversation.mockImplementation(async (_message, options = {}) => {
+      onEvent = options.onEvent || null;
+      return new Promise((resolve) => {
+        resolveStream = resolve as (value: { status: "completed" }) => void;
+      });
+    });
+
+    renderAssistantShell();
+
+    await waitFor(() => {
+      expect(mockedGetAssistantSessions).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "请直接处理这段正文" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(mockedStreamAssistantConversation).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      onEvent?.({
+        session: {
+          created_at: "2026-04-10T10:30:00Z",
+          id: "session-created",
+          last_message_at: "2026-04-10T10:30:00Z",
+          title: "请直接处理这段正文",
+          updated_at: "2026-04-10T10:30:00Z"
+        },
+        type: "session_created"
+      });
+      onEvent?.({
+        message: {
+          created_at: "2026-04-10T10:30:01Z",
+          id: "message-file",
+          kind: "session_file",
+          payload: {
+            file_name: "对话粘贴正文.md",
+            resource_id: "resource-inline",
+            resource_title: "对话粘贴正文",
+            source_type: "inline_text",
+            status: "ready"
+          },
+          role: "assistant",
+          sequence_no: 2
+        },
+        type: "session_file"
+      });
+      onEvent?.({ type: "message_started" });
+      onEvent?.({
+        delta: "我先看这段正文",
+        type: "message_delta"
+      });
+    });
+
+    const sessionFileTitle = await screen.findByText("对话粘贴正文.md");
+    const streamingReply = await screen.findByText("我先看这段正文");
+    expect(
+      sessionFileTitle.compareDocumentPosition(streamingReply) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+
+    await act(async () => {
+      onEvent?.({
+        message: {
+          created_at: "2026-04-10T10:30:02Z",
+          id: "message-2",
+          kind: "text",
+          payload: {
+            content: "我先看这段正文，接着整理任务。"
+          },
+          role: "assistant",
+          sequence_no: 3
+        },
+        type: "message_completed"
+      });
+      resolveStream?.({ status: "completed" });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("我先看这段正文，接着整理任务。")).toBeInTheDocument();
+    });
+  });
+
   it("loads full messages after clicking a history item", async () => {
     mockedGetAssistantSessions.mockResolvedValue([
       {

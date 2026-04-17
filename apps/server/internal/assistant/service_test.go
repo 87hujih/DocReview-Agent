@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func TestStartConversationUsesResponderReply(t *testing.T) {
 			Reply: "当然可以，我们先把目标和限制条件说清楚。",
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
 
 	result, err := service.StartConversation(context.Background(), "我想先聊聊这周要做什么")
 	if err != nil {
@@ -43,7 +44,7 @@ func TestStartConversationCreatesEmptyContextSnapshot(t *testing.T) {
 	projector := &fakeSessionContextProjector{}
 	service := NewService(
 		repo,
-		fakeDocumentImporter{},
+		&fakeDocumentImporter{},
 		&fakeTaskCreator{},
 		&fakeChatResponder{result: &ChatCompletionResult{Reply: "先把目标梳理一下。"}},
 		nil,
@@ -65,7 +66,7 @@ func TestStartConversationCreatesEmptyContextSnapshot(t *testing.T) {
 
 func TestStartConversationDoesNotSuggestTaskForCapabilityQuestion(t *testing.T) {
 	repo := newFakeSessionRepo()
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
 		result: &ChatCompletionResult{
 			Reply: "我可以回答问题、整理信息，也可以在需要时给出任务建议。",
 		},
@@ -81,9 +82,24 @@ func TestStartConversationDoesNotSuggestTaskForCapabilityQuestion(t *testing.T) 
 	}
 }
 
-func TestAppendMessageCreatesTaskSuggestionFromResponderInstruction(t *testing.T) {
+func TestAppendMessageCreatesTaskSuggestionFromResponderInstructionWhenReadinessPasses(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "学生手册.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
 	instruction := "请把学生手册第二章整理成可执行的修订任务"
 	responder := &fakeChatResponder{
 		result: &ChatCompletionResult{
@@ -91,7 +107,7 @@ func TestAppendMessageCreatesTaskSuggestionFromResponderInstruction(t *testing.T
 			TaskInstruction: &instruction,
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
 
 	result, err := service.AppendMessage(context.Background(), session.ID, "把第二章做成后续事项")
 	if err != nil {
@@ -149,7 +165,7 @@ func TestAppendMessagePassesLatestResourceContextAndCitationsToResponder(t *test
 			},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
 
 	if _, err := service.AppendMessage(context.Background(), session.ID, "考勤条款有什么风险"); err != nil {
 		t.Fatalf("append message: %v", err)
@@ -203,7 +219,7 @@ func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testin
 			},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
 
 	err := service.AppendMessageStream(context.Background(), session.ID, "继续看考勤", func(StreamEvent) error { return nil })
 	if err != nil {
@@ -250,7 +266,7 @@ func TestAppendMessageTriggersAsyncSummaryRefreshAfterPersistingAssistantReply(t
 
 	service := NewService(
 		repo,
-		fakeDocumentImporter{},
+		&fakeDocumentImporter{},
 		&fakeTaskCreator{},
 		&fakeChatResponder{result: &ChatCompletionResult{Reply: "这是新的助手回复。"}},
 		nil,
@@ -293,7 +309,7 @@ func TestAppendMessageStreamSummaryRefreshFailureDoesNotFailMainTurn(t *testing.
 
 	service := NewService(
 		repo,
-		fakeDocumentImporter{},
+		&fakeDocumentImporter{},
 		&fakeTaskCreator{},
 		&fakeChatResponder{stream: &fakeChatStream{chunks: []string{"新的", "流式回复"}}},
 		nil,
@@ -344,7 +360,7 @@ func TestSummaryRefreshSkipsWhenUnsummarizedTextIsBelowThreshold(t *testing.T) {
 
 	service := NewService(
 		repo,
-		fakeDocumentImporter{},
+		&fakeDocumentImporter{},
 		&fakeTaskCreator{},
 		&fakeChatResponder{result: &ChatCompletionResult{Reply: "新的助手回复。"}},
 		nil,
@@ -369,7 +385,7 @@ func TestAppendMessageDoesNotCallRetrieverWithoutReadyResource(t *testing.T) {
 	session := repo.seedSession("空白会话")
 	responder := &fakeChatResponder{result: &ChatCompletionResult{Reply: "先继续聊需求。"}}
 	retriever := &fakeResourceCitationRetriever{}
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, responder, retriever)
 
 	if _, err := service.AppendMessage(context.Background(), session.ID, "先看看目标"); err != nil {
 		t.Fatalf("append message: %v", err)
@@ -379,11 +395,255 @@ func TestAppendMessageDoesNotCallRetrieverWithoutReadyResource(t *testing.T) {
 	}
 }
 
-func TestStartConversationCreatesSessionAndTaskSuggestion(t *testing.T) {
+func TestAppendMessageInlineMaterialUsesInlineTextSourceType(t *testing.T) {
 	repo := newFakeSessionRepo()
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
+	session := repo.seedSession("简历对话")
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-inline",
+				Title:      "对话粘贴正文",
+				SourceType: "inline_text",
+			},
+			Version: &postgres.ResourceVersion{
+				ID:         "version-inline",
+				ResourceID: "resource-inline",
+				Content:    "项目经历\n- 负责增长策略\n- 负责数据分析",
+				Source:     "assistant_inline_text",
+			},
+		},
+	}
+	service := NewService(repo, importer, &fakeTaskCreator{}, &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "我先看这段正文。"},
+	}, nil)
+
+	_, err := service.AppendMessage(context.Background(), session.ID, strings.TrimSpace(`
+项目经历
+- 负责增长策略
+- 负责数据分析
+
+请直接帮我改成产品经理版本
+`))
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if importer.lastInput == nil {
+		t.Fatal("expected inline material to call importer")
+	}
+	if importer.lastInput.SourceType != "inline_text" {
+		t.Fatalf("expected inline import source type %q, got %q", "inline_text", importer.lastInput.SourceType)
+	}
+	if importer.lastInput.VersionSource != "assistant_inline_text" {
+		t.Fatalf("expected inline import version source %q, got %q", "assistant_inline_text", importer.lastInput.VersionSource)
+	}
+	if importer.lastInput.FileName != "对话粘贴正文.md" {
+		t.Fatalf("expected synthetic inline filename, got %q", importer.lastInput.FileName)
+	}
+}
+
+func TestStartConversationPersistsInlineMaterialBeforeAssistantReply(t *testing.T) {
+	repo := newFakeSessionRepo()
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-inline",
+				Title:      "对话粘贴正文",
+				SourceType: "inline_text",
+			},
+		},
+	}
+	service := NewService(repo, importer, &fakeTaskCreator{}, &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "我先看这段正文。"},
+	}, nil)
+
+	result, err := service.StartConversation(context.Background(), strings.TrimSpace(`
+项目经历
+- 负责增长策略
+- 负责数据分析
+`))
+	if err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected user/session_file/assistant messages, got %d", len(result.Messages))
+	}
+	if result.Messages[0].Kind != KindText || result.Messages[1].Kind != KindSessionFile || result.Messages[2].Kind != KindText {
+		t.Fatalf("expected message order text -> session_file -> text, got kinds=%q/%q/%q", result.Messages[0].Kind, result.Messages[1].Kind, result.Messages[2].Kind)
+	}
+
+	filePayload := decodeSessionFilePayload(t, result.Messages[1].Payload)
+	if filePayload.SourceType != "inline_text" {
+		t.Fatalf("expected inline session file source type %q, got %q", "inline_text", filePayload.SourceType)
+	}
+}
+
+func TestAppendMessageInlineMaterialCreatesSessionFileMessageBeforeReply(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-inline",
+				Title:      "对话粘贴正文",
+				SourceType: "inline_text",
+			},
+		},
+	}
+	service := NewService(repo, importer, &fakeTaskCreator{}, &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "我先看这段正文。"},
+	}, nil)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, strings.TrimSpace(`
+项目经历
+- 负责增长策略
+- 负责数据分析
+`))
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected user/session_file/assistant messages, got %d", len(result.Messages))
+	}
+	if result.Messages[0].Kind != KindText || result.Messages[1].Kind != KindSessionFile || result.Messages[2].Kind != KindText {
+		t.Fatalf("expected message order text -> session_file -> text, got kinds=%q/%q/%q", result.Messages[0].Kind, result.Messages[1].Kind, result.Messages[2].Kind)
+	}
+}
+
+func TestAppendMessageInlineMaterialAndExecutionCreatesTaskSuggestionInSameTurn(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-inline",
+				Title:      "对话粘贴正文",
+				SourceType: "inline_text",
+			},
+		},
+	}
+	instruction := "请把这份简历改成产品经理版本"
+	service := NewService(repo, importer, &fakeTaskCreator{}, &fakeChatResponder{
 		result: &ChatCompletionResult{
-			Reply: "我先帮你梳理这份学生守则，再给你任务建议。",
+			Reply:           "这轮已经满足执行条件，我先给你任务建议。",
+			TaskInstruction: &instruction,
+		},
+	}, nil)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, strings.TrimSpace(`
+项目经历
+- 负责增长策略
+- 负责数据分析
+
+请直接帮我改成产品经理版本
+`))
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(result.Messages) != 4 {
+		t.Fatalf("expected user/session_file/assistant/task_suggestion messages, got %d", len(result.Messages))
+	}
+	if result.Messages[1].Kind != KindSessionFile || result.Messages[2].Kind != KindText || result.Messages[3].Kind != KindTaskSuggestion {
+		t.Fatalf("expected session_file before assistant reply and same-turn suggestion, got kinds=%q/%q/%q", result.Messages[1].Kind, result.Messages[2].Kind, result.Messages[3].Kind)
+	}
+
+	filePayload := decodeSessionFilePayload(t, result.Messages[1].Payload)
+	if filePayload.SourceType != "inline_text" {
+		t.Fatalf("expected inline session file source type %q, got %q", "inline_text", filePayload.SourceType)
+	}
+
+	suggestion := decodeTaskSuggestionPayload(t, result.Messages[3].Payload)
+	if !suggestion.CanCreate {
+		t.Fatal("expected same-turn inline material suggestion to be creatable")
+	}
+	if suggestion.ResourceID == nil || *suggestion.ResourceID != "resource-inline" {
+		t.Fatalf("expected suggestion resource id %q, got %#v", "resource-inline", suggestion.ResourceID)
+	}
+}
+
+func TestAppendMessageInlineMaterialWithoutExecutionDoesNotCreateTaskSuggestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-inline",
+				Title:      "对话粘贴正文",
+				SourceType: "inline_text",
+			},
+		},
+	}
+	service := NewService(repo, importer, &fakeTaskCreator{}, &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "我先分析这段内容适合怎么改。"},
+	}, nil)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, strings.TrimSpace(`
+项目经历
+- 负责增长策略
+- 负责数据分析
+`))
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected no same-turn task suggestion without execution intent, got %d messages", len(result.Messages))
+	}
+}
+
+func TestAppendMessageInlineMaterialProjectsActiveResourceIntoSnapshot(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	projector := &fakeSessionContextProjector{}
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-inline",
+				Title:      "对话粘贴正文",
+				SourceType: "inline_text",
+			},
+		},
+	}
+	service := NewService(
+		repo,
+		importer,
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我先看这段正文。"}},
+		nil,
+		WithSessionContextProjector(projector),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, strings.TrimSpace(`
+项目经历
+- 负责增长策略
+- 负责数据分析
+`)); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(projector.fileReadyCalls) != 1 {
+		t.Fatalf("expected 1 inline session_file projection, got %d", len(projector.fileReadyCalls))
+	}
+	call := projector.fileReadyCalls[0]
+	if call.ResourceID != "resource-inline" {
+		t.Fatalf("expected projected resource id %q, got %q", "resource-inline", call.ResourceID)
+	}
+	if call.ResourceSource != "inline_text" {
+		t.Fatalf("expected projected resource source %q, got %q", "inline_text", call.ResourceSource)
+	}
+	if call.SourceMessageID != "message-appended-b" {
+		t.Fatalf("expected projected inline source message id %q, got %q", "message-appended-b", call.SourceMessageID)
+	}
+}
+
+func TestStartConversationDoesNotCreateTaskSuggestionWithoutMaterial(t *testing.T) {
+	repo := newFakeSessionRepo()
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "我可以先帮你分析问题，但要真正创建任务还需要明确材料。",
 		},
 	}, nil)
 
@@ -400,29 +660,72 @@ func TestStartConversationCreatesSessionAndTaskSuggestion(t *testing.T) {
 		t.Fatal("expected session title to be generated")
 	}
 
-	if len(result.Messages) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(result.Messages))
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected 2 messages without task suggestion, got %d", len(result.Messages))
 	}
 
 	if result.Messages[0].Role != RoleUser || result.Messages[0].Kind != KindText {
 		t.Fatalf("expected first message to be user text, got role=%q kind=%q", result.Messages[0].Role, result.Messages[0].Kind)
 	}
+}
 
-	if result.Messages[2].Kind != KindTaskSuggestion {
-		t.Fatalf("expected third message to be task suggestion, got %q", result.Messages[2].Kind)
+func TestAppendMessageDoesNotCreateTaskSuggestionForDiscussionQuestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "学生手册.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply: "我先帮你分析第二章哪里还有问题。",
+		},
+	}, nil)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "这份学生手册第二章还有什么需要优化的吗？")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
 	}
 
-	suggestion := decodeTaskSuggestionPayload(t, result.Messages[2].Payload)
-	if suggestion.CanCreate {
-		t.Fatal("expected task suggestion without uploaded resource to be non-creatable")
-	}
-
-	if suggestion.Instruction != "请帮我修改这份学生守则，并整理成任务" {
-		t.Fatalf("expected suggestion instruction to match input, got %q", suggestion.Instruction)
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected 2 new messages without task suggestion, got %d", len(result.Messages))
 	}
 }
 
-func TestAppendMessageUsesLatestUploadedResourceForTaskSuggestion(t *testing.T) {
+func TestAppendMessageIgnoresModelTaskInstructionWhenReadinessGateFails(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("空白会话")
+	instruction := "请把学生手册整理成执行任务"
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
+		result: &ChatCompletionResult{
+			Reply:           "要进入任务流还需要先给我可处理的材料。",
+			TaskInstruction: &instruction,
+		},
+	}, nil)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "请先告诉我还缺什么材料")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected 2 new messages when readiness gate fails, got %d", len(result.Messages))
+	}
+}
+
+func TestAppendMessageCreatesTaskSuggestionForExecutionRequestWithReadyResource(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
 	resourceID := "resource-1"
@@ -443,7 +746,7 @@ func TestAppendMessageUsesLatestUploadedResourceForTaskSuggestion(t *testing.T) 
 		CreatedAt: time.Now(),
 	})
 
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
 		result: &ChatCompletionResult{
 			Reply: "我先基于当前资料看第二章，再帮你收敛成任务。",
 		},
@@ -470,11 +773,26 @@ func TestAppendMessageUsesLatestUploadedResourceForTaskSuggestion(t *testing.T) 
 func TestAppendMessageProjectsPendingTaskSuggestionIntoSnapshot(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "学生手册.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
 	projector := &fakeSessionContextProjector{}
 	instruction := "请把第二章整理成任务"
 	service := NewService(
 		repo,
-		fakeDocumentImporter{},
+		&fakeDocumentImporter{},
 		&fakeTaskCreator{},
 		&fakeChatResponder{
 			result: &ChatCompletionResult{
@@ -497,8 +815,8 @@ func TestAppendMessageProjectsPendingTaskSuggestionIntoSnapshot(t *testing.T) {
 	if call.SessionID != session.ID {
 		t.Fatalf("expected projected session id %q, got %q", session.ID, call.SessionID)
 	}
-	if call.MessageID != "message-appended-c" {
-		t.Fatalf("expected projected suggestion message id %q, got %q", "message-appended-c", call.MessageID)
+	if call.MessageID != "message-appended-d" {
+		t.Fatalf("expected projected suggestion message id %q, got %q", "message-appended-d", call.MessageID)
 	}
 	if call.Instruction != instruction {
 		t.Fatalf("expected projected instruction %q, got %q", instruction, call.Instruction)
@@ -512,7 +830,7 @@ func TestStartConversationStreamPersistsUserFirstAndAssistantAfterCompletion(t *
 			chunks: []string{"当然可以", "，我们先梳理目标。"},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
 
 	var events []StreamEvent
 	err := service.StartConversationStream(context.Background(), "帮我梳理这周学习安排", func(event StreamEvent) error {
@@ -563,6 +881,110 @@ func TestStartConversationStreamPersistsUserFirstAndAssistantAfterCompletion(t *
 	}
 }
 
+func TestStartConversationStreamEmitsSessionFileBeforeAssistantReplyWhenInlineMaterialDetected(t *testing.T) {
+	repo := newFakeSessionRepo()
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-inline",
+				Title:      "对话粘贴正文",
+				SourceType: "inline_text",
+			},
+		},
+	}
+	responder := &fakeChatResponder{
+		stream: &fakeChatStream{chunks: []string{"我先看这段正文。"}},
+	}
+	service := NewService(repo, importer, &fakeTaskCreator{}, responder, nil)
+
+	var events []StreamEvent
+	err := service.StartConversationStream(context.Background(), strings.TrimSpace(`
+项目经历
+- 负责增长策略
+- 负责数据分析
+`), func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("start conversation stream: %v", err)
+	}
+
+	if len(events) != 5 {
+		t.Fatalf("expected 5 events with inline session_file, got %d", len(events))
+	}
+	if events[0].Type != StreamEventSessionCreated || events[1].Type != StreamEventSessionFile || events[2].Type != StreamEventMessageStarted {
+		t.Fatalf("expected session_created -> session_file -> message_started, got %#v", []string{events[0].Type, events[1].Type, events[2].Type})
+	}
+	if events[1].Message == nil || events[1].Message.Kind != KindSessionFile {
+		t.Fatalf("expected second event to carry session_file message, got %#v", events[1].Message)
+	}
+
+	sessionID := events[0].Session.ID
+	messages, err := repo.ListMessages(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected persisted user/session_file/assistant messages, got %d", len(messages))
+	}
+	if messages[1].Kind != KindSessionFile || messages[2].Kind != KindText {
+		t.Fatalf("expected persisted order text -> session_file -> text, got %q/%q/%q", messages[0].Kind, messages[1].Kind, messages[2].Kind)
+	}
+}
+
+func TestAppendMessageStreamEmitsSessionFileBeforeAssistantReplyWhenInlineMaterialDetected(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-inline",
+				Title:      "对话粘贴正文",
+				SourceType: "inline_text",
+			},
+		},
+	}
+	responder := &fakeChatResponder{
+		stream: &fakeChatStream{chunks: []string{"我先看这段正文。"}},
+	}
+	service := NewService(repo, importer, &fakeTaskCreator{}, responder, nil)
+
+	var events []StreamEvent
+	err := service.AppendMessageStream(context.Background(), session.ID, strings.TrimSpace(`
+项目经历
+- 负责增长策略
+- 负责数据分析
+`), func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events with inline session_file, got %d", len(events))
+	}
+	if events[0].Type != StreamEventSessionFile || events[1].Type != StreamEventMessageStarted {
+		t.Fatalf("expected session_file -> message_started, got %#v", []string{events[0].Type, events[1].Type})
+	}
+	if events[0].Message == nil || events[0].Message.Kind != KindSessionFile {
+		t.Fatalf("expected first event to carry session_file message, got %#v", events[0].Message)
+	}
+
+	messages, err := repo.ListMessages(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected persisted user/session_file/assistant messages, got %d", len(messages))
+	}
+	if messages[1].Kind != KindSessionFile || messages[2].Kind != KindText {
+		t.Fatalf("expected persisted order text -> session_file -> text, got %q/%q/%q", messages[0].Kind, messages[1].Kind, messages[2].Kind)
+	}
+}
+
 func TestAppendMessageStreamDoesNotPersistAssistantOnCancellation(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -582,7 +1004,7 @@ func TestAppendMessageStreamDoesNotPersistAssistantOnCancellation(t *testing.T) 
 			errs:   []error{nil, context.Canceled},
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
 
 	err := service.AppendMessageStream(context.Background(), session.ID, "继续看看考勤部分", func(StreamEvent) error {
 		return nil
@@ -610,7 +1032,7 @@ func TestStartConversationStreamReturnsEmptyReplyError(t *testing.T) {
 	responder := &fakeChatResponder{
 		stream: &fakeChatStream{},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
 
 	err := service.StartConversationStream(context.Background(), "帮我总结学生手册", func(StreamEvent) error {
 		return nil
@@ -641,7 +1063,7 @@ func TestStartConversationStreamReturnsEmptyReplyError(t *testing.T) {
 func TestUploadFilePersistsSessionFileMessage(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("空白会话")
-	importer := fakeDocumentImporter{
+	importer := &fakeDocumentImporter{
 		result: &ImportDocumentResult{
 			Resource: &postgres.Resource{
 				ID:         "resource-uploaded",
@@ -679,7 +1101,7 @@ func TestUploadFileProjectsActiveResourceIntoSnapshot(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("空白会话")
 	projector := &fakeSessionContextProjector{}
-	importer := fakeDocumentImporter{
+	importer := &fakeDocumentImporter{
 		result: &ImportDocumentResult{
 			Resource: &postgres.Resource{
 				ID:         "resource-uploaded",
@@ -743,7 +1165,7 @@ func TestUploadFileStoresOriginalFileAndPersistsFileID(t *testing.T) {
 			StorageKey:       "sh/sha256-uploaded",
 		},
 	}
-	importer := fakeDocumentImporter{
+	importer := &fakeDocumentImporter{
 		result: &ImportDocumentResult{
 			Resource: &postgres.Resource{
 				ID:         "resource-uploaded",
@@ -811,7 +1233,7 @@ func TestConfirmTaskSuggestionCreatesTaskCreatedMessage(t *testing.T) {
 		CreatedAt: time.Now(),
 	})
 
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{
 		result: &postgres.Task{
 			ID:          "task-1",
 			ResourceID:  resourceID,
@@ -866,7 +1288,7 @@ func TestConfirmTaskSuggestionTaskCreatedDetailURLIncludesSessionQuery(t *testin
 		CreatedAt: time.Now(),
 	})
 
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{
 		result: &postgres.Task{
 			ID:          "task-1",
 			ResourceID:  resourceID,
@@ -917,7 +1339,7 @@ func TestConfirmTaskSuggestionProjectsLatestTaskIntoSnapshot(t *testing.T) {
 
 	service := NewService(
 		repo,
-		fakeDocumentImporter{},
+		&fakeDocumentImporter{},
 		&fakeTaskCreator{
 			result: &postgres.Task{
 				ID:          "task-1",
@@ -976,7 +1398,7 @@ func TestConfirmTaskSuggestionAppendsFailureSystemMessageWhenTaskCreationFails(t
 		CreatedAt: time.Now(),
 	})
 
-	service := NewService(repo, fakeDocumentImporter{}, &fakeTaskCreator{
+	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{
 		err: errors.New("task create failed"),
 	}, &fakeChatResponder{}, nil)
 
@@ -1033,7 +1455,7 @@ func TestConfirmTaskSuggestionReturnsExistingTaskWithoutAppendingDuplicateTaskCr
 			Status:      "pending",
 		},
 	}
-	service := NewService(repo, fakeDocumentImporter{}, taskCreator, &fakeChatResponder{}, nil)
+	service := NewService(repo, &fakeDocumentImporter{}, taskCreator, &fakeChatResponder{}, nil)
 
 	firstResult, err := service.ConfirmTaskSuggestion(context.Background(), suggestionMessage.ID)
 	if err != nil {
@@ -1248,9 +1670,13 @@ func seedTextConversationHistory(t *testing.T, repo *fakeSessionRepo, sessionID 
 type fakeDocumentImporter struct {
 	result *ImportDocumentResult
 	err    error
+	lastInput *ImportDocumentInput
 }
 
-func (i fakeDocumentImporter) ImportDocument(context.Context, ImportDocumentInput) (*ImportDocumentResult, error) {
+func (i *fakeDocumentImporter) ImportDocument(_ context.Context, input ImportDocumentInput) (*ImportDocumentResult, error) {
+	cloned := input
+	cloned.Content = append([]byte(nil), input.Content...)
+	i.lastInput = &cloned
 	if i.err != nil {
 		return nil, i.err
 	}

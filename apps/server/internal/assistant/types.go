@@ -21,6 +21,7 @@ const (
 
 const (
 	StreamEventSessionCreated   = "session_created"
+	StreamEventSessionFile      = "session_file"
 	StreamEventMessageStarted   = "message_started"
 	StreamEventMessageDelta     = "message_delta"
 	StreamEventMessageCompleted = "message_completed"
@@ -118,8 +119,11 @@ type ConfirmTaskResult struct {
 
 // ImportDocumentInput 描述导入一份会话文件所需的输入。
 type ImportDocumentInput struct {
-	FileName string
-	Content  []byte
+	FileName      string
+	Content       []byte
+	SourceType    string
+	SourceRef     *string
+	VersionSource string
 }
 
 // ImportDocumentResult 描述导入资源库后的结果。

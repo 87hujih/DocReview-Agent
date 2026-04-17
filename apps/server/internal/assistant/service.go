@@ -567,32 +567,60 @@ func (s *Service) buildReplyInputs(
 		return nil, err
 	}
 
-	if s.responder == nil {
-		return nil, errors.New("助手对话模型未配置")
-	}
-
-	replyContext, err := s.loadReplyContext(ctx, sessionID, history, content)
+	prepared, err := s.prepareTurnContext(ctx, history, content)
 	if err != nil {
 		return nil, err
 	}
 
+	if s.responder == nil {
+		return nil, errors.New("助手对话模型未配置")
+	}
+
+	replyHistory := history
+	if prepared != nil && len(prepared.History) > 0 {
+		replyHistory = prepared.History
+	}
+
+	replyContext, err := s.loadReplyContext(ctx, sessionID, replyHistory, content)
+	if err != nil {
+		return nil, err
+	}
+
+	taskDecision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
+		CurrentMessage: content,
+		ActiveResource: replyContext.ActiveResource,
+	})
+
 	reply, err := s.responder.Reply(ctx, ChatCompletionInput{
-		Snapshot:  replyContext.Snapshot,
-		Citations: replyContext.Citations,
-		History:   replyContext.History,
-		Message:   content,
-		Resource:  replyContext.ActiveResource,
+		Snapshot:               replyContext.Snapshot,
+		Citations:              replyContext.Citations,
+		History:                replyContext.History,
+		Message:                content,
+		Resource:               replyContext.ActiveResource,
+		TaskSuggestionDecision: &taskDecision,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	assistantInputs, err := buildAssistantReplyInputs(content, reply, replyContext.ActiveResource)
+	taskDecision = EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
+		CurrentMessage:       content,
+		ActiveResource:       replyContext.ActiveResource,
+		ModelTaskInstruction: reply.TaskInstruction,
+	})
+
+	assistantInputs, err := buildAssistantReplyInputs(reply, taskDecision)
 	if err != nil {
 		return nil, err
 	}
 
-	return append([]postgres.AssistantMessageInput{userInput}, assistantInputs...), nil
+	inputs := []postgres.AssistantMessageInput{userInput}
+	if prepared != nil && len(prepared.AdditionalInputs) > 0 {
+		inputs = append(inputs, prepared.AdditionalInputs...)
+	}
+	inputs = append(inputs, assistantInputs...)
+
+	return inputs, nil
 }
 
 func (s *Service) buildUploadMessages(
@@ -671,9 +699,8 @@ func buildUserTextInput(content string) (postgres.AssistantMessageInput, error) 
 }
 
 func buildAssistantReplyInputs(
-	content string,
 	reply *ChatCompletionResult,
-	resource *resourceContext,
+	decision TaskSuggestionDecision,
 ) ([]postgres.AssistantMessageInput, error) {
 	if reply == nil || strings.TrimSpace(reply.Reply) == "" {
 		return nil, errors.New("助手模型返回了空回复")
@@ -687,21 +714,76 @@ func buildAssistantReplyInputs(
 	}
 
 	inputs := []postgres.AssistantMessageInput{assistantInput}
-	taskInstruction := resolveTaskInstruction(content, reply.TaskInstruction)
-	if taskInstruction == "" {
+	if decision.ReadinessState != ReadinessStateReadyForTask || strings.TrimSpace(decision.NormalizedInstruction) == "" {
 		return inputs, nil
 	}
 
 	suggestionInput, err := buildMessageInput(
 		RoleAssistant,
 		KindTaskSuggestion,
-		buildTaskSuggestion(taskInstruction, resource),
+		buildTaskSuggestion(decision.NormalizedInstruction, decision.ActiveResource),
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	return append(inputs, suggestionInput), nil
+}
+
+type preparedTurnContext struct {
+	AdditionalInputs []postgres.AssistantMessageInput
+	History          []postgres.AssistantMessage
+}
+
+func (s *Service) prepareTurnContext(
+	ctx context.Context,
+	history []postgres.AssistantMessage,
+	content string,
+) (*preparedTurnContext, error) {
+	candidate := DetectInlineMaterial(content)
+	if !candidate.HasMaterial {
+		return nil, nil
+	}
+	if s.importer == nil {
+		return nil, errors.New("文档导入器未配置")
+	}
+
+	result, err := s.importer.ImportDocument(ctx, ImportDocumentInput{
+		FileName:      candidate.SyntheticName,
+		Content:       []byte(candidate.Body),
+		SourceType:    "inline_text",
+		VersionSource: "assistant_inline_text",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || result.Resource == nil {
+		return nil, errors.New("内联正文导入后缺少资源")
+	}
+
+	fileInput, err := buildMessageInput(RoleAssistant, KindSessionFile, SessionFilePayload{
+		FileName:      candidate.SyntheticName,
+		ResourceID:    result.Resource.ID,
+		ResourceTitle: result.Resource.Title,
+		SourceType:    result.Resource.SourceType,
+		Status:        "ready",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	preparedHistory := append([]postgres.AssistantMessage(nil), history...)
+	preparedHistory = append(preparedHistory, postgres.AssistantMessage{
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		Payload:    fileInput.Payload,
+		SequenceNo: len(preparedHistory) + 1,
+	})
+
+	return &preparedTurnContext{
+		AdditionalInputs: []postgres.AssistantMessageInput{fileInput},
+		History:          preparedHistory,
+	}, nil
 }
 
 type resourceContext struct {
@@ -782,32 +864,6 @@ func decodeSessionFile(payload []byte) (SessionFilePayload, error) {
 	return value, nil
 }
 
-func resolveTaskInstruction(content string, modelInstruction *string) string {
-	if modelInstruction != nil {
-		trimmed := strings.TrimSpace(*modelInstruction)
-		if trimmed != "" {
-			return trimmed
-		}
-	}
-
-	if hasTaskIntent(content) {
-		return strings.TrimSpace(content)
-	}
-
-	return ""
-}
-
-func hasTaskIntent(content string) bool {
-	keywords := []string{"审阅", "修改", "检查", "优化", "修订", "总结", "整理"}
-	for _, keyword := range keywords {
-		if strings.Contains(content, keyword) {
-			return true
-		}
-	}
-
-	return false
-}
-
 func stringPointer(value string) *string {
 	return &value
 }
@@ -845,17 +901,52 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		return errors.New("助手对话模型未配置")
 	}
 
-	replyContext, err := s.loadReplyContext(ctx, input.sessionID, input.history, input.content)
+	replyHistory := input.history
+	prepared, err := s.prepareTurnContext(ctx, input.history, input.content)
+	if err != nil {
+		return err
+	}
+	if prepared != nil && len(prepared.AdditionalInputs) > 0 {
+		preparedMessages, err := s.repo.AppendMessages(ctx, input.sessionID, prepared.AdditionalInputs)
+		if err != nil {
+			return err
+		}
+		if err := s.projectPersistedMessages(ctx, input.sessionID, preparedMessages); err != nil {
+			return err
+		}
+
+		replyHistory = append(append([]postgres.AssistantMessage(nil), input.history...), preparedMessages...)
+		for index := range preparedMessages {
+			if preparedMessages[index].Kind != KindSessionFile {
+				continue
+			}
+			message := preparedMessages[index]
+			if err := input.emit(StreamEvent{
+				Type:    StreamEventSessionFile,
+				Message: &message,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	replyContext, err := s.loadReplyContext(ctx, input.sessionID, replyHistory, input.content)
 	if err != nil {
 		return err
 	}
 
+	taskDecision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
+		CurrentMessage: input.content,
+		ActiveResource: replyContext.ActiveResource,
+	})
+
 	stream, err := s.responder.Stream(ctx, ChatCompletionInput{
-		Snapshot:  replyContext.Snapshot,
-		Citations: replyContext.Citations,
-		History:   replyContext.History,
-		Message:   input.content,
-		Resource:  replyContext.ActiveResource,
+		Snapshot:               replyContext.Snapshot,
+		Citations:              replyContext.Citations,
+		History:                replyContext.History,
+		Message:                input.content,
+		Resource:               replyContext.ActiveResource,
+		TaskSuggestionDecision: &taskDecision,
 	})
 	if err != nil {
 		return mapAssistantStreamError(err)
@@ -901,7 +992,13 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		}
 	}
 
-	assistantInputs, err := buildAssistantReplyInputs(input.content, result, replyContext.ActiveResource)
+	taskDecision = EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
+		CurrentMessage:       input.content,
+		ActiveResource:       replyContext.ActiveResource,
+		ModelTaskInstruction: result.TaskInstruction,
+	})
+
+	assistantInputs, err := buildAssistantReplyInputs(result, taskDecision)
 	if err != nil {
 		return NewStreamError(StreamErrorCodeEmptyReply, "本轮没有生成可展示内容。", err)
 	}

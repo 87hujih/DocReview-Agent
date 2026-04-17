@@ -187,6 +187,35 @@ func TestImportDocumentUsesAtomicGraphWriteForPersistence(t *testing.T) {
 	}
 }
 
+func TestImportDocumentAllowsCustomSourceTypeAndVersionSource(t *testing.T) {
+	repo := &fakeResourceRepo{}
+	service := NewService(repo, fakeEmbedder{})
+
+	result, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName:      "对话粘贴正文.md",
+		Content:       []byte("# 项目经历\n内容"),
+		SourceType:    "inline_text",
+		SourceRef:     stringPointer("assistant-inline://session-1"),
+		VersionSource: "assistant_inline_text",
+	})
+	if err != nil {
+		t.Fatalf("import document: %v", err)
+	}
+
+	if result.Resource == nil || result.Version == nil {
+		t.Fatalf("expected imported resource and version, got %#v", result)
+	}
+	if repo.lastGraphParams.SourceType != "inline_text" {
+		t.Fatalf("expected source type %q, got %q", "inline_text", repo.lastGraphParams.SourceType)
+	}
+	if repo.lastGraphParams.VersionSource != "assistant_inline_text" {
+		t.Fatalf("expected version source %q, got %q", "assistant_inline_text", repo.lastGraphParams.VersionSource)
+	}
+	if repo.lastGraphParams.SourceRef == nil || *repo.lastGraphParams.SourceRef != "assistant-inline://session-1" {
+		t.Fatalf("expected custom source ref to be preserved, got %#v", repo.lastGraphParams.SourceRef)
+	}
+}
+
 func TestImportDirectoryBackfillsSourceRefForLegacyTitleMatch(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "student-handbook.md")

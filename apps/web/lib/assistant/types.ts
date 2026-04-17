@@ -160,6 +160,10 @@ export type AssistantStreamEvent =
       type: "session_created";
     }
   | {
+      message: AssistantSessionFileMessage;
+      type: "session_file";
+    }
+  | {
       type: "message_started";
     }
   | {
