@@ -23,6 +23,7 @@ type RetrievalQueryInput struct {
 	RollingSummary        *string
 	PendingTaskSuggestion *SnapshotPendingTaskSuggestion
 	ActiveResource        *SnapshotActiveResource
+	ResolvedReference     *ResolvedReference
 }
 
 // RetrievalQueryBuilder 负责在承接式短句场景下构造更稳定的检索 query。
@@ -33,6 +34,9 @@ func (b *RetrievalQueryBuilder) Build(input RetrievalQueryInput) string {
 	currentMessage := strings.TrimSpace(input.CurrentMessage)
 	if currentMessage == "" {
 		return ""
+	}
+	if input.ResolvedReference != nil && strings.TrimSpace(input.ResolvedReference.SectionID) != "" {
+		return currentMessage
 	}
 	if !shouldExpandRetrievalQuery(currentMessage) {
 		return currentMessage

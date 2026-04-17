@@ -56,3 +56,18 @@ func TestRetrievalQueryBuilderIncludesPendingTaskSuggestionWhenExpanding(t *test
 		t.Fatalf("expected expanded query to include pending task suggestion, got %q", got)
 	}
 }
+
+func TestRetrievalQueryBuilderKeepsResolvedTargetUntouched(t *testing.T) {
+	builder := RetrievalQueryBuilder{}
+	summary := "用户刚刚列出了两个项目。"
+
+	got := builder.Build(RetrievalQueryInput{
+		CurrentMessage:    "针对第一个项目，给出修改示例",
+		RollingSummary:    &summary,
+		ResolvedReference: &ResolvedReference{SectionID: "section-campushub", EntityName: "CampusHub"},
+	})
+
+	if got != "针对第一个项目，给出修改示例" {
+		t.Fatalf("expected resolved target query to stay unchanged, got %q", got)
+	}
+}
