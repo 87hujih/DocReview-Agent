@@ -3,6 +3,7 @@ package ingest
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/storage/postgres"
@@ -38,15 +40,26 @@ type versionIndexer interface {
 	ReindexVersion(ctx context.Context, input indexer.Input) error
 }
 
+type structureRepository interface {
+	CreateVersionStructure(ctx context.Context, params postgres.CreateVersionStructureParams) (*postgres.ResourceVersionStructure, error)
+	ReplaceSectionsForVersion(ctx context.Context, versionID string, resourceID string, sections []postgres.ResourceSectionInput) ([]postgres.ResourceSection, error)
+}
+
+type documentNormalizer interface {
+	Normalize(document documentparser.ParsedDocument) documentnormalize.NormalizedDocument
+}
+
 // ServiceOption 允许按需注入文档解析器等扩展能力。
 type ServiceOption func(*Service)
 
 // Service 负责把 Markdown 文档导入为资源、版本和带 embedding 的分块。
 type Service struct {
-	resourceRepo resourceRepository
-	embedder     embedderClient
-	parser       documentparser.Parser
-	indexer      versionIndexer
+	resourceRepo  resourceRepository
+	structureRepo structureRepository
+	embedder      embedderClient
+	parser        documentparser.Parser
+	normalizer    documentNormalizer
+	indexer       versionIndexer
 }
 
 // NewService 把导入流程依赖的存储层和 embedding 能力接起来。
@@ -77,6 +90,20 @@ func WithParser(parser documentparser.Parser) ServiceOption {
 func WithIndexer(indexer versionIndexer) ServiceOption {
 	return func(service *Service) {
 		service.indexer = indexer
+	}
+}
+
+// WithStructureRepo 为结构化解析结果注入持久化仓储。
+func WithStructureRepo(repo structureRepository) ServiceOption {
+	return func(service *Service) {
+		service.structureRepo = repo
+	}
+}
+
+// WithNormalizer 为结构化文档注入 section 归一化能力。
+func WithNormalizer(normalizer documentNormalizer) ServiceOption {
+	return func(service *Service) {
+		service.normalizer = normalizer
 	}
 }
 
@@ -131,6 +158,7 @@ func (s *Service) ImportDocument(ctx context.Context, input ImportDocumentInput)
 	}
 
 	content := string(input.Content)
+	var parsedDocument *documentparser.ParsedDocument
 	if s.parser != nil {
 		result, err := s.parser.Parse(ctx, documentparser.Input{
 			FileName: input.FileName,
@@ -140,11 +168,12 @@ func (s *Service) ImportDocument(ctx context.Context, input ImportDocumentInput)
 			return nil, err
 		}
 		content = result.Text
+		parsedDocument = result.Document
 	}
 
 	title := extractTitleFromContent(content, input.FileName)
 	sourceRef := strings.TrimSpace(input.FileName)
-	resource, version, err := s.saveDocument(ctx, title, "upload", stringPointer(sourceRef), content, "assistant_upload")
+	resource, version, err := s.saveDocument(ctx, title, "upload", stringPointer(sourceRef), content, "assistant_upload", parsedDocument)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +217,7 @@ func (s *Service) importFile(ctx context.Context, filePath string, fileName stri
 		return s.ensureResourceIndexed(ctx, *matchedResource)
 	}
 
-	_, _, err = s.saveDocument(ctx, title, "upload", stringPointer(sourceRef), content, "original")
+	_, _, err = s.saveDocument(ctx, title, "upload", stringPointer(sourceRef), content, "original", nil)
 	return err
 }
 
@@ -224,6 +253,7 @@ func (s *Service) saveDocument(
 	sourceRef *string,
 	content string,
 	versionSource string,
+	parsedDocument *documentparser.ParsedDocument,
 ) (*postgres.Resource, *postgres.ResourceVersion, error) {
 	chunks, err := s.indexer.BuildVersionChunks(ctx, indexer.Input{
 		Resource: postgres.Resource{
@@ -240,7 +270,7 @@ func (s *Service) saveDocument(
 		return nil, nil, err
 	}
 
-	return s.resourceRepo.CreateDocumentGraph(ctx, postgres.CreateDocumentGraphParams{
+	resource, version, err := s.resourceRepo.CreateDocumentGraph(ctx, postgres.CreateDocumentGraphParams{
 		Title:         title,
 		SourceType:    sourceType,
 		SourceRef:     sourceRef,
@@ -248,6 +278,99 @@ func (s *Service) saveDocument(
 		Content:       content,
 		Chunks:        chunks,
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := s.persistStructuredDocument(ctx, resource.ID, version.ID, parsedDocument); err != nil {
+		return nil, nil, err
+	}
+
+	return resource, version, nil
+}
+
+func (s *Service) persistStructuredDocument(ctx context.Context, resourceID string, versionID string, parsedDocument *documentparser.ParsedDocument) error {
+	if parsedDocument == nil || s.structureRepo == nil {
+		return nil
+	}
+
+	documentJSON, err := json.Marshal(parsedDocument)
+	if err != nil {
+		return err
+	}
+	qualityFlagsJSON, err := json.Marshal(parsedDocument.QualityFlags)
+	if err != nil {
+		return err
+	}
+
+	if _, err := s.structureRepo.CreateVersionStructure(ctx, postgres.CreateVersionStructureParams{
+		ResourceID:       resourceID,
+		VersionID:        versionID,
+		SourceFormat:     parsedDocument.SourceFormat,
+		ParserName:       parsedDocument.Metadata.ParserName,
+		DocumentJSON:     documentJSON,
+		QualityFlagsJSON: qualityFlagsJSON,
+	}); err != nil {
+		return err
+	}
+
+	if s.normalizer == nil {
+		return nil
+	}
+
+	normalizedDocument := s.normalizer.Normalize(*parsedDocument)
+	sections, err := buildSectionInputs(normalizedDocument.Sections)
+	if err != nil {
+		return err
+	}
+	_, err = s.structureRepo.ReplaceSectionsForVersion(ctx, versionID, resourceID, sections)
+	return err
+}
+
+func buildSectionInputs(sections []documentnormalize.NormalizedSection) ([]postgres.ResourceSectionInput, error) {
+	inputs := make([]postgres.ResourceSectionInput, 0, len(sections))
+	for _, section := range sections {
+		aliasesJSON, err := json.Marshal(section.Aliases)
+		if err != nil {
+			return nil, err
+		}
+
+		metadata := make(map[string]any, len(section.Metadata)+1)
+		for key, value := range section.Metadata {
+			metadata[key] = value
+		}
+		if len(section.TechStack) > 0 {
+			metadata["tech_stack"] = append([]string(nil), section.TechStack...)
+		}
+		metadataJSON, err := json.Marshal(metadata)
+		if err != nil {
+			return nil, err
+		}
+
+		input := postgres.ResourceSectionInput{
+			SectionKey:   section.SectionKey,
+			SectionType:  string(section.Type),
+			SectionOrder: section.Order,
+			Title:        section.Title,
+			AliasesJSON:  aliasesJSON,
+			Summary:      section.Summary,
+			Content:      section.Content,
+			MetadataJSON: metadataJSON,
+		}
+		if strings.TrimSpace(section.CanonicalEntityName) != "" {
+			input.CanonicalEntityName = stringPointer(section.CanonicalEntityName)
+		}
+		if section.PageStart > 0 {
+			input.PageStart = intPointer(section.PageStart)
+		}
+		if section.PageEnd > 0 {
+			input.PageEnd = intPointer(section.PageEnd)
+		}
+
+		inputs = append(inputs, input)
+	}
+
+	return inputs, nil
 }
 
 func findImportTarget(resources []postgres.Resource, title string, sourceRef string) (*postgres.Resource, bool) {
@@ -317,6 +440,14 @@ func extractTitleFromContent(content string, fileName string) string {
 
 func stringPointer(value string) *string {
 	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+
+	return &value
+}
+
+func intPointer(value int) *int {
+	if value <= 0 {
 		return nil
 	}
 

@@ -15,6 +15,7 @@ import (
 	"agent_project/apps/server/internal/approval"
 	"agent_project/apps/server/internal/assistant"
 	appconfig "agent_project/apps/server/internal/config"
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/job"
 	"agent_project/apps/server/internal/knowledge/embedder"
@@ -53,6 +54,7 @@ func main() {
 	}
 
 	resourceRepo := postgres.NewResourceRepo(pool)
+	resourceStructureRepo := postgres.NewResourceStructureRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
@@ -70,6 +72,7 @@ func main() {
 	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
 	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient)
 	versionIndexer := indexer.NewService(resourceRepo, emb)
+	normalizeService := documentnormalize.NewService()
 	docParser, err := documentparser.New(documentparser.Options{
 		Mode:        cfg.DocumentParser,
 		TikaURL:     cfg.TikaURL,
@@ -79,7 +82,14 @@ func main() {
 		log.Fatalf("文档解析器初始化失败：%v", err)
 	}
 
-	ingestService := ingest.NewService(resourceRepo, emb, ingest.WithParser(docParser), ingest.WithIndexer(versionIndexer))
+	ingestService := ingest.NewService(
+		resourceRepo,
+		emb,
+		ingest.WithParser(docParser),
+		ingest.WithIndexer(versionIndexer),
+		ingest.WithStructureRepo(resourceStructureRepo),
+		ingest.WithNormalizer(normalizeService),
+	)
 
 	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
 		TimeoutMS: cfg.LLMTimeoutMS,
