@@ -123,6 +123,29 @@ func TestMigrationCreatesStructuredDocumentIndexes(t *testing.T) {
 	}
 }
 
+func TestResourceChunkHNSWIndex(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	var indexDef string
+	if err := pool.QueryRow(ctx, `
+		SELECT indexdef
+		FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND tablename = 'resource_chunks'
+		  AND indexname = 'idx_resource_chunks_embedding_hnsw'
+	`).Scan(&indexDef); err != nil {
+		t.Fatalf("query hnsw index definition: %v", err)
+	}
+
+	if !strings.Contains(indexDef, "USING hnsw") {
+		t.Fatalf("expected hnsw access method, got %q", indexDef)
+	}
+	if !strings.Contains(indexDef, "embedding vector_cosine_ops") {
+		t.Fatalf("expected vector_cosine_ops operator class, got %q", indexDef)
+	}
+}
+
 func TestMigrationCreatesTaskQueryIndexes(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
