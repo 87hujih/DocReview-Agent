@@ -24,6 +24,8 @@ const (
 	defaultUploadMaxBytes     = 20 * 1024 * 1024
 	defaultLogLevel           = "info"
 	defaultLogFormat          = "json"
+	defaultSearchBackend      = "postgres_legacy"
+	defaultOpenSearchIndex    = "resource_chunks_v1"
 
 	defaultLLMTimeoutMS        = 90000
 	defaultLLMRetryMax         = 2
@@ -32,6 +34,11 @@ const (
 	defaultTaskContextMaxRunes = 24000
 	defaultWorkflowWorkers     = 2
 	defaultWorkflowQueueSize   = 100
+)
+
+const (
+	searchBackendPostgresLegacy = "postgres_legacy"
+	searchBackendOpenSearchBM25 = "opensearch_bm25"
 )
 
 // Config 保存从环境变量、.env 和默认 YAML 配置解析出的运行时参数。
@@ -55,6 +62,15 @@ type Config struct {
 	LogFormat    string
 	LogAddSource bool
 
+	SearchBackend         string
+	LexicalSearchEnabled  bool
+	SemanticHNSWEnabled   bool
+	OpenSearchURL         string
+	OpenSearchIndexChunks string
+	OpenSearchUsername    string
+	OpenSearchPassword    string
+	OpenSearchTLSInsecure bool
+
 	LLMTimeoutMS        int
 	LLMRetryMax         int
 	LLMRetryBackoffMS   int
@@ -70,6 +86,7 @@ type fileConfig struct {
 	AI       aiConfig       `yaml:"ai"`
 	Document documentConfig `yaml:"document"`
 	Log      logConfig      `yaml:"log"`
+	Search   searchConfig   `yaml:"search"`
 }
 
 // serverConfig 描述服务端口等服务级默认配置。
@@ -100,6 +117,23 @@ type logConfig struct {
 	AddSource bool   `yaml:"add_source"`
 }
 
+// searchConfig 描述检索后端和 OpenSearch 投影配置。
+type searchConfig struct {
+	Backend              string           `yaml:"backend"`
+	LexicalSearchEnabled bool             `yaml:"lexical_search_enabled"`
+	SemanticHNSWEnabled  bool             `yaml:"semantic_hnsw_enabled"`
+	OpenSearch           openSearchConfig `yaml:"opensearch"`
+}
+
+// openSearchConfig 描述 OpenSearch 连接和索引名默认值。
+type openSearchConfig struct {
+	URL         string `yaml:"url"`
+	IndexChunks string `yaml:"index_chunks"`
+	Username    string `yaml:"username"`
+	Password    string `yaml:"password"`
+	TLSInsecure bool   `yaml:"tls_insecure"`
+}
+
 // Load 按“进程环境变量 -> .env -> config/default.yaml -> 硬编码默认值”的优先级解析配置。
 func Load() Config {
 	defaults := loadDefaultFileConfig()
@@ -122,6 +156,29 @@ func Load() Config {
 		LogLevel:           resolveString("LOG_LEVEL", dotenvValues, defaults.Log.Level, defaultLogLevel),
 		LogFormat:          resolveString("LOG_FORMAT", dotenvValues, defaults.Log.Format, defaultLogFormat),
 		LogAddSource:       resolveBool("LOG_ADD_SOURCE", dotenvValues, defaults.Log.AddSource, false),
+		SearchBackend:      resolveSearchBackend(dotenvValues, defaults.Search.Backend),
+		LexicalSearchEnabled: resolveBool(
+			"LEXICAL_SEARCH_ENABLED",
+			dotenvValues,
+			defaults.Search.LexicalSearchEnabled,
+			true,
+		),
+		SemanticHNSWEnabled: resolveBool(
+			"SEMANTIC_HNSW_ENABLED",
+			dotenvValues,
+			defaults.Search.SemanticHNSWEnabled,
+			true,
+		),
+		OpenSearchURL: resolveString("OPENSEARCH_URL", dotenvValues, defaults.Search.OpenSearch.URL, ""),
+		OpenSearchIndexChunks: resolveString(
+			"OPENSEARCH_INDEX_CHUNKS",
+			dotenvValues,
+			defaults.Search.OpenSearch.IndexChunks,
+			defaultOpenSearchIndex,
+		),
+		OpenSearchUsername:    resolveString("OPENSEARCH_USERNAME", dotenvValues, defaults.Search.OpenSearch.Username, ""),
+		OpenSearchPassword:    resolveString("OPENSEARCH_PASSWORD", dotenvValues, defaults.Search.OpenSearch.Password, ""),
+		OpenSearchTLSInsecure: resolveBool("OPENSEARCH_TLS_INSECURE", dotenvValues, defaults.Search.OpenSearch.TLSInsecure, false),
 
 		LLMTimeoutMS:        resolveInt("LLM_TIMEOUT_MS", dotenvValues, 0, defaultLLMTimeoutMS),
 		LLMRetryMax:         resolveInt("LLM_RETRY_MAX", dotenvValues, 0, defaultLLMRetryMax),
@@ -169,6 +226,27 @@ func (c Config) ValidateForServer() error {
 		return fmt.Errorf("EMBEDDING_DIM 无效：%d", c.EmbeddingDim)
 	}
 
+	searchBackend := normalizeSearchBackend(c.SearchBackend)
+	switch searchBackend {
+	case searchBackendPostgresLegacy, searchBackendOpenSearchBM25:
+	default:
+		return fmt.Errorf("SEARCH_BACKEND 无效：%s", c.SearchBackend)
+	}
+
+	if searchBackend == searchBackendOpenSearchBM25 {
+		if strings.TrimSpace(c.OpenSearchURL) == "" {
+			missing = append(missing, "OPENSEARCH_URL")
+		}
+
+		if strings.TrimSpace(c.OpenSearchIndexChunks) == "" {
+			missing = append(missing, "OPENSEARCH_INDEX_CHUNKS")
+		}
+	}
+
+	if len(missing) > 0 {
+		return fmt.Errorf("缺少必填配置：%s", strings.Join(missing, ", "))
+	}
+
 	parserMode := strings.ToLower(strings.TrimSpace(c.DocumentParser))
 	switch parserMode {
 	case "", defaultDocumentParser:
@@ -184,7 +262,6 @@ func (c Config) ValidateForServer() error {
 	default:
 		return fmt.Errorf("DOCUMENT_PARSER 无效：%s", c.DocumentParser)
 	}
-
 }
 
 // loadDefaultFileConfig 允许命令从仓库根目录或嵌套应用目录启动时都能读取 config/default.yaml。
@@ -264,6 +341,12 @@ func resolveString(key string, dotenvValues map[string]string, fileValue string,
 	return fallback
 }
 
+// resolveSearchBackend 统一归一化检索后端配置，避免调用方处理大小写和空值。
+func resolveSearchBackend(dotenvValues map[string]string, fileValue string) string {
+	value := resolveString("SEARCH_BACKEND", dotenvValues, fileValue, defaultSearchBackend)
+	return normalizeSearchBackend(value)
+}
+
 // resolveInt 按既定优先级解析整型配置项。
 func resolveInt(key string, dotenvValues map[string]string, fileValue int, fallback int) int {
 	if value, ok := parseInt(strings.TrimSpace(os.Getenv(key))); ok {
@@ -324,6 +407,15 @@ func parseBool(value string) (bool, bool) {
 	}
 
 	return boolean, true
+}
+
+func normalizeSearchBackend(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return defaultSearchBackend
+	}
+
+	return normalized
 }
 
 // findUpward 会向上遍历父目录，让本地工具从不同工作目录执行时都能找到目标文件。

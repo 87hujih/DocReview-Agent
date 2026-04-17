@@ -395,6 +395,70 @@ func TestLoadUsesEnvironmentOverridesForLogging(t *testing.T) {
 	}
 }
 
+func TestLoadUsesSearchDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("SERVER_PORT", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("SILICONFLOW_API_KEY", "")
+	t.Setenv("SILICONFLOW_BASE_URL", "")
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("EMBEDDING_DIM", "")
+	t.Setenv("RERANKER_MODEL", "")
+	t.Setenv("SEARCH_BACKEND", "")
+	t.Setenv("LEXICAL_SEARCH_ENABLED", "")
+	t.Setenv("SEMANTIC_HNSW_ENABLED", "")
+	t.Setenv("OPENSEARCH_URL", "")
+	t.Setenv("OPENSEARCH_INDEX_CHUNKS", "")
+	t.Setenv("OPENSEARCH_USERNAME", "")
+	t.Setenv("OPENSEARCH_PASSWORD", "")
+	t.Setenv("OPENSEARCH_TLS_INSECURE", "")
+
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	writeTestFile(t, filepath.Join(tempDir, ".env"), strings.Join([]string{
+		"OPENSEARCH_URL=http://127.0.0.1:9200",
+		"OPENSEARCH_INDEX_CHUNKS=resource_chunks_v1",
+		"OPENSEARCH_USERNAME=search-user",
+		"OPENSEARCH_PASSWORD=search-pass",
+		"OPENSEARCH_TLS_INSECURE=true",
+	}, "\n"))
+
+	cfg := Load()
+
+	if cfg.SearchBackend != "postgres_legacy" {
+		t.Fatalf("expected default search backend %q, got %q", "postgres_legacy", cfg.SearchBackend)
+	}
+
+	if !cfg.LexicalSearchEnabled {
+		t.Fatal("expected lexical search enabled by default")
+	}
+
+	if !cfg.SemanticHNSWEnabled {
+		t.Fatal("expected semantic hnsw enabled by default")
+	}
+
+	if cfg.OpenSearchURL != "http://127.0.0.1:9200" {
+		t.Fatalf("expected opensearch url %q, got %q", "http://127.0.0.1:9200", cfg.OpenSearchURL)
+	}
+
+	if cfg.OpenSearchIndexChunks != "resource_chunks_v1" {
+		t.Fatalf("expected opensearch chunks index %q, got %q", "resource_chunks_v1", cfg.OpenSearchIndexChunks)
+	}
+
+	if cfg.OpenSearchUsername != "search-user" {
+		t.Fatalf("expected opensearch username %q, got %q", "search-user", cfg.OpenSearchUsername)
+	}
+
+	if cfg.OpenSearchPassword != "search-pass" {
+		t.Fatalf("expected opensearch password %q, got %q", "search-pass", cfg.OpenSearchPassword)
+	}
+
+	if !cfg.OpenSearchTLSInsecure {
+		t.Fatal("expected opensearch tls insecure to load from dotenv")
+	}
+}
+
 // TestValidateForServerRequiresDatabaseURL 验证缺少数据库地址时会返回校验错误。
 func TestValidateForServerRequiresDatabaseURL(t *testing.T) {
 	cfg := Config{
@@ -531,6 +595,73 @@ func TestValidateForServerRequiresTikaURLWhenTikaParserEnabled(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "TIKA_URL") {
 		t.Fatalf("expected TIKA_URL validation error, got %v", err)
+	}
+}
+
+func TestValidateForServerAllowsLegacySearchBackendWithoutOpenSearch(t *testing.T) {
+	cfg := Config{
+		ServerPort:           "8080",
+		DatabaseURL:          "postgres://example",
+		SiliconFlowAPIKey:    "api-key",
+		LLMModel:             "llm-model",
+		EmbeddingModel:       "embedding-model",
+		EmbeddingDim:         1024,
+		RerankerModel:        "reranker-model",
+		SearchBackend:        "postgres_legacy",
+		LexicalSearchEnabled: true,
+		SemanticHNSWEnabled:  true,
+	}
+
+	if err := cfg.ValidateForServer(); err != nil {
+		t.Fatalf("expected valid legacy search config, got %v", err)
+	}
+}
+
+func TestValidateForServerRequiresOpenSearchURLWhenBM25Enabled(t *testing.T) {
+	cfg := Config{
+		ServerPort:           "8080",
+		DatabaseURL:          "postgres://example",
+		SiliconFlowAPIKey:    "api-key",
+		LLMModel:             "llm-model",
+		EmbeddingModel:       "embedding-model",
+		EmbeddingDim:         1024,
+		RerankerModel:        "reranker-model",
+		SearchBackend:        "opensearch_bm25",
+		LexicalSearchEnabled: true,
+		SemanticHNSWEnabled:  true,
+	}
+
+	err := cfg.ValidateForServer()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "OPENSEARCH_URL") {
+		t.Fatalf("expected OPENSEARCH_URL validation error, got %v", err)
+	}
+}
+
+func TestValidateForServerRejectsInvalidSearchBackend(t *testing.T) {
+	cfg := Config{
+		ServerPort:           "8080",
+		DatabaseURL:          "postgres://example",
+		SiliconFlowAPIKey:    "api-key",
+		LLMModel:             "llm-model",
+		EmbeddingModel:       "embedding-model",
+		EmbeddingDim:         1024,
+		RerankerModel:        "reranker-model",
+		SearchBackend:        "bogus_backend",
+		LexicalSearchEnabled: true,
+		SemanticHNSWEnabled:  true,
+	}
+
+	err := cfg.ValidateForServer()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "SEARCH_BACKEND") {
+		t.Fatalf("expected SEARCH_BACKEND validation error, got %v", err)
 	}
 }
 
