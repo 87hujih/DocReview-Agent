@@ -32,6 +32,7 @@ type sessionRepository interface {
 	ListSessions(ctx context.Context) ([]postgres.AssistantSession, error)
 	GetSessionByID(ctx context.Context, id string) (*postgres.AssistantSession, error)
 	ListMessages(ctx context.Context, sessionID string) ([]postgres.AssistantMessage, error)
+	ListMessagesAfterSequence(ctx context.Context, sessionID string, afterSequenceNo int) ([]postgres.AssistantMessage, error)
 	GetMessageByID(ctx context.Context, id string) (*postgres.AssistantMessage, error)
 	CreateSessionWithMessages(ctx context.Context, title string, inputs []postgres.AssistantMessageInput) (*postgres.AssistantSession, []postgres.AssistantMessage, error)
 	AppendMessages(ctx context.Context, sessionID string, inputs []postgres.AssistantMessageInput) ([]postgres.AssistantMessage, error)
@@ -120,7 +121,7 @@ func NewService(
 	}
 
 	if service.contextLoader == nil {
-		service.contextLoader = NewContextLoader(snapshotReaderFromProjector(service.projector), service.retriever)
+		service.contextLoader = NewContextLoader(snapshotReaderFromProjector(service.projector), service.retriever, service.repo)
 	}
 
 	return service
@@ -995,7 +996,7 @@ func (s *Service) loadReplyContext(
 	currentMessage string,
 ) (*ReplyContext, error) {
 	if s.contextLoader == nil {
-		s.contextLoader = NewContextLoader(snapshotReaderFromProjector(s.projector), s.retriever)
+		s.contextLoader = NewContextLoader(snapshotReaderFromProjector(s.projector), s.retriever, s.repo)
 	}
 
 	return s.contextLoader.LoadForReply(ctx, sessionID, history, currentMessage)

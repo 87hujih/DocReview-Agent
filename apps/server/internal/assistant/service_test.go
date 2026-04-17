@@ -208,7 +208,7 @@ func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testin
 	if err != nil {
 		t.Fatalf("append message stream: %v", err)
 	}
-	if retriever.calls != 1 || retriever.resourceID != resourceID || retriever.query != "继续看考勤" || retriever.limit != 4 {
+	if retriever.calls != 1 || retriever.resourceID != resourceID || retriever.query != "当前问题：继续看考勤" || retriever.limit != 4 {
 		t.Fatalf("unexpected retriever call: %#v", retriever)
 	}
 	if len(responder.lastInput.Citations) != 1 || responder.lastInput.Citations[0].CitationID != "cite_1" {
@@ -959,6 +959,22 @@ func (r *fakeSessionRepo) ListMessages(_ context.Context, sessionID string) ([]p
 	items := r.messages[sessionID]
 	cloned := make([]postgres.AssistantMessage, len(items))
 	copy(cloned, items)
+	return cloned, nil
+}
+
+func (r *fakeSessionRepo) ListMessagesAfterSequence(_ context.Context, sessionID string, afterSequenceNo int) ([]postgres.AssistantMessage, error) {
+	items := r.messages[sessionID]
+	filtered := make([]postgres.AssistantMessage, 0, len(items))
+	for _, message := range items {
+		if message.SequenceNo <= afterSequenceNo {
+			continue
+		}
+
+		filtered = append(filtered, message)
+	}
+
+	cloned := make([]postgres.AssistantMessage, len(filtered))
+	copy(cloned, filtered)
 	return cloned, nil
 }
 
