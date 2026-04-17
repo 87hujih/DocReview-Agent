@@ -217,7 +217,7 @@ func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testin
 	}
 }
 
-func TestAppendMessageUsesOrdinalGroundingBeforeAnswering(t *testing.T) {
+func TestAppendMessageUsesOrdinalGroundingBeforeAnsweringForFirstProject(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("项目问答")
 	projector := &fakeSessionContextProjector{}

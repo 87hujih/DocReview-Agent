@@ -199,7 +199,7 @@ func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
 	}
 }
 
-func TestSearchByResourceUsesTargetResolution(t *testing.T) {
+func TestSearchByResourceUsesTargetResolutionForProjectSections(t *testing.T) {
 	repo := &fakeRetrieverRepo{
 		currentVersion: &postgres.ResourceVersion{
 			ID:         "version-grounded",
