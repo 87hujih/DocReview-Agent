@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -213,6 +214,153 @@ func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testin
 	}
 	if len(responder.lastInput.Citations) != 1 || responder.lastInput.Citations[0].CitationID != "cite_1" {
 		t.Fatalf("expected stream responder to receive retriever citation")
+	}
+}
+
+func TestAppendMessageTriggersAsyncSummaryRefreshAfterPersistingAssistantReply(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("长上下文会话")
+	seedTextConversationHistory(t, repo, session.ID, 10)
+
+	summaryRepo := &fakeSummarySnapshotRepo{
+		record: &postgres.SessionContextSnapshotRecord{
+			SessionID:                session.ID,
+			ConfirmedConstraintsJSON: []byte("[]"),
+		},
+	}
+
+	sawPersistedAssistantReply := false
+	summarizer := &fakeConversationSummarizer{
+		result: &SummaryResult{Summary: "当前目标：继续优化第二章。\n关键结论：已保留考勤规则。\n待继续事项：比较改写方案。"},
+		onSummarize: func(input SummaryInput) {
+			messages, _ := repo.ListMessages(context.Background(), session.ID)
+			for _, message := range messages {
+				if message.Role != RoleAssistant || message.Kind != KindText {
+					continue
+				}
+
+				payload, _ := unmarshalTextPayload(message.Payload)
+				if payload.Content == "这是新的助手回复。" {
+					sawPersistedAssistantReply = true
+					return
+				}
+			}
+		},
+	}
+
+	service := NewService(
+		repo,
+		fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "这是新的助手回复。"}},
+		nil,
+		WithConversationSummarizer(summarizer, summaryRepo),
+		WithSummaryAsyncRunner(func(task func()) { task() }),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "继续优化第二章"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if summarizer.calls != 1 {
+		t.Fatalf("expected summarizer to be called once, got %d", summarizer.calls)
+	}
+	if !sawPersistedAssistantReply {
+		t.Fatal("expected summary refresh to run after assistant reply was persisted")
+	}
+	if len(summarizer.lastInput.Transcript) != 12 {
+		t.Fatalf("expected summarizer transcript to include 12 unsummarized text messages, got %d", len(summarizer.lastInput.Transcript))
+	}
+	if summaryRepo.advanceCalls != 1 || summaryRepo.lastNextBaseSequenceNo != 12 {
+		t.Fatalf("expected rolling summary to advance to sequence 12, got repo=%#v", summaryRepo)
+	}
+}
+
+func TestAppendMessageStreamSummaryRefreshFailureDoesNotFailMainTurn(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("流式长上下文会话")
+	seedTextConversationHistory(t, repo, session.ID, 10)
+
+	summaryRepo := &fakeSummarySnapshotRepo{
+		record: &postgres.SessionContextSnapshotRecord{
+			SessionID:                session.ID,
+			ConfirmedConstraintsJSON: []byte("[]"),
+		},
+	}
+	summarizer := &fakeConversationSummarizer{
+		err: errors.New("summary refresh failed"),
+	}
+
+	service := NewService(
+		repo,
+		fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{stream: &fakeChatStream{chunks: []string{"新的", "流式回复"}}},
+		nil,
+		WithConversationSummarizer(summarizer, summaryRepo),
+		WithSummaryAsyncRunner(func(task func()) { task() }),
+	)
+
+	err := service.AppendMessageStream(context.Background(), session.ID, "继续看看第二章", func(StreamEvent) error { return nil })
+	if err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+
+	if summarizer.calls != 1 {
+		t.Fatalf("expected summarizer to be called once, got %d", summarizer.calls)
+	}
+	if summaryRepo.advanceCalls != 0 {
+		t.Fatalf("expected failed summary refresh not to advance rolling summary, got %d", summaryRepo.advanceCalls)
+	}
+
+	messages, err := repo.ListMessages(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	last := messages[len(messages)-1]
+	payload, err := unmarshalTextPayload(last.Payload)
+	if err != nil {
+		t.Fatalf("unmarshal last persisted reply: %v", err)
+	}
+	if payload.Content != "新的流式回复" {
+		t.Fatalf("expected persisted stream reply to survive summary failure, got %q", payload.Content)
+	}
+}
+
+func TestSummaryRefreshSkipsWhenUnsummarizedTextIsBelowThreshold(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("短会话")
+	seedTextConversationHistory(t, repo, session.ID, 9)
+
+	summaryRepo := &fakeSummarySnapshotRepo{
+		record: &postgres.SessionContextSnapshotRecord{
+			SessionID:                session.ID,
+			ConfirmedConstraintsJSON: []byte("[]"),
+		},
+	}
+	summarizer := &fakeConversationSummarizer{
+		result: &SummaryResult{Summary: "不应触发"},
+	}
+
+	service := NewService(
+		repo,
+		fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "新的助手回复。"}},
+		nil,
+		WithConversationSummarizer(summarizer, summaryRepo),
+		WithSummaryAsyncRunner(func(task func()) { task() }),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "继续看看第二章"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if summarizer.calls != 0 {
+		t.Fatalf("expected summary refresh to skip below threshold, got %d calls", summarizer.calls)
+	}
+	if summaryRepo.advanceCalls != 0 {
+		t.Fatalf("expected no rolling summary advance below threshold, got %d", summaryRepo.advanceCalls)
 	}
 }
 
@@ -1076,6 +1224,27 @@ func (r *fakeSessionRepo) seedMessage(sessionID string, message postgres.Assista
 	return message
 }
 
+func seedTextConversationHistory(t *testing.T, repo *fakeSessionRepo, sessionID string, count int) {
+	t.Helper()
+
+	for index := 0; index < count; index++ {
+		role := RoleUser
+		if index%2 == 1 {
+			role = RoleAssistant
+		}
+
+		repo.seedMessage(sessionID, postgres.AssistantMessage{
+			ID:         fmt.Sprintf("seed-text-%02d", index+1),
+			SessionID:  sessionID,
+			Role:       role,
+			Kind:       KindText,
+			SequenceNo: len(repo.messages[sessionID]) + 1,
+			Payload:    mustJSON(t, TextPayload{Content: fmt.Sprintf("历史文本-%02d", index+1)}),
+			CreatedAt:  time.Now(),
+		})
+	}
+}
+
 type fakeDocumentImporter struct {
 	result *ImportDocumentResult
 	err    error
@@ -1245,6 +1414,79 @@ func (r *fakeResourceCitationRetriever) SearchByResource(_ context.Context, reso
 	}
 
 	return r.result, nil
+}
+
+type fakeConversationSummarizer struct {
+	result       *SummaryResult
+	err          error
+	calls        int
+	lastInput    SummaryInput
+	onSummarize  func(input SummaryInput)
+}
+
+func (s *fakeConversationSummarizer) Summarize(_ context.Context, input SummaryInput) (*SummaryResult, error) {
+	s.calls++
+	s.lastInput = input
+	if s.onSummarize != nil {
+		s.onSummarize(input)
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.result == nil {
+		return nil, nil
+	}
+
+	cloned := *s.result
+	return &cloned, nil
+}
+
+type fakeSummarySnapshotRepo struct {
+	record                  *postgres.SessionContextSnapshotRecord
+	err                     error
+	advanceCalls            int
+	lastSummary             *string
+	lastNextBaseSequenceNo  int
+}
+
+func (r *fakeSummarySnapshotRepo) GetBySessionID(_ context.Context, sessionID string) (*postgres.SessionContextSnapshotRecord, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.record == nil || r.record.SessionID != sessionID {
+		return nil, nil
+	}
+
+	cloned := *r.record
+	cloned.RollingSummary = cloneStringPointer(r.record.RollingSummary)
+	cloned.ActiveResourceID = cloneStringPointer(r.record.ActiveResourceID)
+	cloned.ActiveResourceTitle = cloneStringPointer(r.record.ActiveResourceTitle)
+	cloned.ActiveResourceSourceType = cloneStringPointer(r.record.ActiveResourceSourceType)
+	cloned.PendingTaskSuggestionMessageID = cloneStringPointer(r.record.PendingTaskSuggestionMessageID)
+	cloned.PendingTaskInstruction = cloneStringPointer(r.record.PendingTaskInstruction)
+	cloned.LatestTaskID = cloneStringPointer(r.record.LatestTaskID)
+	cloned.LatestTaskStatus = cloneStringPointer(r.record.LatestTaskStatus)
+	cloned.LatestTaskSourceMessageID = cloneStringPointer(r.record.LatestTaskSourceMessageID)
+	return &cloned, nil
+}
+
+func (r *fakeSummarySnapshotRepo) AdvanceRollingSummary(_ context.Context, sessionID string, summary *string, nextBaseSequenceNo int) (bool, error) {
+	if r.err != nil {
+		return false, r.err
+	}
+	if r.record == nil || r.record.SessionID != sessionID {
+		return false, nil
+	}
+	if r.record.SummaryBaseSequenceNo >= nextBaseSequenceNo {
+		return false, nil
+	}
+
+	r.advanceCalls++
+	r.lastSummary = cloneStringPointer(summary)
+	r.lastNextBaseSequenceNo = nextBaseSequenceNo
+	r.record.RollingSummary = cloneStringPointer(summary)
+	r.record.SummaryBaseSequenceNo = nextBaseSequenceNo
+	return true, nil
 }
 
 type fakeSessionContextProjector struct {
