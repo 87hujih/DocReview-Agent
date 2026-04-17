@@ -12,6 +12,7 @@ import (
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/embedder"
 	"agent_project/apps/server/internal/knowledge/indexer"
+	"agent_project/apps/server/internal/knowledge/searchindex"
 	"agent_project/apps/server/internal/storage/postgres"
 
 	"github.com/google/uuid"
@@ -62,9 +63,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("向量嵌入器初始化失败：%v", err)
 	}
-	versionIndexer := indexer.NewService(resourceRepo, emb)
+	searchClient := searchindex.NewClient(searchindex.ClientOptions{
+		BaseURL:     cfg.OpenSearchURL,
+		IndexChunks: cfg.OpenSearchIndexChunks,
+		Username:    cfg.OpenSearchUsername,
+		Password:    cfg.OpenSearchPassword,
+		TLSInsecure: cfg.OpenSearchTLSInsecure,
+	})
+	versionSync := searchindex.NewSyncService(resourceRepo, searchClient, cfg.SearchBackend)
+	versionIndexer := indexer.NewService(resourceRepo, emb, indexer.WithVersionSync(versionSync))
 
-	// 当前 CLI 会重建结构化 chunk，而不再只处理 legacy 文本 chunk。
+	// 当前 CLI 会重建 PostgreSQL chunks，并在启用 OpenSearch 时同步刷新搜索投影。
 	if mode.ResourceID != "" {
 		if err := reindexSingleCurrentVersion(ctx, resourceRepo, versionIndexer, mode.ResourceID); err != nil {
 			log.Fatalf("重建资源索引失败：%v", err)
@@ -120,6 +129,9 @@ func validateForReindex(cfg appconfig.Config) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("缺少必填配置：%s", strings.Join(missing, ", "))
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.SearchBackend), "opensearch_bm25") && strings.TrimSpace(cfg.OpenSearchURL) == "" {
+		return fmt.Errorf("缺少必填配置：OPENSEARCH_URL")
 	}
 	if cfg.EmbeddingDim <= 0 {
 		return fmt.Errorf("EMBEDDING_DIM 无效：%d", cfg.EmbeddingDim)

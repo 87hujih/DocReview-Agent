@@ -19,6 +19,13 @@ type embedderClient interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
+type versionSync interface {
+	SyncVersion(ctx context.Context, resourceID string, versionID string) error
+}
+
+// ServiceOption 允许为索引器注入额外的同步副作用。
+type ServiceOption func(*Service)
+
 // Input 描述一次重建版本索引所需的资源与版本上下文。
 type Input struct {
 	Resource postgres.Resource
@@ -28,15 +35,31 @@ type Input struct {
 
 // Service 负责把某个资源版本重建为一组可检索分块。
 type Service struct {
-	repo     resourceChunkReplacer
-	embedder embedderClient
+	repo        resourceChunkReplacer
+	embedder    embedderClient
+	versionSync versionSync
 }
 
 // NewService 创建版本索引器。
-func NewService(repo resourceChunkReplacer, embedder embedderClient) *Service {
-	return &Service{
+func NewService(repo resourceChunkReplacer, embedder embedderClient, options ...ServiceOption) *Service {
+	service := &Service{
 		repo:     repo,
 		embedder: embedder,
+	}
+
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+
+	return service
+}
+
+// WithVersionSync 为索引器注入可选的版本级搜索投影同步。
+func WithVersionSync(sync versionSync) ServiceOption {
+	return func(service *Service) {
+		service.versionSync = sync
 	}
 }
 
@@ -123,5 +146,12 @@ func (s *Service) ReindexVersion(ctx context.Context, input Input) error {
 		return err
 	}
 
-	return s.repo.ReplaceVersionChunks(ctx, input.Version.ID, input.Resource.ID, inputChunks)
+	if err := s.repo.ReplaceVersionChunks(ctx, input.Version.ID, input.Resource.ID, inputChunks); err != nil {
+		return err
+	}
+	if s.versionSync == nil {
+		return nil
+	}
+
+	return s.versionSync.SyncVersion(ctx, input.Resource.ID, input.Version.ID)
 }

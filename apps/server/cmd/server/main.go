@@ -23,6 +23,7 @@ import (
 	"agent_project/apps/server/internal/knowledge/ingest"
 	"agent_project/apps/server/internal/knowledge/reranker"
 	"agent_project/apps/server/internal/knowledge/retriever"
+	"agent_project/apps/server/internal/knowledge/searchindex"
 	"agent_project/apps/server/internal/observability/logging"
 	"agent_project/apps/server/internal/server/handlers"
 	"agent_project/apps/server/internal/server/router"
@@ -70,7 +71,15 @@ func main() {
 
 	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
 	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient)
-	versionIndexer := indexer.NewService(resourceRepo, emb)
+	searchClient := searchindex.NewClient(searchindex.ClientOptions{
+		BaseURL:     cfg.OpenSearchURL,
+		IndexChunks: cfg.OpenSearchIndexChunks,
+		Username:    cfg.OpenSearchUsername,
+		Password:    cfg.OpenSearchPassword,
+		TLSInsecure: cfg.OpenSearchTLSInsecure,
+	})
+	versionSync := searchindex.NewSyncService(resourceRepo, searchClient, cfg.SearchBackend)
+	versionIndexer := indexer.NewService(resourceRepo, emb, indexer.WithVersionSync(versionSync))
 	docParser, err := documentparser.New(documentparser.Options{
 		Mode:        cfg.DocumentParser,
 		TikaURL:     cfg.TikaURL,
@@ -87,6 +96,7 @@ func main() {
 		ingest.WithParser(docParser),
 		ingest.WithNormalizer(normalizeService),
 		ingest.WithIndexer(versionIndexer),
+		ingest.WithVersionSync(versionSync),
 	)
 
 	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{

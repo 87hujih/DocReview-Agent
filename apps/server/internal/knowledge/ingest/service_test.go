@@ -258,6 +258,48 @@ func TestImportDocumentUsesAtomicGraphWriteForPersistence(t *testing.T) {
 	}
 }
 
+func TestImportDocumentSyncsVersionProjectionAfterGraphWrite(t *testing.T) {
+	repo := &fakeResourceRepo{
+		resource: &postgres.Resource{
+			ID:         "resource-sync",
+			Title:      "学生守则",
+			SourceType: "upload",
+		},
+		version: &postgres.ResourceVersion{
+			ID:         "version-sync",
+			ResourceID: "resource-sync",
+			Content:    "# 学生守则\n正文",
+			Source:     "assistant_upload",
+		},
+	}
+	versionSync := &fakeIngestVersionSync{}
+	service := NewService(repo, fakeEmbedder{}, WithVersionSync(versionSync))
+
+	result, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName: "学生守则.md",
+		Content:  []byte("# 学生守则\n正文"),
+	})
+	if err != nil {
+		t.Fatalf("import document with sync: %v", err)
+	}
+
+	if result.Version == nil || result.Version.ID != "version-sync" {
+		t.Fatalf("expected synced version result, got %#v", result.Version)
+	}
+	if repo.graphCalls != 1 {
+		t.Fatalf("expected graph write before sync, got %d", repo.graphCalls)
+	}
+	if versionSync.calls != 1 {
+		t.Fatalf("expected exactly 1 sync call, got %d", versionSync.calls)
+	}
+	if versionSync.lastResourceID != "resource-sync" {
+		t.Fatalf("expected sync resource id %q, got %q", "resource-sync", versionSync.lastResourceID)
+	}
+	if versionSync.lastVersionID != "version-sync" {
+		t.Fatalf("expected sync version id %q, got %q", "version-sync", versionSync.lastVersionID)
+	}
+}
+
 func TestImportDirectoryBackfillsSourceRefForLegacyTitleMatch(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "student-handbook.md")
@@ -605,6 +647,19 @@ func (f *fakeVersionIndexer) ReindexVersion(_ context.Context, input indexer.Inp
 	f.reindexCalls++
 	f.lastInput = input
 	return f.reindexErr
+}
+
+type fakeIngestVersionSync struct {
+	calls          int
+	lastResourceID string
+	lastVersionID  string
+}
+
+func (f *fakeIngestVersionSync) SyncVersion(_ context.Context, resourceID string, versionID string) error {
+	f.calls++
+	f.lastResourceID = resourceID
+	f.lastVersionID = versionID
+	return nil
 }
 
 type sourceRefUpdateCall struct {

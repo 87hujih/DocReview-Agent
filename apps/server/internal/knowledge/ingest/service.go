@@ -46,6 +46,10 @@ type documentNormalizer interface {
 	Normalize(doc documentparser.ParsedDocument) documentnormalize.NormalizedDocument
 }
 
+type versionSync interface {
+	SyncVersion(ctx context.Context, resourceID string, versionID string) error
+}
+
 // ServiceOption 允许按需注入文档解析器等扩展能力。
 type ServiceOption func(*Service)
 
@@ -56,6 +60,7 @@ type Service struct {
 	parser       documentparser.Parser
 	normalizer   documentNormalizer
 	indexer      versionIndexer
+	versionSync  versionSync
 }
 
 // NewService 把导入流程依赖的存储层和 embedding 能力接起来。
@@ -94,6 +99,13 @@ func WithIndexer(indexer versionIndexer) ServiceOption {
 func WithNormalizer(normalizer documentNormalizer) ServiceOption {
 	return func(service *Service) {
 		service.normalizer = normalizer
+	}
+}
+
+// WithVersionSync 为新文档写链注入可选的版本级搜索投影同步。
+func WithVersionSync(sync versionSync) ServiceOption {
+	return func(service *Service) {
+		service.versionSync = sync
 	}
 }
 
@@ -311,6 +323,12 @@ func (s *Service) saveDocument(
 	if normalizedDocument != nil {
 		if err := s.resourceRepo.ReplaceSectionsForVersion(ctx, version.ID, resource.ID, buildSectionInputs(normalizedDocument.Sections)); err != nil {
 			return nil, nil, err
+		}
+	}
+
+	if s.versionSync != nil {
+		if err := s.versionSync.SyncVersion(ctx, resource.ID, version.ID); err != nil {
+			return nil, nil, fmt.Errorf("同步搜索索引失败：%w", err)
 		}
 	}
 

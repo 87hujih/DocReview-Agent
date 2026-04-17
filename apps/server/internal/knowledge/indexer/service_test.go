@@ -263,6 +263,40 @@ func TestReindexVersionReturnsEmbedderError(t *testing.T) {
 	}
 }
 
+func TestReindexVersionSyncsVersionAfterChunkReplace(t *testing.T) {
+	repo := &fakeIndexRepo{}
+	versionSync := &fakeIndexVersionSync{}
+	service := NewService(repo, fakeEmbedder{}, WithVersionSync(versionSync))
+
+	err := service.ReindexVersion(context.Background(), Input{
+		Resource: postgres.Resource{
+			ID:    "resource-sync",
+			Title: "考勤制度",
+		},
+		Version: postgres.ResourceVersion{
+			ID:         "version-sync",
+			ResourceID: "resource-sync",
+			Content:    "## 考勤管理\n员工必须在九点前签到。",
+		},
+	})
+	if err != nil {
+		t.Fatalf("reindex version with sync: %v", err)
+	}
+
+	if repo.replaceCalls != 1 {
+		t.Fatalf("expected replace call before sync, got %d", repo.replaceCalls)
+	}
+	if versionSync.calls != 1 {
+		t.Fatalf("expected exactly 1 sync call, got %d", versionSync.calls)
+	}
+	if versionSync.lastResourceID != "resource-sync" {
+		t.Fatalf("expected sync resource id %q, got %q", "resource-sync", versionSync.lastResourceID)
+	}
+	if versionSync.lastVersionID != "version-sync" {
+		t.Fatalf("expected sync version id %q, got %q", "version-sync", versionSync.lastVersionID)
+	}
+}
+
 type fakeIndexRepo struct {
 	replaceCalls   int
 	lastVersionID  string
@@ -275,6 +309,19 @@ func (r *fakeIndexRepo) ReplaceVersionChunks(_ context.Context, versionID string
 	r.lastVersionID = versionID
 	r.lastResourceID = resourceID
 	r.lastChunks = append([]postgres.ResourceChunkInput(nil), chunks...)
+	return nil
+}
+
+type fakeIndexVersionSync struct {
+	calls          int
+	lastResourceID string
+	lastVersionID  string
+}
+
+func (f *fakeIndexVersionSync) SyncVersion(_ context.Context, resourceID string, versionID string) error {
+	f.calls++
+	f.lastResourceID = resourceID
+	f.lastVersionID = versionID
 	return nil
 }
 
