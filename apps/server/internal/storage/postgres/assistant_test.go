@@ -103,6 +103,94 @@ func TestAssistantRepoSessionLifecycle(t *testing.T) {
 	}
 }
 
+func TestAssistantRepoListMessagesAfterSequence(t *testing.T) {
+	pool := newAssistantTestPool(t)
+	repo := NewAssistantRepo(pool)
+	ctx := assistantTestContext(t)
+
+	session, _, err := repo.CreateSessionWithMessages(ctx, "摘要窗口", []AssistantMessageInput{
+		mustAssistantMessageInput(t, "user", "text", `{"content":"第一条"}`),
+		mustAssistantMessageInput(t, "assistant", "text", `{"content":"第二条"}`),
+	})
+	if err != nil {
+		t.Fatalf("create session with messages: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := repo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup session: %v", err)
+		}
+	})
+
+	appended, err := repo.AppendMessages(ctx, session.ID, []AssistantMessageInput{
+		mustAssistantMessageInput(t, "user", "text", `{"content":"第三条"}`),
+		mustAssistantMessageInput(t, "assistant", "task_suggestion", `{"instruction":"第四条"}`),
+		mustAssistantMessageInput(t, "assistant", "text", `{"content":"第五条"}`),
+	})
+	if err != nil {
+		t.Fatalf("append messages: %v", err)
+	}
+
+	window, err := repo.ListMessagesAfterSequence(ctx, session.ID, 2)
+	if err != nil {
+		t.Fatalf("list messages after sequence: %v", err)
+	}
+
+	if len(window) != 3 {
+		t.Fatalf("expected 3 messages after sequence 2, got %d", len(window))
+	}
+	if window[0].SequenceNo != 3 || window[0].ID != appended[0].ID {
+		t.Fatalf("expected first window message to be sequence 3 (%s), got sequence %d (%s)", appended[0].ID, window[0].SequenceNo, window[0].ID)
+	}
+	if window[1].SequenceNo != 4 || window[1].ID != appended[1].ID {
+		t.Fatalf("expected second window message to be sequence 4 (%s), got sequence %d (%s)", appended[1].ID, window[1].SequenceNo, window[1].ID)
+	}
+	if window[2].SequenceNo != 5 || window[2].ID != appended[2].ID {
+		t.Fatalf("expected third window message to be sequence 5 (%s), got sequence %d (%s)", appended[2].ID, window[2].SequenceNo, window[2].ID)
+	}
+}
+
+func TestAssistantRepoListMessagesAfterSequenceReturnsAscendingWindow(t *testing.T) {
+	pool := newAssistantTestPool(t)
+	repo := NewAssistantRepo(pool)
+	ctx := assistantTestContext(t)
+
+	session, _, err := repo.CreateSessionWithMessages(ctx, "摘要窗口顺序", []AssistantMessageInput{
+		mustAssistantMessageInput(t, "user", "text", `{"content":"第零条"}`),
+	})
+	if err != nil {
+		t.Fatalf("create session with messages: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := repo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup session: %v", err)
+		}
+	})
+
+	_, err = repo.AppendMessages(ctx, session.ID, []AssistantMessageInput{
+		mustAssistantMessageInput(t, "assistant", "text", `{"content":"第一条"}`),
+		mustAssistantMessageInput(t, "user", "session_file", `{"status":"ready"}`),
+		mustAssistantMessageInput(t, "assistant", "text", `{"content":"第三条"}`),
+	})
+	if err != nil {
+		t.Fatalf("append messages: %v", err)
+	}
+
+	window, err := repo.ListMessagesAfterSequence(ctx, session.ID, 1)
+	if err != nil {
+		t.Fatalf("list messages after sequence: %v", err)
+	}
+
+	if len(window) != 3 {
+		t.Fatalf("expected 3 messages after sequence 1, got %d", len(window))
+	}
+	for index, message := range window {
+		expectedSequence := index + 2
+		if message.SequenceNo != expectedSequence {
+			t.Fatalf("expected ascending sequence %d at index %d, got %d", expectedSequence, index, message.SequenceNo)
+		}
+	}
+}
+
 func TestAssistantRepoDatabaseHostGateOnlyAllowsLoopback(t *testing.T) {
 	allowed := []string{
 		"postgres://user:pass@127.0.0.1:5432/app",

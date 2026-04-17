@@ -115,6 +115,33 @@ func (r *AssistantRepo) ListMessages(ctx context.Context, sessionID string) ([]A
 	return messages, rows.Err()
 }
 
+// ListMessagesAfterSequence 返回指定序号之后的消息窗口。
+func (r *AssistantRepo) ListMessagesAfterSequence(ctx context.Context, sessionID string, afterSequenceNo int) ([]AssistantMessage, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, session_id, role, kind, sequence_no, payload, created_at
+		FROM assistant_messages
+		WHERE session_id = $1
+		  AND sequence_no > $2
+		ORDER BY sequence_no ASC, id ASC
+	`, sessionID, afterSequenceNo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []AssistantMessage
+	for rows.Next() {
+		message, err := scanAssistantMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		messages = append(messages, message)
+	}
+
+	return messages, rows.Err()
+}
+
 // GetMessageByID 在消息不存在时返回 nil。
 func (r *AssistantRepo) GetMessageByID(ctx context.Context, id string) (*AssistantMessage, error) {
 	message, err := scanAssistantMessage(r.pool.QueryRow(ctx, `
