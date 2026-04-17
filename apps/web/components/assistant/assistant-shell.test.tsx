@@ -97,7 +97,9 @@ describe("AssistantShell", () => {
       throw new Error("expected file input to exist");
     }
 
-    expect(input).toHaveAttribute("accept", ".md,.txt,.pdf");
+    await waitFor(() => {
+      expect(input).toHaveAttribute("accept", ".md,.txt,.pdf");
+    });
     expect(screen.getByText("请先发送第一条消息后再上传 · 支持 md、txt、pdf")).toBeInTheDocument();
   });
 
