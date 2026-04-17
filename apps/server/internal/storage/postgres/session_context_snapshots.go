@@ -226,6 +226,24 @@ func (r *SessionContextSnapshotRepo) UpdateRollingSummary(ctx context.Context, s
 	return err
 }
 
+// AdvanceRollingSummary 仅在 base 序号前进时推进滚动摘要。
+func (r *SessionContextSnapshotRepo) AdvanceRollingSummary(ctx context.Context, sessionID string, summary *string, nextBaseSequenceNo int) (bool, error) {
+	result, err := r.pool.Exec(ctx, `
+		INSERT INTO session_context_snapshots (session_id, rolling_summary, summary_base_sequence_no)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (session_id) DO UPDATE
+		SET rolling_summary = EXCLUDED.rolling_summary,
+		    summary_base_sequence_no = EXCLUDED.summary_base_sequence_no,
+		    updated_at = now()
+		WHERE session_context_snapshots.summary_base_sequence_no < EXCLUDED.summary_base_sequence_no
+	`, sessionID, trimOptionalString(summary), nextBaseSequenceNo)
+	if err != nil {
+		return false, err
+	}
+
+	return result.RowsAffected() > 0, nil
+}
+
 // UpdateLatestTaskStatusBySourceMessageID 按任务来源建议消息 ID 更新最近任务状态。
 func (r *SessionContextSnapshotRepo) UpdateLatestTaskStatusBySourceMessageID(ctx context.Context, sourceMessageID string, status string) error {
 	_, err := r.pool.Exec(ctx, `

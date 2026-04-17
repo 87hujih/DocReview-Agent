@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/filestore"
@@ -28,10 +30,16 @@ var (
 	ErrTaskSuggestionNotFound = errors.New("任务建议不存在")
 )
 
+const (
+	summaryRefreshMessageThreshold = 12
+	summaryRefreshCharThreshold    = 3000
+)
+
 type sessionRepository interface {
 	ListSessions(ctx context.Context) ([]postgres.AssistantSession, error)
 	GetSessionByID(ctx context.Context, id string) (*postgres.AssistantSession, error)
 	ListMessages(ctx context.Context, sessionID string) ([]postgres.AssistantMessage, error)
+	ListMessagesAfterSequence(ctx context.Context, sessionID string, afterSequenceNo int) ([]postgres.AssistantMessage, error)
 	GetMessageByID(ctx context.Context, id string) (*postgres.AssistantMessage, error)
 	CreateSessionWithMessages(ctx context.Context, title string, inputs []postgres.AssistantMessageInput) (*postgres.AssistantSession, []postgres.AssistantMessage, error)
 	AppendMessages(ctx context.Context, sessionID string, inputs []postgres.AssistantMessageInput) ([]postgres.AssistantMessage, error)
@@ -53,6 +61,11 @@ type taskCreator interface {
 
 type resourceCitationRetriever interface {
 	SearchByResource(ctx context.Context, resourceID string, query string, limit int) ([]citation.Citation, error)
+}
+
+type summarySnapshotRepository interface {
+	GetBySessionID(ctx context.Context, sessionID string) (*postgres.SessionContextSnapshotRecord, error)
+	AdvanceRollingSummary(ctx context.Context, sessionID string, summary *string, nextBaseSequenceNo int) (bool, error)
 }
 
 type replyContextLoader interface {
@@ -90,10 +103,13 @@ type Service struct {
 	retriever     resourceCitationRetriever
 	responder     chatResponder
 	tasks         taskCreator
+	summarizer    ConversationSummarizer
 	fileStore     uploadedFileStore
 	uploadedFiles uploadedFileRepository
 	contextLoader replyContextLoader
 	projector     sessionContextProjector
+	summaryRepo   summarySnapshotRepository
+	asyncRunner   func(task func())
 }
 
 // NewService 构造助手领域服务。
@@ -111,6 +127,9 @@ func NewService(
 		retriever: retriever,
 		responder: responder,
 		tasks:     tasks,
+		asyncRunner: func(task func()) {
+			go task()
+		},
 	}
 
 	for _, option := range options {
@@ -120,7 +139,7 @@ func NewService(
 	}
 
 	if service.contextLoader == nil {
-		service.contextLoader = NewContextLoader(snapshotReaderFromProjector(service.projector), service.retriever)
+		service.contextLoader = NewContextLoader(snapshotReaderFromProjector(service.projector), service.retriever, service.repo)
 	}
 
 	return service
@@ -145,6 +164,21 @@ func WithReplyContextLoader(loader replyContextLoader) ServiceOption {
 func WithSessionContextProjector(projector sessionContextProjector) ServiceOption {
 	return func(service *Service) {
 		service.projector = projector
+	}
+}
+
+// WithConversationSummarizer 为 assistant service 注入滚动摘要器与快照仓储。
+func WithConversationSummarizer(summarizer ConversationSummarizer, snapshotRepo summarySnapshotRepository) ServiceOption {
+	return func(service *Service) {
+		service.summarizer = summarizer
+		service.summaryRepo = snapshotRepo
+	}
+}
+
+// WithSummaryAsyncRunner 为摘要刷新注入异步执行器，便于测试控制触发时机。
+func WithSummaryAsyncRunner(runner func(task func())) ServiceOption {
+	return func(service *Service) {
+		service.asyncRunner = runner
 	}
 }
 
@@ -235,6 +269,7 @@ func (s *Service) AppendMessage(ctx context.Context, sessionID string, content s
 	if err := s.projectPersistedMessages(ctx, sessionID, messages); err != nil {
 		return nil, err
 	}
+	s.triggerSummaryRefresh(sessionID)
 
 	updatedSession, err := s.repo.GetSessionByID(ctx, sessionID)
 	if err != nil {
@@ -881,6 +916,7 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 	if err := s.projectPersistedMessages(ctx, input.sessionID, messages); err != nil {
 		return err
 	}
+	s.triggerSummaryRefresh(input.sessionID)
 
 	if err := input.emit(StreamEvent{
 		Type:    StreamEventMessageCompleted,
@@ -903,6 +939,70 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 	}
 
 	return nil
+}
+
+func (s *Service) triggerSummaryRefresh(sessionID string) {
+	if s == nil || s.summarizer == nil || s.summaryRepo == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+
+	runner := s.asyncRunner
+	if runner == nil {
+		runner = func(task func()) {
+			go task()
+		}
+	}
+
+	runner(func() {
+		if err := s.refreshRollingSummary(context.Background(), sessionID); err != nil {
+			log.Printf("警告：assistant rolling summary refresh failed: %v", err)
+		}
+	})
+}
+
+func (s *Service) refreshRollingSummary(ctx context.Context, sessionID string) error {
+	snapshotRecord, err := s.summaryRepo.GetBySessionID(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+
+	summaryBaseSequenceNo := 0
+	var previousSummary *string
+	var snapshot *SessionContextSnapshot
+	if snapshotRecord != nil {
+		summaryBaseSequenceNo = snapshotRecord.SummaryBaseSequenceNo
+		previousSummary = cloneOptionalString(snapshotRecord.RollingSummary)
+		snapshot, err = SessionContextSnapshotFromRecord(snapshotRecord)
+		if err != nil {
+			return err
+		}
+	}
+
+	messages, err := s.repo.ListMessagesAfterSequence(ctx, sessionID, summaryBaseSequenceNo)
+	if err != nil {
+		return err
+	}
+
+	transcript, totalChars := selectSummaryTranscript(messages)
+	if len(transcript) < summaryRefreshMessageThreshold && totalChars < summaryRefreshCharThreshold {
+		return nil
+	}
+
+	result, err := s.summarizer.Summarize(ctx, SummaryInput{
+		PreviousSummary: previousSummary,
+		Transcript:      transcript,
+		Snapshot:        snapshot,
+	})
+	if err != nil {
+		return err
+	}
+	if result == nil || strings.TrimSpace(result.Summary) == "" {
+		return nil
+	}
+
+	summary := strings.TrimSpace(result.Summary)
+	_, err = s.summaryRepo.AdvanceRollingSummary(ctx, sessionID, &summary, transcript[len(transcript)-1].SequenceNo)
+	return err
 }
 
 func (s *Service) initSessionSnapshot(ctx context.Context, sessionID string) error {
@@ -995,7 +1095,7 @@ func (s *Service) loadReplyContext(
 	currentMessage string,
 ) (*ReplyContext, error) {
 	if s.contextLoader == nil {
-		s.contextLoader = NewContextLoader(snapshotReaderFromProjector(s.projector), s.retriever)
+		s.contextLoader = NewContextLoader(snapshotReaderFromProjector(s.projector), s.retriever, s.repo)
 	}
 
 	return s.contextLoader.LoadForReply(ctx, sessionID, history, currentMessage)
@@ -1008,4 +1108,33 @@ func snapshotReaderFromProjector(projector sessionContextProjector) sessionConte
 	}
 
 	return concrete.repo
+}
+
+func selectSummaryTranscript(messages []postgres.AssistantMessage) ([]postgres.AssistantMessage, int) {
+	if len(messages) == 0 {
+		return nil, 0
+	}
+
+	transcript := make([]postgres.AssistantMessage, 0, len(messages))
+	totalChars := 0
+	for _, message := range messages {
+		if message.Kind != KindText {
+			continue
+		}
+
+		payload, err := unmarshalTextPayload(message.Payload)
+		if err != nil {
+			continue
+		}
+
+		content := strings.TrimSpace(payload.Content)
+		if content == "" {
+			continue
+		}
+
+		transcript = append(transcript, message)
+		totalChars += utf8.RuneCountInString(content)
+	}
+
+	return transcript, totalChars
 }

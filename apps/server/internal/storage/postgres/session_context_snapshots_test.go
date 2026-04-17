@@ -294,6 +294,96 @@ func TestSessionContextSnapshotRepoUpsertLatestTaskAndClearPendingTaskSuggestion
 	}
 }
 
+func TestSessionContextSnapshotRepoAdvanceRollingSummaryMovesForward(t *testing.T) {
+	pool := newTestPool(t)
+	assistantRepo := NewAssistantRepo(pool)
+	snapshotRepo := NewSessionContextSnapshotRepo(pool)
+	ctx := testContext(t)
+
+	session, _, err := assistantRepo.CreateSessionWithMessages(ctx, "滚动摘要推进", nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup session: %v", err)
+		}
+	})
+
+	initialSummary := "第一版摘要"
+	if err := snapshotRepo.UpdateRollingSummary(ctx, session.ID, &initialSummary, 3); err != nil {
+		t.Fatalf("seed rolling summary: %v", err)
+	}
+
+	nextSummary := "第二版摘要"
+	advanced, err := snapshotRepo.AdvanceRollingSummary(ctx, session.ID, &nextSummary, 6)
+	if err != nil {
+		t.Fatalf("advance rolling summary: %v", err)
+	}
+	if !advanced {
+		t.Fatal("expected rolling summary to advance")
+	}
+
+	loaded, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get snapshot after advancing summary: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected snapshot after advancing summary")
+	}
+	if loaded.RollingSummary == nil || *loaded.RollingSummary != nextSummary {
+		t.Fatalf("expected rolling_summary %q, got %#v", nextSummary, loaded.RollingSummary)
+	}
+	if loaded.SummaryBaseSequenceNo != 6 {
+		t.Fatalf("expected summary_base_sequence_no %d, got %d", 6, loaded.SummaryBaseSequenceNo)
+	}
+}
+
+func TestSessionContextSnapshotRepoAdvanceRollingSummaryRejectsStaleBase(t *testing.T) {
+	pool := newTestPool(t)
+	assistantRepo := NewAssistantRepo(pool)
+	snapshotRepo := NewSessionContextSnapshotRepo(pool)
+	ctx := testContext(t)
+
+	session, _, err := assistantRepo.CreateSessionWithMessages(ctx, "滚动摘要拒绝回退", nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup session: %v", err)
+		}
+	})
+
+	freshSummary := "更新后的摘要"
+	if err := snapshotRepo.UpdateRollingSummary(ctx, session.ID, &freshSummary, 8); err != nil {
+		t.Fatalf("seed rolling summary: %v", err)
+	}
+
+	staleSummary := "过期摘要"
+	advanced, err := snapshotRepo.AdvanceRollingSummary(ctx, session.ID, &staleSummary, 5)
+	if err != nil {
+		t.Fatalf("advance rolling summary with stale base: %v", err)
+	}
+	if advanced {
+		t.Fatal("expected stale summary advance to be rejected")
+	}
+
+	loaded, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get snapshot after stale advance: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected snapshot after stale advance")
+	}
+	if loaded.RollingSummary == nil || *loaded.RollingSummary != freshSummary {
+		t.Fatalf("expected rolling_summary to stay %q, got %#v", freshSummary, loaded.RollingSummary)
+	}
+	if loaded.SummaryBaseSequenceNo != 8 {
+		t.Fatalf("expected summary_base_sequence_no to stay %d, got %d", 8, loaded.SummaryBaseSequenceNo)
+	}
+}
+
 func appendAssistantMessage(
 	t *testing.T,
 	ctx context.Context,
