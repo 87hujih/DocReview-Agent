@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"agent_project/apps/server/internal/agent/llmclient"
 	"agent_project/apps/server/internal/knowledge/citation"
@@ -18,6 +19,11 @@ import (
 
 	openaiacl "github.com/cloudwego/eino-ext/libs/acl/openai"
 	"github.com/cloudwego/eino/schema"
+)
+
+const (
+	recentRawTurnLimit      = 8
+	recentRawTurnCharBudget = 1600
 )
 
 const assistantSystemPrompt = `你是中文个人助手。
@@ -239,6 +245,9 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 	if snapshotProjection := buildSnapshotProjection(input.Snapshot); snapshotProjection != "" {
 		sections = append(sections, snapshotProjection)
 	}
+	if rollingSummary := buildRollingSummaryProjection(input.Snapshot); rollingSummary != "" {
+		sections = append(sections, rollingSummary)
+	}
 
 	if input.Resource != nil {
 		sections = append(sections, fmt.Sprintf(
@@ -320,11 +329,20 @@ func buildSnapshotProjection(snapshot *SessionContextSnapshot) string {
 		}
 	}
 
-	if snapshot.RollingSummary != nil && strings.TrimSpace(*snapshot.RollingSummary) != "" {
-		lines = append(lines, "- 已有滚动摘要："+strings.TrimSpace(*snapshot.RollingSummary))
+	return strings.Join(lines, "\n")
+}
+
+func buildRollingSummaryProjection(snapshot *SessionContextSnapshot) string {
+	if snapshot == nil || snapshot.RollingSummary == nil {
+		return ""
 	}
 
-	return strings.Join(lines, "\n")
+	summary := strings.TrimSpace(*snapshot.RollingSummary)
+	if summary == "" {
+		return ""
+	}
+
+	return "当前会话滚动摘要：\n" + summary
 }
 
 func buildHistoryMessages(history []postgres.AssistantMessage) []*schema.Message {
@@ -332,19 +350,36 @@ func buildHistoryMessages(history []postgres.AssistantMessage) []*schema.Message
 		return nil
 	}
 
-	start := 0
-	if len(history) > 16 {
-		start = len(history) - 16
-	}
+	selected := make([]*schema.Message, 0, recentRawTurnLimit)
+	totalChars := 0
+	for index := len(history) - 1; index >= 0; index-- {
+		item := history[index]
+		if item.Kind != KindText {
+			continue
+		}
 
-	messages := make([]*schema.Message, 0, len(history)-start)
-	for _, item := range history[start:] {
 		message := toSchemaMessage(item)
 		if message == nil {
 			continue
 		}
+		charCount := utf8.RuneCountInString(strings.TrimSpace(message.Content))
+		if len(selected) >= recentRawTurnLimit {
+			break
+		}
+		if len(selected) > 0 && totalChars+charCount > recentRawTurnCharBudget {
+			break
+		}
 
-		messages = append(messages, message)
+		selected = append(selected, message)
+		totalChars += charCount
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+
+	messages := make([]*schema.Message, 0, len(selected))
+	for index := len(selected) - 1; index >= 0; index-- {
+		messages = append(messages, selected[index])
 	}
 
 	return messages

@@ -143,25 +143,100 @@ func TestBuildChatMessagesIncludesSnapshotProjection(t *testing.T) {
 	}
 }
 
-func TestBuildHistoryMessagesKeepsRecentWindow(t *testing.T) {
-	history := make([]postgres.AssistantMessage, 0, 18)
-	for index := 1; index <= 18; index++ {
-		history = append(history, postgres.AssistantMessage{
+func TestBuildChatMessagesIncludesRollingSummaryBeforeRecentTurns(t *testing.T) {
+	summary := "当前目标：继续优化第二章。\n关键结论：保留按天登记。\n待继续事项：比较两个改写方案。"
+	messages := buildChatMessages(ChatCompletionInput{
+		Snapshot: &SessionContextSnapshot{
+			RollingSummary: &summary,
+		},
+		History: []postgres.AssistantMessage{
+			{
+				Role:    RoleUser,
+				Kind:    KindText,
+				Payload: mustJSON(t, TextPayload{Content: "先看第二章"}),
+			},
+			{
+				Role:    RoleAssistant,
+				Kind:    KindText,
+				Payload: mustJSON(t, TextPayload{Content: "好的，我先整理。"}),
+			},
+		},
+		Message: "继续",
+	})
+
+	if !strings.Contains(messages[0].Content, "当前会话滚动摘要：\n"+summary) {
+		t.Fatalf("expected system prompt to include rolling summary, got %q", messages[0].Content)
+	}
+	if len(messages) < 4 {
+		t.Fatalf("expected rolling summary prompt to keep recent turns, got %d messages", len(messages))
+	}
+	if messages[1].Content != "先看第二章" || messages[2].Content != "好的，我先整理。" {
+		t.Fatalf("expected recent text turns to stay after system prompt, got %#v", messages[1:3])
+	}
+}
+
+func TestBuildHistoryMessagesDropsStructuredMessagesFromRecentWindow(t *testing.T) {
+	history := []postgres.AssistantMessage{
+		{
+			Role:    RoleAssistant,
+			Kind:    KindSessionFile,
+			Payload: mustJSON(t, SessionFilePayload{FileName: "students.md", ResourceID: "resource-1", ResourceTitle: "学生手册", SourceType: "upload", Status: "ready"}),
+		},
+		{
+			Role:    RoleUser,
+			Kind:    KindText,
+			Payload: mustJSON(t, TextPayload{Content: "先看第二章"}),
+		},
+		{
+			Role:    RoleAssistant,
+			Kind:    KindTaskSuggestion,
+			Payload: []byte(`{"instruction":"请整理第二章","status_message":"资源已明确"}`),
+		},
+		{
+			Role:    RoleAssistant,
+			Kind:    KindText,
+			Payload: mustJSON(t, TextPayload{Content: "我先保留考勤规则。"}),
+		},
+	}
+
+	messages := buildHistoryMessages(history)
+	if len(messages) != 2 {
+		t.Fatalf("expected only 2 text history messages, got %d", len(messages))
+	}
+	if messages[0].Content != "先看第二章" || messages[1].Content != "我先保留考勤规则。" {
+		t.Fatalf("expected structured history to be dropped, got %#v", messages)
+	}
+}
+
+func TestBuildHistoryMessagesRespectsRecentTurnBudget(t *testing.T) {
+	countLimitedHistory := make([]postgres.AssistantMessage, 0, 9)
+	for index := 1; index <= 9; index++ {
+		countLimitedHistory = append(countLimitedHistory, postgres.AssistantMessage{
 			Role:    RoleUser,
 			Kind:    KindText,
 			Payload: mustJSON(t, TextPayload{Content: fmt.Sprintf("message-%02d", index)}),
 		})
 	}
 
-	messages := buildHistoryMessages(history)
-	if len(messages) != 16 {
-		t.Fatalf("expected last 16 history messages, got %d", len(messages))
+	countLimited := buildHistoryMessages(countLimitedHistory)
+	if len(countLimited) != 8 {
+		t.Fatalf("expected recent turn budget to keep last 8 text messages, got %d", len(countLimited))
 	}
-	if messages[0].Content != "message-03" {
-		t.Fatalf("expected history window to drop earliest messages, got first=%q", messages[0].Content)
+	if countLimited[0].Content != "message-02" || countLimited[len(countLimited)-1].Content != "message-09" {
+		t.Fatalf("expected count budget to keep newest 8 messages, got first=%q last=%q", countLimited[0].Content, countLimited[len(countLimited)-1].Content)
 	}
-	if messages[len(messages)-1].Content != "message-18" {
-		t.Fatalf("expected latest message to be preserved, got last=%q", messages[len(messages)-1].Content)
+
+	longText := strings.Repeat("甲", 900)
+	charLimited := buildHistoryMessages([]postgres.AssistantMessage{
+		{Role: RoleUser, Kind: KindText, Payload: mustJSON(t, TextPayload{Content: longText})},
+		{Role: RoleAssistant, Kind: KindText, Payload: mustJSON(t, TextPayload{Content: longText})},
+		{Role: RoleUser, Kind: KindText, Payload: mustJSON(t, TextPayload{Content: longText})},
+	})
+	if len(charLimited) != 1 {
+		t.Fatalf("expected char budget to keep only the newest message, got %d", len(charLimited))
+	}
+	if charLimited[0].Content != longText {
+		t.Fatalf("expected char-limited history to keep latest text only")
 	}
 }
 
