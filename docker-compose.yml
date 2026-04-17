@@ -22,5 +22,21 @@ services:
     ports:
       - "127.0.0.1:9998:9998"
 
+  # 本地可选的 BM25 词法索引服务。
+  # 默认 SEARCH_BACKEND=postgres_legacy，即使这里不启动 OpenSearch，server 也能正常开发。
+  opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+
 volumes:
   postgres_data:
+  opensearch_data:

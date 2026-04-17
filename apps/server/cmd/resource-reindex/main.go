@@ -12,10 +12,24 @@ import (
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/embedder"
 	"agent_project/apps/server/internal/knowledge/indexer"
+	"agent_project/apps/server/internal/knowledge/searchindex"
 	"agent_project/apps/server/internal/storage/postgres"
 
 	"github.com/google/uuid"
 )
+
+type resourceRepo interface {
+	List(ctx context.Context) ([]postgres.Resource, error)
+	GetByID(ctx context.Context, id string) (*postgres.Resource, error)
+	GetCurrentVersion(ctx context.Context, resourceID string) (*postgres.ResourceVersion, error)
+	CountChunksByVersion(ctx context.Context, versionID string) (int, error)
+	GetVersionStructureByVersionID(ctx context.Context, versionID string) (*postgres.ResourceVersionStructure, error)
+	ListSectionsByVersion(ctx context.Context, versionID string) ([]postgres.ResourceSection, error)
+}
+
+type versionReindexer interface {
+	ReindexVersion(ctx context.Context, input indexer.Input) error
+}
 
 type reindexMode struct {
 	ResourceID     string
@@ -49,8 +63,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("向量嵌入器初始化失败：%v", err)
 	}
-	versionIndexer := indexer.NewService(resourceRepo, emb)
+	searchClient := searchindex.NewClient(searchindex.ClientOptions{
+		BaseURL:     cfg.OpenSearchURL,
+		IndexChunks: cfg.OpenSearchIndexChunks,
+		Username:    cfg.OpenSearchUsername,
+		Password:    cfg.OpenSearchPassword,
+		TLSInsecure: cfg.OpenSearchTLSInsecure,
+	})
+	versionSync := searchindex.NewSyncService(resourceRepo, searchClient, cfg.SearchBackend)
+	versionIndexer := indexer.NewService(resourceRepo, emb, indexer.WithVersionSync(versionSync))
 
+	// 当前 CLI 会重建 PostgreSQL chunks，并在启用 OpenSearch 时同步刷新搜索投影。
 	if mode.ResourceID != "" {
 		if err := reindexSingleCurrentVersion(ctx, resourceRepo, versionIndexer, mode.ResourceID); err != nil {
 			log.Fatalf("重建资源索引失败：%v", err)
@@ -107,6 +130,9 @@ func validateForReindex(cfg appconfig.Config) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("缺少必填配置：%s", strings.Join(missing, ", "))
 	}
+	if strings.EqualFold(strings.TrimSpace(cfg.SearchBackend), "opensearch_bm25") && strings.TrimSpace(cfg.OpenSearchURL) == "" {
+		return fmt.Errorf("缺少必填配置：OPENSEARCH_URL")
+	}
 	if cfg.EmbeddingDim <= 0 {
 		return fmt.Errorf("EMBEDDING_DIM 无效：%d", cfg.EmbeddingDim)
 	}
@@ -114,7 +140,7 @@ func validateForReindex(cfg appconfig.Config) error {
 	return nil
 }
 
-func reindexSingleCurrentVersion(ctx context.Context, repo *postgres.ResourceRepo, versionIndexer *indexer.Service, resourceID string) error {
+func reindexSingleCurrentVersion(ctx context.Context, repo resourceRepo, versionIndexer versionReindexer, resourceID string) error {
 	resource, err := repo.GetByID(ctx, resourceID)
 	if err != nil {
 		return err
@@ -131,13 +157,19 @@ func reindexSingleCurrentVersion(ctx context.Context, repo *postgres.ResourceRep
 		return fmt.Errorf("资源当前版本不存在：%s", resourceID)
 	}
 
+	structure, err := repo.GetVersionStructureByVersionID(ctx, version.ID)
+	if err != nil {
+		return err
+	}
+
 	return versionIndexer.ReindexVersion(ctx, indexer.Input{
 		Resource: *resource,
 		Version:  *version,
+		Sections: loadStructuredSections(ctx, repo, version.ID, structure != nil),
 	})
 }
 
-func reindexMissingCurrentVersions(ctx context.Context, repo *postgres.ResourceRepo, versionIndexer *indexer.Service) (int, error) {
+func reindexMissingCurrentVersions(ctx context.Context, repo resourceRepo, versionIndexer versionReindexer) (int, error) {
 	resources, err := repo.List(ctx)
 	if err != nil {
 		return 0, err
@@ -162,9 +194,15 @@ func reindexMissingCurrentVersions(ctx context.Context, repo *postgres.ResourceR
 			continue
 		}
 
+		structure, err := repo.GetVersionStructureByVersionID(ctx, version.ID)
+		if err != nil {
+			return reindexed, err
+		}
+
 		if err := versionIndexer.ReindexVersion(ctx, indexer.Input{
 			Resource: resource,
 			Version:  *version,
+			Sections: loadStructuredSections(ctx, repo, version.ID, structure != nil),
 		}); err != nil {
 			return reindexed, err
 		}
@@ -172,4 +210,32 @@ func reindexMissingCurrentVersions(ctx context.Context, repo *postgres.ResourceR
 	}
 
 	return reindexed, nil
+}
+
+func loadStructuredSections(ctx context.Context, repo resourceRepo, versionID string, structured bool) []postgres.ResourceSectionInput {
+	if !structured {
+		return nil
+	}
+
+	sections, err := repo.ListSectionsByVersion(ctx, versionID)
+	if err != nil {
+		return nil
+	}
+
+	inputs := make([]postgres.ResourceSectionInput, 0, len(sections))
+	for _, section := range sections {
+		inputs = append(inputs, postgres.ResourceSectionInput{
+			SectionID:   section.ID,
+			SectionKey:  section.SectionKey,
+			SectionType: section.SectionType,
+			Title:       section.Title,
+			Summary:     section.Summary,
+			Content:     section.Content,
+			PageStart:   section.PageStart,
+			PageEnd:     section.PageEnd,
+			Metadata:    section.Metadata,
+		})
+	}
+
+	return inputs
 }

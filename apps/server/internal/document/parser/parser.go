@@ -33,9 +33,10 @@ type Input struct {
 	Content  []byte
 }
 
-// Result 描述文档解析后的文本正文。
+// Result 描述文档解析后的文本正文与结构化文档。
 type Result struct {
-	Text string
+	Text     string
+	Document *ParsedDocument
 }
 
 // Parser 定义文档解析器的统一入口。

@@ -29,6 +29,36 @@ func TestParsePassesThroughTextFiles(t *testing.T) {
 	}
 }
 
+func TestTextParserReturnsStructuredDocument(t *testing.T) {
+	parser, err := New(Options{Mode: ModeText})
+	if err != nil {
+		t.Fatalf("new parser: %v", err)
+	}
+
+	result, err := parser.Parse(context.Background(), Input{
+		FileName: "resume.md",
+		Content:  []byte("# 标题\n\n项目描述"),
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result.Document == nil {
+		t.Fatal("expected structured document")
+	}
+	if result.Document.SourceFormat != "md" {
+		t.Fatalf("expected source format %q, got %q", "md", result.Document.SourceFormat)
+	}
+	if len(result.Document.Blocks) < 2 {
+		t.Fatalf("expected at least 2 blocks, got %d", len(result.Document.Blocks))
+	}
+	if result.Document.Blocks[0].Type != BlockHeading {
+		t.Fatalf("expected first block heading, got %s", result.Document.Blocks[0].Type)
+	}
+	if result.Document.Blocks[1].Type != BlockParagraph {
+		t.Fatalf("expected second block paragraph, got %s", result.Document.Blocks[1].Type)
+	}
+}
+
 func TestTextParserCapabilityOnlyAcceptsTextFiles(t *testing.T) {
 	parser, err := New(Options{Mode: ModeText})
 	if err != nil {
@@ -116,6 +146,74 @@ func TestParseUsesTikaForDocumentFiles(t *testing.T) {
 	}
 }
 
+func TestTikaParserReturnsStructuredDocument(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("项目经验\nCampusHub 校园活动平台\n项目描述：面向校园活动场景的平台"))
+	}))
+	defer server.Close()
+
+	parser, err := New(Options{
+		Mode:        ModeTika,
+		TikaURL:     server.URL,
+		TikaTimeout: 2 * time.Second,
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new parser: %v", err)
+	}
+
+	result, err := parser.Parse(context.Background(), Input{
+		FileName: "resume.pdf",
+		Content:  []byte("binary-pdf-content"),
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result.Document == nil {
+		t.Fatal("expected structured document")
+	}
+	if result.Document.SourceFormat != "pdf" {
+		t.Fatalf("expected source format %q, got %q", "pdf", result.Document.SourceFormat)
+	}
+	if len(result.Document.Blocks) == 0 {
+		t.Fatal("expected tika blocks")
+	}
+}
+
+func TestTikaParserMarksSuspiciousShortBlocks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("项目\n项目描述：\n工作内容：\n教育\n技能"))
+	}))
+	defer server.Close()
+
+	parser, err := New(Options{
+		Mode:        ModeTika,
+		TikaURL:     server.URL,
+		TikaTimeout: 2 * time.Second,
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new parser: %v", err)
+	}
+
+	result, err := parser.Parse(context.Background(), Input{
+		FileName: "resume.docx",
+		Content:  []byte("binary-docx-content"),
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if result.Document == nil {
+		t.Fatal("expected structured document")
+	}
+	if !containsQualityFlag(result.Document.Metadata.QualityFlags, "too_many_short_blocks") &&
+		!containsQualityFlag(result.Document.Metadata.QualityFlags, "layout_lost") {
+		t.Fatalf("expected suspicious quality flags, got %#v", result.Document.Metadata.QualityFlags)
+	}
+}
+
 func TestParseRejectsUnknownExtensions(t *testing.T) {
 	parser, err := New(Options{})
 	if err != nil {
@@ -162,4 +260,14 @@ func TestParseReturnsErrorWhenTikaFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "Tika") {
 		t.Fatalf("expected tika error, got %v", err)
 	}
+}
+
+func containsQualityFlag(flags []string, target string) bool {
+	for _, flag := range flags {
+		if flag == target {
+			return true
+		}
+	}
+
+	return false
 }

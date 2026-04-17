@@ -30,6 +30,7 @@ type Orchestrator struct {
 	retrieverSvc    resourceSearcher
 	eventService    *taskevents.Service
 	contextMaxRunes int
+	projector       taskStatusProjector
 }
 
 type plannerRunner interface {
@@ -48,6 +49,10 @@ type resourceSearcher interface {
 	SearchByResource(ctx context.Context, resourceID string, query string, limit int) ([]citation.Citation, error)
 }
 
+type taskStatusProjector interface {
+	ProjectTaskStatusChanged(ctx context.Context, sourceMessageID *string, taskID string, status string) error
+}
+
 // New 构造任务编排器。contextMaxRunes 限制传给审阅和编辑代理的上下文字符数（≤0 使用 24000 默认值）。
 func New(
 	taskRepo *postgres.TaskRepo,
@@ -59,6 +64,7 @@ func New(
 	retrieverSvc resourceSearcher,
 	eventService *taskevents.Service,
 	contextMaxRunes int,
+	projector taskStatusProjector,
 ) *Orchestrator {
 	return &Orchestrator{
 		taskRepo:        taskRepo,
@@ -70,6 +76,7 @@ func New(
 		retrieverSvc:    retrieverSvc,
 		eventService:    eventService,
 		contextMaxRunes: contextMaxRunes,
+		projector:       projector,
 	}
 }
 
@@ -279,6 +286,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		if err := o.transitionTask(ctx, task, models.StatusCompleted, nil); err != nil {
 			o.failTask(ctx, task, nil, err)
 		}
+		o.projectTaskStatus(ctx, task, models.StatusCompleted)
 		return
 	}
 
@@ -338,6 +346,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 			"status":      approvalRecord.Status,
 		},
 	})
+	o.projectTaskStatus(ctx, task, models.StatusAwaitingApproval)
 }
 
 func (o *Orchestrator) transitionTask(ctx context.Context, task *postgres.Task, to string, errorMessage *string) error {
@@ -396,6 +405,7 @@ func (o *Orchestrator) failTask(ctx context.Context, task *postgres.Task, step *
 				"to_status":     models.StatusFailed,
 			},
 		})
+		o.projectTaskStatus(cleanupCtx, task, models.StatusFailed)
 	}
 }
 
@@ -405,6 +415,18 @@ func failureContext(parent context.Context) (context.Context, context.CancelFunc
 	}
 
 	return context.WithTimeout(context.WithoutCancel(parent), failurePersistenceTimeout)
+}
+
+func (o *Orchestrator) projectTaskStatus(ctx context.Context, task *postgres.Task, status string) {
+	if o.projector == nil || task == nil {
+		return
+	}
+	projectionCtx, cancel := failureContext(ctx)
+	defer cancel()
+
+	if err := o.projector.ProjectTaskStatusChanged(projectionCtx, task.SourceMessageID, task.ID, status); err != nil {
+		log.Printf("警告：回写助手上下文快照失败：task=%s status=%s err=%v", task.ID, status, err)
+	}
 }
 
 func (o *Orchestrator) recordStepEvent(

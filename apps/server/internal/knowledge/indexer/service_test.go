@@ -114,6 +114,101 @@ func TestBuildVersionChunksKeepsWholeDocumentFallback(t *testing.T) {
 	}
 }
 
+func TestBuildVersionChunksFromProjectSections(t *testing.T) {
+	repo := &fakeIndexRepo{}
+	service := NewService(repo, fakeEmbedder{})
+
+	chunks, err := service.BuildVersionChunks(context.Background(), Input{
+		Resource: postgres.Resource{
+			ID:    "resource-structured",
+			Title: "结构化简历",
+		},
+		Version: postgres.ResourceVersion{
+			ID:         "version-structured",
+			ResourceID: "resource-structured",
+			Content:    "fallback",
+		},
+		Sections: []postgres.ResourceSectionInput{
+			{
+				SectionID:   "section-project-1",
+				SectionKey:  "project-1",
+				SectionType: "project",
+				Title:       "CampusHub",
+				Summary:     "校园活动平台",
+				Content:     "面向校园活动场景的平台\n负责活动报名与审核链路",
+				PageStart:   1,
+				PageEnd:     1,
+				Metadata: map[string]any{
+					"tech_stack": []string{"Go", "Redis"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build structured chunks: %v", err)
+	}
+
+	if len(chunks) < 4 {
+		t.Fatalf("expected multiple role-based chunks, got %d", len(chunks))
+	}
+	assertChunkRolePresent(t, chunks, "section_summary")
+	assertChunkRolePresent(t, chunks, "project_name")
+	assertChunkRolePresent(t, chunks, "tech_stack")
+	assertChunkRolePresent(t, chunks, "project_description")
+	assertChunkRolePresent(t, chunks, "project_work")
+
+	for _, chunk := range chunks {
+		if chunk.WindowGroupID != "project-1" {
+			t.Fatalf("expected stable window group project-1, got %q", chunk.WindowGroupID)
+		}
+		if chunk.Content == "项目描述：" {
+			t.Fatal("expected label-only content to be skipped")
+		}
+	}
+}
+
+func TestReindexVersionKeepsWindowGroups(t *testing.T) {
+	repo := &fakeIndexRepo{}
+	service := NewService(repo, fakeEmbedder{})
+
+	err := service.ReindexVersion(context.Background(), Input{
+		Resource: postgres.Resource{
+			ID:    "resource-window",
+			Title: "结构化简历",
+		},
+		Version: postgres.ResourceVersion{
+			ID:         "version-window",
+			ResourceID: "resource-window",
+			Content:    "fallback",
+		},
+		Sections: []postgres.ResourceSectionInput{
+			{
+				SectionID:   "section-project-1",
+				SectionKey:  "project-1",
+				SectionType: "project",
+				Title:       "CampusHub",
+				Summary:     "校园活动平台",
+				Content:     "面向校园活动场景的平台\n负责活动报名与审核链路",
+				Metadata: map[string]any{
+					"tech_stack": []string{"Go", "Redis"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("reindex structured version: %v", err)
+	}
+
+	if len(repo.lastChunks) == 0 {
+		t.Fatal("expected structured chunks to be written")
+	}
+	for _, chunk := range repo.lastChunks {
+		if chunk.WindowGroupID != "project-1" {
+			t.Fatalf("expected window group project-1, got %q", chunk.WindowGroupID)
+		}
+	}
+}
+
 func TestReindexVersionClearsChunksForBlankContent(t *testing.T) {
 	repo := &fakeIndexRepo{}
 	service := NewService(repo, fakeEmbedder{})
@@ -168,6 +263,40 @@ func TestReindexVersionReturnsEmbedderError(t *testing.T) {
 	}
 }
 
+func TestReindexVersionSyncsVersionAfterChunkReplace(t *testing.T) {
+	repo := &fakeIndexRepo{}
+	versionSync := &fakeIndexVersionSync{}
+	service := NewService(repo, fakeEmbedder{}, WithVersionSync(versionSync))
+
+	err := service.ReindexVersion(context.Background(), Input{
+		Resource: postgres.Resource{
+			ID:    "resource-sync",
+			Title: "考勤制度",
+		},
+		Version: postgres.ResourceVersion{
+			ID:         "version-sync",
+			ResourceID: "resource-sync",
+			Content:    "## 考勤管理\n员工必须在九点前签到。",
+		},
+	})
+	if err != nil {
+		t.Fatalf("reindex version with sync: %v", err)
+	}
+
+	if repo.replaceCalls != 1 {
+		t.Fatalf("expected replace call before sync, got %d", repo.replaceCalls)
+	}
+	if versionSync.calls != 1 {
+		t.Fatalf("expected exactly 1 sync call, got %d", versionSync.calls)
+	}
+	if versionSync.lastResourceID != "resource-sync" {
+		t.Fatalf("expected sync resource id %q, got %q", "resource-sync", versionSync.lastResourceID)
+	}
+	if versionSync.lastVersionID != "version-sync" {
+		t.Fatalf("expected sync version id %q, got %q", "version-sync", versionSync.lastVersionID)
+	}
+}
+
 type fakeIndexRepo struct {
 	replaceCalls   int
 	lastVersionID  string
@@ -180,6 +309,19 @@ func (r *fakeIndexRepo) ReplaceVersionChunks(_ context.Context, versionID string
 	r.lastVersionID = versionID
 	r.lastResourceID = resourceID
 	r.lastChunks = append([]postgres.ResourceChunkInput(nil), chunks...)
+	return nil
+}
+
+type fakeIndexVersionSync struct {
+	calls          int
+	lastResourceID string
+	lastVersionID  string
+}
+
+func (f *fakeIndexVersionSync) SyncVersion(_ context.Context, resourceID string, versionID string) error {
+	f.calls++
+	f.lastResourceID = resourceID
+	f.lastVersionID = versionID
 	return nil
 }
 
@@ -202,4 +344,16 @@ func (e fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, err
 	}
 
 	return vectors, nil
+}
+
+func assertChunkRolePresent(t *testing.T, chunks []postgres.ResourceChunkInput, role string) {
+	t.Helper()
+
+	for _, chunk := range chunks {
+		if chunk.ChunkRole == role {
+			return
+		}
+	}
+
+	t.Fatalf("expected chunk role %q in %#v", role, chunks)
 }

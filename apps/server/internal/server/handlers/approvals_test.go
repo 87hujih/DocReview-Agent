@@ -20,7 +20,7 @@ func TestListApprovalsHandler(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil))
 	engine := server.New()
 	engine.GET("/api/approvals", handler.List)
 
@@ -63,7 +63,7 @@ func TestGetApprovalHandler(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil))
 	engine := server.New()
 	engine.GET("/api/approvals/:id", handler.GetByID)
 
@@ -109,7 +109,7 @@ func TestGetApprovalHandlerNotFound(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil))
 	engine := server.New()
 	engine.GET("/api/approvals/:id", handler.GetByID)
 
@@ -126,7 +126,7 @@ func TestGetJobHandler(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil))
 	engine := server.New()
 	engine.GET("/api/jobs/:id", handler.GetJobByID)
 
@@ -176,7 +176,7 @@ func TestGetJobHandlerNotFound(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil))
 	engine := server.New()
 	engine.GET("/api/jobs/:id", handler.GetJobByID)
 
@@ -193,7 +193,7 @@ func TestApproveApprovalHandler(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil))
 	engine := server.New()
 	engine.POST("/api/approvals/:id/approve", handler.Approve)
 
@@ -240,7 +240,7 @@ func TestRejectApprovalHandler(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil))
 	engine := server.New()
 	engine.POST("/api/approvals/:id/reject", handler.Reject)
 
@@ -374,7 +374,7 @@ func TestApproveApprovalNotFound(t *testing.T) {
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil))
 	engine := server.New()
 	engine.POST("/api/approvals/:id/approve", handler.Approve)
 

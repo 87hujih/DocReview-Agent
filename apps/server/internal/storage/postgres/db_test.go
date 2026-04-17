@@ -46,6 +46,8 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	expectedTables := []string{
 		"resources",
 		"resource_versions",
+		"resource_version_structures",
+		"resource_sections",
 		"resource_chunks",
 		"assistant_sessions",
 		"assistant_messages",
@@ -80,6 +82,67 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 
 	if trigramExtension != "pg_trgm" {
 		t.Fatalf("expected pg_trgm extension, got %q", trigramExtension)
+	}
+}
+
+func TestMigrationCreatesStructuredDocumentIndexes(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT indexname
+		FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND indexname = ANY($1)
+	`, []string{
+		"idx_resource_sections_version_type_order",
+		"idx_resource_chunks_version_type_role_index",
+	})
+	if err != nil {
+		t.Fatalf("query structured document indexes: %v", err)
+	}
+	defer rows.Close()
+
+	indexNames, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collect structured document indexes: %v", err)
+	}
+
+	expectedIndexes := []string{
+		"idx_resource_sections_version_type_order",
+		"idx_resource_chunks_version_type_role_index",
+	}
+	for _, expectedIndex := range expectedIndexes {
+		if !slices.Contains(indexNames, expectedIndex) {
+			t.Fatalf("expected index %q to exist, got %v", expectedIndex, indexNames)
+		}
+	}
+}
+
+func TestResourceChunkHNSWIndex(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	var indexDef string
+	if err := pool.QueryRow(ctx, `
+		SELECT indexdef
+		FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND tablename = 'resource_chunks'
+		  AND indexname = 'idx_resource_chunks_embedding_hnsw'
+	`).Scan(&indexDef); err != nil {
+		t.Fatalf("query hnsw index definition: %v", err)
+	}
+
+	if !strings.Contains(indexDef, "USING hnsw") {
+		t.Fatalf("expected hnsw access method, got %q", indexDef)
+	}
+	if !strings.Contains(indexDef, "embedding vector_cosine_ops") {
+		t.Fatalf("expected vector_cosine_ops operator class, got %q", indexDef)
 	}
 }
 
@@ -649,6 +712,118 @@ func TestCountChunksByVersion(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected 1 chunk after insert, got %d", count)
+	}
+}
+
+func TestResourceRepoListChunksByVersion(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewResourceRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, repo, ctx, "按版本列出分块测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	if err := repo.ReplaceSectionsForVersion(ctx, version.ID, resource.ID, []ResourceSectionInput{
+		{
+			SectionKey:  "project-1",
+			SectionType: "project",
+			Title:       "项目经验",
+			Content:     "第一段正文",
+			PageStart:   1,
+			PageEnd:     2,
+		},
+		{
+			SectionKey:  "project-2",
+			SectionType: "project",
+			Title:       "项目经验",
+			Content:     "第二段正文",
+			PageStart:   3,
+			PageEnd:     4,
+		},
+	}); err != nil {
+		t.Fatalf("replace sections for version: %v", err)
+	}
+
+	sections, err := repo.ListSectionsByVersion(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("list sections by version: %v", err)
+	}
+	if len(sections) != 2 {
+		t.Fatalf("expected 2 sections, got %d", len(sections))
+	}
+
+	if err := repo.CreateChunk(ctx, &ResourceChunk{
+		ResourceID:    resource.ID,
+		VersionID:     version.ID,
+		ChunkIndex:    1,
+		SectionTitle:  "项目经验",
+		Content:       "第二段正文",
+		Embedding:     testVector(0.31),
+		SectionID:     sections[1].ID,
+		SectionType:   "project",
+		ChunkRole:     "supporting_quote",
+		WindowGroupID: "window-2",
+		PageStart:     3,
+		PageEnd:       4,
+		Metadata: map[string]any{
+			"source": "second",
+		},
+	}); err != nil {
+		t.Fatalf("create second chunk: %v", err)
+	}
+
+	if err := repo.CreateChunk(ctx, &ResourceChunk{
+		ResourceID:    resource.ID,
+		VersionID:     version.ID,
+		ChunkIndex:    0,
+		SectionTitle:  "项目经验",
+		Content:       "第一段正文",
+		Embedding:     testVector(0.21),
+		SectionID:     sections[0].ID,
+		SectionType:   "project",
+		ChunkRole:     "section_body",
+		WindowGroupID: "window-1",
+		PageStart:     1,
+		PageEnd:       2,
+		Metadata: map[string]any{
+			"source": "first",
+		},
+	}); err != nil {
+		t.Fatalf("create first chunk: %v", err)
+	}
+
+	chunks, err := repo.ListChunksByVersion(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("list chunks by version: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+	if chunks[0].ChunkIndex != 0 {
+		t.Fatalf("expected first chunk index 0, got %d", chunks[0].ChunkIndex)
+	}
+	if chunks[0].SectionID != sections[0].ID {
+		t.Fatalf("expected first chunk section id %q, got %q", sections[0].ID, chunks[0].SectionID)
+	}
+	if chunks[0].ChunkRole != "section_body" {
+		t.Fatalf("expected first chunk role %q, got %q", "section_body", chunks[0].ChunkRole)
+	}
+	if chunks[0].WindowGroupID != "window-1" {
+		t.Fatalf("expected first chunk window group id %q, got %q", "window-1", chunks[0].WindowGroupID)
+	}
+	if chunks[0].Metadata["source"] != "first" {
+		t.Fatalf("expected first chunk metadata source %q, got %#v", "first", chunks[0].Metadata["source"])
+	}
+	if chunks[1].ChunkIndex != 1 {
+		t.Fatalf("expected second chunk index 1, got %d", chunks[1].ChunkIndex)
+	}
+	if chunks[1].SectionID != sections[1].ID {
+		t.Fatalf("expected second chunk section id %q, got %q", sections[1].ID, chunks[1].SectionID)
+	}
+	if chunks[1].ChunkRole != "supporting_quote" {
+		t.Fatalf("expected second chunk role %q, got %q", "supporting_quote", chunks[1].ChunkRole)
 	}
 }
 

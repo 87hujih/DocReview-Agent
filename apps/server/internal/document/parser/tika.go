@@ -38,6 +38,7 @@ func (p *tikaParser) Parse(ctx context.Context, input Input) (*Result, error) {
 	}
 
 	return &Result{
-		Text: string(body),
+		Text:     string(body),
+		Document: buildTikaDocument(sourceFormatFromFileName(input.FileName), string(body)),
 	}, nil
 }

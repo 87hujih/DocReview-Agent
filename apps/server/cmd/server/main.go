@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agent_project/apps/server/internal/agent/editor"
@@ -15,6 +16,7 @@ import (
 	"agent_project/apps/server/internal/approval"
 	"agent_project/apps/server/internal/assistant"
 	appconfig "agent_project/apps/server/internal/config"
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/job"
 	"agent_project/apps/server/internal/knowledge/embedder"
@@ -22,6 +24,7 @@ import (
 	"agent_project/apps/server/internal/knowledge/ingest"
 	"agent_project/apps/server/internal/knowledge/reranker"
 	"agent_project/apps/server/internal/knowledge/retriever"
+	"agent_project/apps/server/internal/knowledge/searchindex"
 	"agent_project/apps/server/internal/observability/logging"
 	"agent_project/apps/server/internal/server/handlers"
 	"agent_project/apps/server/internal/server/router"
@@ -68,8 +71,32 @@ func main() {
 	}
 
 	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
-	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient)
-	versionIndexer := indexer.NewService(resourceRepo, emb)
+	retrieverOptions := []retriever.ServiceOption{
+		retriever.WithSearchBackend(cfg.SearchBackend),
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.SearchBackend), "opensearch_bm25") {
+		lexicalBackend := retriever.NewOpenSearchBM25Backend(retriever.OpenSearchBM25BackendOptions{
+			BaseURL:     cfg.OpenSearchURL,
+			IndexChunks: cfg.OpenSearchIndexChunks,
+			Username:    cfg.OpenSearchUsername,
+			Password:    cfg.OpenSearchPassword,
+			TLSInsecure: cfg.OpenSearchTLSInsecure,
+		})
+		if lexicalBackend == nil {
+			log.Fatalf("OpenSearch 词法检索 backend 初始化失败")
+		}
+		retrieverOptions = append(retrieverOptions, retriever.WithLexicalBackend(lexicalBackend))
+	}
+	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient, retrieverOptions...)
+	searchClient := searchindex.NewClient(searchindex.ClientOptions{
+		BaseURL:     cfg.OpenSearchURL,
+		IndexChunks: cfg.OpenSearchIndexChunks,
+		Username:    cfg.OpenSearchUsername,
+		Password:    cfg.OpenSearchPassword,
+		TLSInsecure: cfg.OpenSearchTLSInsecure,
+	})
+	versionSync := searchindex.NewSyncService(resourceRepo, searchClient, cfg.SearchBackend)
+	versionIndexer := indexer.NewService(resourceRepo, emb, indexer.WithVersionSync(versionSync))
 	docParser, err := documentparser.New(documentparser.Options{
 		Mode:        cfg.DocumentParser,
 		TikaURL:     cfg.TikaURL,
@@ -79,7 +106,15 @@ func main() {
 		log.Fatalf("文档解析器初始化失败：%v", err)
 	}
 
-	ingestService := ingest.NewService(resourceRepo, emb, ingest.WithParser(docParser), ingest.WithIndexer(versionIndexer))
+	normalizeService := documentnormalize.NewService()
+	ingestService := ingest.NewService(
+		resourceRepo,
+		emb,
+		ingest.WithParser(docParser),
+		ingest.WithNormalizer(normalizeService),
+		ingest.WithIndexer(versionIndexer),
+		ingest.WithVersionSync(versionSync),
+	)
 
 	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
 		TimeoutMS: cfg.LLMTimeoutMS,
@@ -117,9 +152,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("原文件存储初始化失败：%v", err)
 	}
+	sessionContextProjector := assistant.NewSessionContextProjector(sessionContextSnapshotRepo)
 
 	exec := executor.New(taskRepo, resourceRepo, versionIndexer)
-	worker := job.New(jobRepo, exec, taskRepo, 100, eventService)
+	worker := job.New(jobRepo, exec, taskRepo, 100, eventService, sessionContextProjector)
 	worker.Start(ctx, 3)
 
 	// 服务启动时补发所有未处理的 pending job 信号，防止重启后 job 永久搁置（B4）
@@ -139,7 +175,7 @@ func main() {
 	}
 
 	resourceHandler := handlers.NewResourceHandler(resourceRepo, retrieverService)
-	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService, cfg.TaskContextMaxRunes)
+	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService, cfg.TaskContextMaxRunes, sessionContextProjector)
 	runner := workflow.NewOrchestratorRunner(
 		cfg.WorkflowWorkers,
 		cfg.WorkflowQueueSize,
@@ -151,7 +187,7 @@ func main() {
 	defer runner.Stop()
 	taskService := taskservice.New(taskRepo, resourceRepo, runner, eventService)
 	taskHandler := handlers.NewTaskHandler(taskService, taskRepo, eventRepo)
-	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService)
+	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService, sessionContextProjector)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	assistantResponder, err := assistant.NewChatResponder(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
 		TimeoutMS: cfg.LLMTimeoutMS,
@@ -161,14 +197,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("助手对话模型初始化失败：%v", err)
 	}
-	sessionContextProjector := assistant.NewSessionContextProjector(sessionContextSnapshotRepo)
-
 	assistantService := assistant.NewService(
 		assistantRepo,
 		assistant.NewIngestDocumentImporter(ingestService),
 		taskService,
 		assistantResponder,
 		retrieverService,
+		assistant.WithEvidenceGate(assistant.NewEvidenceGate()),
 		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
 		assistant.WithSessionContextProjector(sessionContextProjector),
 	)

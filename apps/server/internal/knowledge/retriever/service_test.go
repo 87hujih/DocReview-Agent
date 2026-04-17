@@ -3,6 +3,9 @@ package retriever
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,8 +77,8 @@ func TestShouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride(t *testing.T)
 func TestBuildCitationsFromChunks(t *testing.T) {
 	longContent := strings.Repeat("a", 205)
 	chunks := []postgres.ResourceChunk{
-		{ResourceID: "res-1", SectionTitle: "Section 1", Content: "alpha"},
-		{ResourceID: "res-2", SectionTitle: "Section 2", Content: longContent},
+		{ResourceID: "res-1", SectionID: "section-1", SectionType: "project", SectionTitle: "Section 1", Content: "alpha"},
+		{ResourceID: "res-2", SectionID: "section-2", SectionType: "project", SectionTitle: "Section 2", Content: longContent, Metadata: map[string]any{"window": []string{"Section 2", "detail"}}},
 		{ResourceID: "res-3", SectionTitle: "Section 3", Content: "gamma"},
 	}
 
@@ -94,6 +97,15 @@ func TestBuildCitationsFromChunks(t *testing.T) {
 
 	if citations[1].Snippet != longContent[:200]+"..." {
 		t.Fatalf("expected truncated snippet, got %q", citations[1].Snippet)
+	}
+	if citations[1].SectionID != "section-2" {
+		t.Fatalf("expected section id %q, got %q", "section-2", citations[1].SectionID)
+	}
+	if citations[1].SectionType != "project" {
+		t.Fatalf("expected section type %q, got %q", "project", citations[1].SectionType)
+	}
+	if len(citations[1].Window) != 2 {
+		t.Fatalf("expected window context, got %#v", citations[1].Window)
 	}
 }
 
@@ -171,7 +183,7 @@ func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
 			},
 		},
 	}
-	service := NewService(repo, fakeRetrieverEmbedder{}, fakeRetrieverReranker{
+	service := NewService(repo, fakeRetrieverEmbedder{}, &fakeRetrieverReranker{
 		results: []reranker.Result{
 			{Index: 0, RelevanceScore: 0.99},
 		},
@@ -196,6 +208,349 @@ func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
 	}
 	if !strings.Contains(citations[0].Snippet, "新版本") {
 		t.Fatalf("expected citation from current version, got %q", citations[0].Snippet)
+	}
+}
+
+func TestSearchByResourceUsesProjectSectionsFirst(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-structured",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:            "chunk-project-name",
+				ResourceID:    "resource-structured",
+				VersionID:     "version-current",
+				SectionID:     "section-project-1",
+				SectionType:   "project",
+				SectionTitle:  "CampusHub",
+				ChunkRole:     "project_name",
+				WindowGroupID: "project-1",
+				Content:       "CampusHub",
+			},
+			{
+				ID:            "chunk-project-description",
+				ResourceID:    "resource-structured",
+				VersionID:     "version-current",
+				SectionID:     "section-project-1",
+				SectionType:   "project",
+				SectionTitle:  "CampusHub",
+				ChunkRole:     "project_description",
+				WindowGroupID: "project-1",
+				Content:       "面向校园活动场景的平台",
+			},
+			{
+				ID:          "chunk-legacy",
+				ResourceID:  "resource-structured",
+				VersionID:   "version-current",
+				SectionType: "whole_document",
+				ChunkRole:   "section_body",
+				Content:     "杂项正文",
+			},
+		},
+		lexicalByVersion: []postgres.ResourceChunk{
+			{
+				ID:            "chunk-project-description",
+				ResourceID:    "resource-structured",
+				VersionID:     "version-current",
+				SectionID:     "section-project-1",
+				SectionType:   "project",
+				SectionTitle:  "CampusHub",
+				ChunkRole:     "project_description",
+				WindowGroupID: "project-1",
+				Content:       "面向校园活动场景的平台",
+			},
+		},
+	}
+	reranker := &fakeRetrieverReranker{
+		results: []reranker.Result{
+			{Index: 0, RelevanceScore: 0.99},
+		},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, reranker)
+
+	citations, err := service.SearchByResource(context.Background(), "resource-structured", "有哪些项目", 3)
+	if err != nil {
+		t.Fatalf("search by resource: %v", err)
+	}
+
+	if len(citations) != 1 {
+		t.Fatalf("expected 1 structured citation, got %d", len(citations))
+	}
+	if citations[0].SectionType != "project" {
+		t.Fatalf("expected project citation, got %q", citations[0].SectionType)
+	}
+	if len(citations[0].Window) < 2 {
+		t.Fatalf("expected project window expansion, got %#v", citations[0].Window)
+	}
+}
+
+func TestSearchByResourceFallsBackToLegacyChunks(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-legacy",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-legacy",
+				ResourceID:   "resource-legacy",
+				VersionID:    "version-current",
+				SectionTitle: "全文",
+				Content:      "旧版正文中的项目列表",
+			},
+		},
+		lexicalByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-legacy",
+				ResourceID:   "resource-legacy",
+				VersionID:    "version-current",
+				SectionTitle: "全文",
+				Content:      "旧版正文中的项目列表",
+			},
+		},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, &fakeRetrieverReranker{
+		results: []reranker.Result{
+			{Index: 0, RelevanceScore: 0.91},
+		},
+	})
+
+	citations, err := service.SearchByResource(context.Background(), "resource-legacy", "有哪些项目", 3)
+	if err != nil {
+		t.Fatalf("search by resource fallback: %v", err)
+	}
+
+	if len(citations) != 1 {
+		t.Fatalf("expected 1 fallback citation, got %d", len(citations))
+	}
+	if citations[0].SectionType != "" && citations[0].SectionType != "whole_document" {
+		t.Fatalf("expected legacy fallback citation, got section type %q", citations[0].SectionType)
+	}
+}
+
+func TestSearchByResourceUsesLegacyLexicalBackendByDefault(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-1",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-semantic",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "语义命中",
+			},
+		},
+		lexicalByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-legacy-lexical",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "legacy lexical 命中",
+			},
+		},
+	}
+	rerankerClient := &fakeRetrieverReranker{
+		results: []reranker.Result{{Index: 0, RelevanceScore: 0.99}},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, rerankerClient)
+
+	if _, err := service.SearchByResource(context.Background(), "resource-1", "考勤", 3); err != nil {
+		t.Fatalf("search by resource with legacy backend: %v", err)
+	}
+
+	if repo.lexicalByVersionCalls != 1 {
+		t.Fatalf("expected legacy lexical search to be called once, got %d", repo.lexicalByVersionCalls)
+	}
+}
+
+func TestSearchByResourceUsesConfiguredOpenSearchLexicalBackend(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-1",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-semantic",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "语义命中",
+			},
+		},
+	}
+	backend := &fakeLexicalBackend{
+		chunks: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-bm25",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "bm25 命中",
+			},
+		},
+	}
+	rerankerClient := &fakeRetrieverReranker{
+		results: []reranker.Result{{Index: 0, RelevanceScore: 0.99}},
+	}
+	service := NewService(
+		repo,
+		fakeRetrieverEmbedder{},
+		rerankerClient,
+		WithSearchBackend("opensearch_bm25"),
+		WithLexicalBackend(backend),
+	)
+
+	citations, err := service.SearchByResource(context.Background(), "resource-1", "考勤", 3)
+	if err != nil {
+		t.Fatalf("search by resource with opensearch backend: %v", err)
+	}
+
+	if repo.lexicalByVersionCalls != 0 {
+		t.Fatalf("expected postgres lexical search to be skipped, got %d calls", repo.lexicalByVersionCalls)
+	}
+	if backend.calls != 1 {
+		t.Fatalf("expected configured lexical backend to be called once, got %d", backend.calls)
+	}
+	if backend.lastVersionID != "version-current" {
+		t.Fatalf("expected lexical backend to search current version %q, got %q", "version-current", backend.lastVersionID)
+	}
+	if len(citations) == 0 {
+		t.Fatal("expected citations from configured backend")
+	}
+}
+
+func TestSearchByResourceAppliesRRFFusionBeforeRerank(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-1",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-semantic-only",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "纯语义命中",
+			},
+			{
+				ID:           "chunk-both",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "词法语义双命中",
+			},
+		},
+	}
+	backend := &fakeLexicalBackend{
+		chunks: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-both",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "词法语义双命中",
+			},
+		},
+	}
+	rerankerClient := &fakeRetrieverReranker{
+		results: []reranker.Result{{Index: 0, RelevanceScore: 0.99}},
+	}
+	service := NewService(
+		repo,
+		fakeRetrieverEmbedder{},
+		rerankerClient,
+		WithSearchBackend("opensearch_bm25"),
+		WithLexicalBackend(backend),
+	)
+
+	citations, err := service.SearchByResource(context.Background(), "resource-1", "考勤", 3)
+	if err != nil {
+		t.Fatalf("search by resource with rrf fusion: %v", err)
+	}
+
+	if len(rerankerClient.lastDocuments) == 0 {
+		t.Fatal("expected reranker to receive fused candidates")
+	}
+	if !strings.Contains(rerankerClient.lastDocuments[0], "词法语义双命中") {
+		t.Fatalf("expected top rerank candidate to come from rrf fusion, got %q", rerankerClient.lastDocuments[0])
+	}
+	if len(citations) != 1 || !strings.Contains(citations[0].Snippet, "词法语义双命中") {
+		t.Fatalf("expected citation from fused chunk, got %#v", citations)
+	}
+}
+
+func TestOpenSearchBM25BackendSearchesVersionScopedChunks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/resource_chunks_v1/_search" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+
+		body := mustReadAll(t, r.Body)
+		if !strings.Contains(body, `"query":"考勤"`) {
+			t.Fatalf("expected bm25 query in request body, got %s", body)
+		}
+		if !strings.Contains(body, `"version_id":"version-1"`) {
+			t.Fatalf("expected version filter in request body, got %s", body)
+		}
+
+		_, _ = w.Write([]byte(`{
+			"hits": {
+				"hits": [
+					{
+						"_source": {
+							"resource_id": "resource-1",
+							"version_id": "version-1",
+							"section_id": "section-1",
+							"section_type": "project",
+							"chunk_id": "chunk-1",
+							"chunk_role": "section_body",
+							"chunk_index": 0,
+							"section_title": "项目经验",
+							"content": "负责跨区域项目交付。",
+							"window_group_id": "window-1",
+							"page_start": 1,
+							"page_end": 2,
+							"metadata": {"source": "bm25"}
+						}
+					}
+				]
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	backend := NewOpenSearchBM25Backend(OpenSearchBM25BackendOptions{
+		BaseURL:     server.URL,
+		IndexChunks: "resource_chunks_v1",
+	})
+	if backend == nil {
+		t.Fatal("expected non-nil opensearch backend")
+	}
+
+	chunks, err := backend.Search(context.Background(), "考勤", lexicalSearchScope{
+		VersionID: "version-1",
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("search opensearch backend: %v", err)
+	}
+
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+	if chunks[0].ID != "chunk-1" {
+		t.Fatalf("expected chunk id %q, got %q", "chunk-1", chunks[0].ID)
+	}
+	if chunks[0].Metadata["source"] != "bm25" {
+		t.Fatalf("expected metadata source %q, got %#v", "bm25", chunks[0].Metadata["source"])
 	}
 }
 
@@ -310,6 +665,7 @@ type fakeRetrieverRepo struct {
 	currentVersionLookups int
 	lastVersionID         string
 	searchByResourceCalls int
+	lexicalByVersionCalls int
 }
 
 func (r *fakeRetrieverRepo) GetCurrentVersion(context.Context, string) (*postgres.ResourceVersion, error) {
@@ -342,6 +698,7 @@ func (r *fakeRetrieverRepo) SearchChunksByVersion(_ context.Context, _ pgvector.
 
 func (r *fakeRetrieverRepo) SearchChunksLexicalByVersion(_ context.Context, _ string, _ int, versionID string) ([]postgres.ResourceChunk, error) {
 	r.lastVersionID = versionID
+	r.lexicalByVersionCalls++
 	return r.lexicalByVersion, nil
 }
 
@@ -357,9 +714,43 @@ func (fakeRetrieverEmbedder) Embed(context.Context, []string) ([][]float32, erro
 }
 
 type fakeRetrieverReranker struct {
-	results []reranker.Result
+	results       []reranker.Result
+	lastDocuments []string
 }
 
-func (r fakeRetrieverReranker) Rerank(context.Context, string, []string, int) ([]reranker.Result, error) {
+func (r *fakeRetrieverReranker) Rerank(_ context.Context, _ string, documents []string, _ int) ([]reranker.Result, error) {
+	r.lastDocuments = append([]string(nil), documents...)
 	return r.results, nil
+}
+
+type fakeLexicalBackend struct {
+	chunks        []postgres.ResourceChunk
+	calls         int
+	lastQuery     string
+	lastVersionID string
+	lastLimit     int
+}
+
+func (f *fakeLexicalBackend) Search(_ context.Context, query string, scope lexicalSearchScope) ([]postgres.ResourceChunk, error) {
+	f.calls++
+	f.lastQuery = query
+	f.lastVersionID = scope.VersionID
+	f.lastLimit = scope.Limit
+	return append([]postgres.ResourceChunk(nil), f.chunks...), nil
+}
+
+func mustReadAll(t *testing.T, body any) string {
+	t.Helper()
+
+	reader, ok := body.(io.Reader)
+	if !ok {
+		t.Fatalf("unexpected body type %T", body)
+	}
+
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	return string(content)
 }

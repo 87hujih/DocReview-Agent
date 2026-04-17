@@ -12,3 +12,11 @@ log:
   level: "info"
   format: "json"
   add_source: false
+
+search:
+  backend: "postgres_legacy"
+  lexical_search_enabled: true
+  semantic_hnsw_enabled: true
+  opensearch:
+    index_chunks: "resource_chunks_v1"
+    tls_insecure: false

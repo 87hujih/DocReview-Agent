@@ -56,6 +56,7 @@ type chatStreamResultProvider interface {
 
 // ChatCompletionInput 描述一次助手回复所需的会话上下文。
 type ChatCompletionInput struct {
+	Snapshot  *SessionContextSnapshot
 	Citations []citation.Citation
 	History   []postgres.AssistantMessage
 	Message   string
@@ -235,9 +236,13 @@ func buildSystemPrompt(input ChatCompletionInput) string {
 func buildRuntimeContext(input ChatCompletionInput) string {
 	var sections []string
 
+	if snapshotProjection := buildSnapshotProjection(input.Snapshot); snapshotProjection != "" {
+		sections = append(sections, snapshotProjection)
+	}
+
 	if input.Resource != nil {
 		sections = append(sections, fmt.Sprintf(
-			"当前最近可用资源：标题=%s；来源=%s；资源ID=%s。",
+			"本轮检索所用资源：标题=%s；来源=%s；资源ID=%s。",
 			input.Resource.Title,
 			input.Resource.Source,
 			input.Resource.ID,
@@ -247,13 +252,11 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 	if len(input.Citations) > 0 {
 		lines := make([]string, 0, len(input.Citations)+1)
 		lines = append(lines, "与本轮用户问题最相关的资源片段：")
+		if projectSections := buildProjectSectionList(input.Citations); projectSections != "" {
+			lines = append(lines, projectSections)
+		}
 		for index, item := range input.Citations {
-			lines = append(lines, fmt.Sprintf(
-				"%d. [%s] %s",
-				index+1,
-				fallbackSectionTitle(item.SectionTitle),
-				strings.TrimSpace(item.Snippet),
-			))
+			lines = append(lines, buildCitationProjection(index+1, item))
 		}
 		sections = append(sections, strings.Join(lines, "\n"))
 	} else if input.Resource != nil {
@@ -261,6 +264,65 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 	}
 
 	return strings.Join(sections, "\n\n")
+}
+
+func buildSnapshotProjection(snapshot *SessionContextSnapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+
+	lines := []string{"当前会话快照："}
+	if snapshot.ActiveResource != nil {
+		lines = append(lines, fmt.Sprintf(
+			"- 当前活跃资源：%s（来源=%s，资源ID=%s）。",
+			snapshot.ActiveResource.Title,
+			snapshot.ActiveResource.SourceType,
+			snapshot.ActiveResource.ID,
+		))
+	} else {
+		lines = append(lines, "- 当前活跃资源：未记录。")
+	}
+
+	if snapshot.PendingTaskSuggestion != nil {
+		lines = append(lines, fmt.Sprintf(
+			"- 待确认任务建议：%s（消息ID=%s）。",
+			snapshot.PendingTaskSuggestion.Instruction,
+			snapshot.PendingTaskSuggestion.MessageID,
+		))
+	} else {
+		lines = append(lines, "- 待确认任务建议：无。")
+	}
+
+	if snapshot.LatestTask != nil {
+		lines = append(lines, fmt.Sprintf(
+			"- 最近真实任务：ID=%s；状态=%s。",
+			snapshot.LatestTask.ID,
+			snapshot.LatestTask.Status,
+		))
+	} else {
+		lines = append(lines, "- 最近真实任务：无。")
+	}
+
+	if len(snapshot.ConfirmedConstraints) > 0 {
+		parts := make([]string, 0, len(snapshot.ConfirmedConstraints))
+		for _, constraint := range snapshot.ConfirmedConstraints {
+			label := strings.TrimSpace(constraint.Label)
+			value := strings.TrimSpace(constraint.Value)
+			if label == "" || value == "" {
+				continue
+			}
+			parts = append(parts, label+"="+value)
+		}
+		if len(parts) > 0 {
+			lines = append(lines, "- 已确认约束："+strings.Join(parts, "；"))
+		}
+	}
+
+	if snapshot.RollingSummary != nil && strings.TrimSpace(*snapshot.RollingSummary) != "" {
+		lines = append(lines, "- 已有滚动摘要："+strings.TrimSpace(*snapshot.RollingSummary))
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func buildHistoryMessages(history []postgres.AssistantMessage) []*schema.Message {
@@ -371,6 +433,64 @@ func fallbackSectionTitle(title string) string {
 	}
 
 	return trimmed
+}
+
+func buildProjectSectionList(citations []citation.Citation) string {
+	seen := make(map[string]struct{})
+	titles := make([]string, 0, len(citations))
+	for _, item := range citations {
+		if strings.TrimSpace(item.SectionType) != "project" {
+			continue
+		}
+
+		title := fallbackSectionTitle(item.SectionTitle)
+		if _, ok := seen[title]; ok {
+			continue
+		}
+		seen[title] = struct{}{}
+		titles = append(titles, title)
+	}
+
+	if len(titles) == 0 {
+		return ""
+	}
+
+	return "当前识别到的项目 section 列表：" + strings.Join(titles, "；")
+}
+
+func buildCitationProjection(index int, item citation.Citation) string {
+	lines := []string{buildCitationHeader(index, item)}
+
+	snippet := strings.TrimSpace(item.Snippet)
+	if snippet != "" {
+		lines = append(lines, "   证据摘要："+snippet)
+	}
+
+	window := normalizeEvidenceWindow(item.Window)
+	if len(window) > 0 {
+		lines = append(lines, "   证据窗口：")
+		for _, entry := range window {
+			lines = append(lines, "   - "+entry)
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func buildCitationHeader(index int, item citation.Citation) string {
+	metaParts := make([]string, 0, 2)
+	if sectionType := strings.TrimSpace(item.SectionType); sectionType != "" {
+		metaParts = append(metaParts, "section_type="+sectionType)
+	}
+	if sectionID := strings.TrimSpace(item.SectionID); sectionID != "" {
+		metaParts = append(metaParts, "section_id="+sectionID)
+	}
+
+	if len(metaParts) == 0 {
+		return fmt.Sprintf("%d. [%s]", index, fallbackSectionTitle(item.SectionTitle))
+	}
+
+	return fmt.Sprintf("%d. [%s] %s", index, strings.Join(metaParts, ", "), fallbackSectionTitle(item.SectionTitle))
 }
 
 func trimJSONCodeFence(content string) string {

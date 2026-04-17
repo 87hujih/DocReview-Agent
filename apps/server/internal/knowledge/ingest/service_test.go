@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/knowledge/sections"
@@ -99,6 +100,76 @@ func TestImportDocumentUsesParsedTextWhenParserConfigured(t *testing.T) {
 	}
 }
 
+func TestImportDocumentPersistsStructuredDocumentAndSections(t *testing.T) {
+	repo := &fakeResourceRepo{
+		resource: &postgres.Resource{
+			ID:         "resource-structured",
+			Title:      "结构化简历",
+			SourceType: "upload",
+		},
+		version: &postgres.ResourceVersion{
+			ID:         "version-structured",
+			ResourceID: "resource-structured",
+			Content:    "CampusHub 项目正文",
+			Source:     "assistant_upload",
+		},
+	}
+	service := NewService(
+		repo,
+		fakeEmbedder{},
+		WithParser(fakeDocumentParser{
+			result: &documentparser.Result{
+				Text: "CampusHub 项目正文",
+				Document: &documentparser.ParsedDocument{
+					SourceFormat: "pdf",
+					Blocks: []documentparser.Block{
+						{Type: documentparser.BlockParagraph, Text: "CampusHub 项目正文"},
+					},
+				},
+			},
+		}),
+		WithNormalizer(fakeDocumentNormalizer{
+			result: documentnormalize.NormalizedDocument{
+				Sections: []documentnormalize.NormalizedSection{
+					{
+						SectionKey: "project-1",
+						Type:       documentnormalize.SectionTypeProject,
+						Title:      "CampusHub",
+						Content:    "项目正文",
+						TechStack:  []string{"Go", "Redis"},
+						PageStart:  1,
+						PageEnd:    1,
+					},
+				},
+			},
+		}),
+	)
+
+	result, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName: "resume.pdf",
+		Content:  []byte("%PDF-binary-content"),
+	})
+	if err != nil {
+		t.Fatalf("import document with structure: %v", err)
+	}
+
+	if result.Version == nil || result.Version.ID != "version-structured" {
+		t.Fatalf("expected structured version result, got %#v", result.Version)
+	}
+	if repo.createdVersionStructure == nil {
+		t.Fatal("expected structured version payload to be persisted")
+	}
+	if repo.createdVersionStructure.SourceFormat != "pdf" {
+		t.Fatalf("expected source format pdf, got %q", repo.createdVersionStructure.SourceFormat)
+	}
+	if len(repo.replacedSections) != 1 {
+		t.Fatalf("expected 1 persisted normalized section, got %d", len(repo.replacedSections))
+	}
+	if repo.replacedSections[0].SectionType != string(documentnormalize.SectionTypeProject) {
+		t.Fatalf("expected persisted section type %q, got %q", documentnormalize.SectionTypeProject, repo.replacedSections[0].SectionType)
+	}
+}
+
 func TestImportDocumentReturnsParserErrorBeforeWritingResource(t *testing.T) {
 	repo := &fakeResourceRepo{}
 	parserErr := errors.New("解析失败")
@@ -184,6 +255,48 @@ func TestImportDocumentUsesAtomicGraphWriteForPersistence(t *testing.T) {
 
 	if len(repo.graphChunks) == 0 {
 		t.Fatal("expected graph write to receive chunks")
+	}
+}
+
+func TestImportDocumentSyncsVersionProjectionAfterGraphWrite(t *testing.T) {
+	repo := &fakeResourceRepo{
+		resource: &postgres.Resource{
+			ID:         "resource-sync",
+			Title:      "学生守则",
+			SourceType: "upload",
+		},
+		version: &postgres.ResourceVersion{
+			ID:         "version-sync",
+			ResourceID: "resource-sync",
+			Content:    "# 学生守则\n正文",
+			Source:     "assistant_upload",
+		},
+	}
+	versionSync := &fakeIngestVersionSync{}
+	service := NewService(repo, fakeEmbedder{}, WithVersionSync(versionSync))
+
+	result, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName: "学生守则.md",
+		Content:  []byte("# 学生守则\n正文"),
+	})
+	if err != nil {
+		t.Fatalf("import document with sync: %v", err)
+	}
+
+	if result.Version == nil || result.Version.ID != "version-sync" {
+		t.Fatalf("expected synced version result, got %#v", result.Version)
+	}
+	if repo.graphCalls != 1 {
+		t.Fatalf("expected graph write before sync, got %d", repo.graphCalls)
+	}
+	if versionSync.calls != 1 {
+		t.Fatalf("expected exactly 1 sync call, got %d", versionSync.calls)
+	}
+	if versionSync.lastResourceID != "resource-sync" {
+		t.Fatalf("expected sync resource id %q, got %q", "resource-sync", versionSync.lastResourceID)
+	}
+	if versionSync.lastVersionID != "version-sync" {
+		t.Fatalf("expected sync version id %q, got %q", "version-sync", versionSync.lastVersionID)
 	}
 }
 
@@ -321,22 +434,25 @@ func TestImportDirectorySkipsIndexedResource(t *testing.T) {
 }
 
 type fakeResourceRepo struct {
-	listResult            []postgres.Resource
-	currentVersion        *postgres.ResourceVersion
-	currentVersions       map[string]*postgres.ResourceVersion
-	chunkCount            int
-	chunkCountByVersion   map[string]int
-	createSourceRef       *string
-	createdChunks         []*postgres.ResourceChunk
-	graphChunks           []postgres.ResourceChunkInput
-	resource              *postgres.Resource
-	version               *postgres.ResourceVersion
-	graphCalls            int
-	replaceCalls          int
-	updateSourceRefCalls  []sourceRefUpdateCall
-	lastGraphParams       postgres.CreateDocumentGraphParams
-	lastReplaceVersionID  string
-	lastReplaceResourceID string
+	listResult              []postgres.Resource
+	currentVersion          *postgres.ResourceVersion
+	currentVersions         map[string]*postgres.ResourceVersion
+	chunkCount              int
+	chunkCountByVersion     map[string]int
+	createSourceRef         *string
+	createdChunks           []*postgres.ResourceChunk
+	graphChunks             []postgres.ResourceChunkInput
+	resource                *postgres.Resource
+	version                 *postgres.ResourceVersion
+	graphCalls              int
+	replaceCalls            int
+	structureCalls          int
+	updateSourceRefCalls    []sourceRefUpdateCall
+	lastGraphParams         postgres.CreateDocumentGraphParams
+	lastReplaceVersionID    string
+	lastReplaceResourceID   string
+	createdVersionStructure *postgres.ResourceVersionStructureInput
+	replacedSections        []postgres.ResourceSectionInput
 }
 
 func (r *fakeResourceRepo) List(context.Context) ([]postgres.Resource, error) {
@@ -425,6 +541,28 @@ func (r *fakeResourceRepo) ReplaceVersionChunks(_ context.Context, versionID str
 	return nil
 }
 
+func (r *fakeResourceRepo) CreateVersionStructure(_ context.Context, input postgres.ResourceVersionStructureInput) (*postgres.ResourceVersionStructure, error) {
+	r.structureCalls++
+	r.createdVersionStructure = &input
+	return &postgres.ResourceVersionStructure{
+		ID:               "structure-1",
+		ResourceID:       input.ResourceID,
+		VersionID:        input.VersionID,
+		SourceFormat:     input.SourceFormat,
+		ParserName:       input.ParserName,
+		ParserVersion:    input.ParserVersion,
+		DocumentJSON:     input.DocumentJSON,
+		QualityFlagsJSON: input.QualityFlagsJSON,
+	}, nil
+}
+
+func (r *fakeResourceRepo) ReplaceSectionsForVersion(_ context.Context, versionID string, resourceID string, sections []postgres.ResourceSectionInput) error {
+	r.lastReplaceVersionID = versionID
+	r.lastReplaceResourceID = resourceID
+	r.replacedSections = append([]postgres.ResourceSectionInput(nil), sections...)
+	return nil
+}
+
 type fakeEmbedder struct{}
 
 func (fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -478,6 +616,14 @@ func (p fakeDocumentParser) UnsupportedFileMessage(string) string {
 	return "不支持的文件格式"
 }
 
+type fakeDocumentNormalizer struct {
+	result documentnormalize.NormalizedDocument
+}
+
+func (f fakeDocumentNormalizer) Normalize(documentparser.ParsedDocument) documentnormalize.NormalizedDocument {
+	return f.result
+}
+
 type fakeVersionIndexer struct {
 	buildCalls   int
 	reindexCalls int
@@ -501,6 +647,19 @@ func (f *fakeVersionIndexer) ReindexVersion(_ context.Context, input indexer.Inp
 	f.reindexCalls++
 	f.lastInput = input
 	return f.reindexErr
+}
+
+type fakeIngestVersionSync struct {
+	calls          int
+	lastResourceID string
+	lastVersionID  string
+}
+
+func (f *fakeIngestVersionSync) SyncVersion(_ context.Context, resourceID string, versionID string) error {
+	f.calls++
+	f.lastResourceID = resourceID
+	f.lastVersionID = versionID
+	return nil
 }
 
 type sourceRefUpdateCall struct {

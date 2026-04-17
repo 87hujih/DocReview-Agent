@@ -47,7 +47,7 @@ func TestBuildChatMessagesMergesRuntimeContextIntoSingleSystemPrompt(t *testing.
 		t.Fatalf("expected first message to be system, got %q", messages[0].Role)
 	}
 
-	if !strings.Contains(messages[0].Content, "当前最近可用资源：标题=学生手册") {
+	if !strings.Contains(messages[0].Content, "本轮检索所用资源：标题=学生手册") {
 		t.Fatalf("expected merged resource context in system prompt, got %q", messages[0].Content)
 	}
 
@@ -57,6 +57,186 @@ func TestBuildChatMessagesMergesRuntimeContextIntoSingleSystemPrompt(t *testing.
 
 	if messages[len(messages)-1].Role != schema.User || messages[len(messages)-1].Content != "请总结考勤要求" {
 		t.Fatalf("expected current user message to stay last, got %#v", messages[len(messages)-1])
+	}
+}
+
+func TestBuildRuntimeContextFormatsSectionAwareCitationWindow(t *testing.T) {
+	systemPrompt := buildSystemPrompt(ChatCompletionInput{
+		Citations: []citation.Citation{
+			{
+				CitationID:   "cite_1",
+				SectionID:    "project-1",
+				SectionType:  "project",
+				SectionTitle: "智能排班系统",
+				Snippet:      "智能排班系统",
+				Window: []string{
+					"项目名称：智能排班系统",
+					"项目描述：负责多门店排班、班次冲突校验与成本优化。",
+					"技术栈：Go、React、PostgreSQL",
+				},
+			},
+		},
+		Message: "这个候选人做过哪些项目",
+		Resource: &resourceContext{
+			ID:     "resource-1",
+			Title:  "候选人简历",
+			Source: "upload",
+		},
+	})
+
+	if !strings.Contains(systemPrompt, "section_type=project") {
+		t.Fatalf("expected section type in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "section_id=project-1") {
+		t.Fatalf("expected section id in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "证据窗口") {
+		t.Fatalf("expected evidence window in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "技术栈：Go、React、PostgreSQL") {
+		t.Fatalf("expected window content in system prompt, got %q", systemPrompt)
+	}
+}
+
+func TestBuildRuntimeContextAddsProjectSectionList(t *testing.T) {
+	systemPrompt := buildSystemPrompt(ChatCompletionInput{
+		Citations: []citation.Citation{
+			{
+				CitationID:   "cite_1",
+				SectionID:    "project-1",
+				SectionType:  "project",
+				SectionTitle: "智能排班系统",
+				Snippet:      "智能排班系统",
+				Window: []string{
+					"项目名称：智能排班系统",
+					"项目描述：负责排班。",
+				},
+			},
+			{
+				CitationID:   "cite_2",
+				SectionID:    "project-2",
+				SectionType:  "project",
+				SectionTitle: "智能考勤系统",
+				Snippet:      "智能考勤系统",
+				Window: []string{
+					"项目名称：智能考勤系统",
+					"项目描述：负责考勤分析。",
+				},
+			},
+		},
+		Message: "这个候选人做过哪些项目",
+	})
+
+	if !strings.Contains(systemPrompt, "当前识别到的项目 section 列表") {
+		t.Fatalf("expected project section list in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "智能排班系统") || !strings.Contains(systemPrompt, "智能考勤系统") {
+		t.Fatalf("expected project titles in system prompt, got %q", systemPrompt)
+	}
+}
+
+func TestBuildChatMessagesIncludesSnapshotProjection(t *testing.T) {
+	messages := buildChatMessages(ChatCompletionInput{
+		Snapshot: &SessionContextSnapshot{
+			ActiveResource: &SnapshotActiveResource{
+				ID:         "resource-snapshot",
+				Title:      "第二版学生手册",
+				SourceType: "upload",
+			},
+			PendingTaskSuggestion: &SnapshotPendingTaskSuggestion{
+				MessageID:   "message-suggestion",
+				Instruction: "请整理第二章为执行任务",
+			},
+			LatestTask: &SnapshotLatestTask{
+				ID:     "task-2",
+				Status: "executing",
+			},
+			ConfirmedConstraints: []ConfirmedConstraint{
+				{Label: "输出格式", Value: "表格"},
+			},
+		},
+		Citations: []citation.Citation{
+			{
+				SectionTitle: "第二章",
+				Snippet:      "第二版学生手册强调考勤按天登记。",
+			},
+		},
+		History: []postgres.AssistantMessage{
+			{
+				Role: RoleAssistant,
+				Kind: KindSessionFile,
+				Payload: mustJSON(t, SessionFilePayload{
+					FileName:      "旧学生手册.md",
+					ResourceID:    "resource-history",
+					ResourceTitle: "旧学生手册",
+					SourceType:    "upload",
+					Status:        "ready",
+				}),
+			},
+			{
+				Role: RoleAssistant,
+				Kind: KindTaskCreated,
+				Payload: mustJSON(t, TaskCreatedPayload{
+					Instruction:         "旧任务",
+					ResourceID:          "resource-history",
+					Status:              "pending",
+					SuggestionMessageID: "message-history-suggestion",
+					TaskID:              "task-history",
+				}),
+			},
+		},
+		Message: "继续总结第二章",
+		Resource: &resourceContext{
+			ID:     "resource-snapshot",
+			Title:  "第二版学生手册",
+			Source: "upload",
+		},
+	})
+
+	if got := countAssistantTestMessagesByRole(messages, schema.System); got != 1 {
+		t.Fatalf("expected exactly 1 system message, got %d", got)
+	}
+
+	systemPrompt := messages[0].Content
+	if !strings.Contains(systemPrompt, "当前会话快照") {
+		t.Fatalf("expected snapshot projection in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "当前活跃资源：第二版学生手册") {
+		t.Fatalf("expected snapshot active resource in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "待确认任务建议：请整理第二章为执行任务") {
+		t.Fatalf("expected pending suggestion in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "最近真实任务：ID=task-2；状态=executing") {
+		t.Fatalf("expected latest task snapshot in system prompt, got %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "已确认约束：输出格式=表格") {
+		t.Fatalf("expected confirmed constraints in system prompt, got %q", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "旧学生手册") {
+		t.Fatalf("expected system prompt to prefer snapshot over historical resource text, got %q", systemPrompt)
+	}
+}
+
+func TestBuildHistoryMessagesKeepsRecentWindow(t *testing.T) {
+	history := make([]postgres.AssistantMessage, 0, 18)
+	for index := 1; index <= 18; index++ {
+		history = append(history, postgres.AssistantMessage{
+			Role:    RoleUser,
+			Kind:    KindText,
+			Payload: mustJSON(t, TextPayload{Content: fmt.Sprintf("message-%02d", index)}),
+		})
+	}
+
+	messages := buildHistoryMessages(history)
+	if len(messages) != 16 {
+		t.Fatalf("expected last 16 history messages, got %d", len(messages))
+	}
+	if messages[0].Content != "message-03" {
+		t.Fatalf("expected history window to drop earliest messages, got first=%q", messages[0].Content)
+	}
+	if messages[len(messages)-1].Content != "message-18" {
+		t.Fatalf("expected latest message to be preserved, got last=%q", messages[len(messages)-1].Content)
 	}
 }
 

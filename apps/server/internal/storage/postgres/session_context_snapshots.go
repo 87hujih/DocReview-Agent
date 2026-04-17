@@ -226,6 +226,18 @@ func (r *SessionContextSnapshotRepo) UpdateRollingSummary(ctx context.Context, s
 	return err
 }
 
+// UpdateLatestTaskStatusBySourceMessageID 按任务来源建议消息 ID 更新最近任务状态。
+func (r *SessionContextSnapshotRepo) UpdateLatestTaskStatusBySourceMessageID(ctx context.Context, sourceMessageID string, status string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE session_context_snapshots
+		SET latest_task_status = $2,
+		    updated_at = now()
+		WHERE latest_task_source_message_id = $1
+		  AND latest_task_status IS DISTINCT FROM $2
+	`, strings.TrimSpace(sourceMessageID), strings.TrimSpace(status))
+	return err
+}
+
 func scanSessionContextSnapshot(row pgx.Row) (SessionContextSnapshotRecord, error) {
 	var record SessionContextSnapshotRecord
 
