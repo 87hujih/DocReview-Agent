@@ -215,6 +215,22 @@ func (r *ResourceRepo) CountChunksByVersion(ctx context.Context, versionID strin
 	return count, nil
 }
 
+// ListChunksByVersion 返回指定版本当前已落盘的全部 chunk，并保持 chunk_index 顺序稳定。
+func (r *ResourceRepo) ListChunksByVersion(ctx context.Context, versionID string) ([]ResourceChunk, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, coalesce(section_id::text, ''), section_type, chunk_role, window_group_id, page_start, page_end, metadata_json, created_at
+		FROM resource_chunks
+		WHERE version_id = $1
+		ORDER BY chunk_index ASC, id ASC
+	`, versionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectResourceChunks(rows)
+}
+
 // UpdateSourceRef 为资源回填或更新来源引用。
 func (r *ResourceRepo) UpdateSourceRef(ctx context.Context, resourceID string, sourceRef *string) error {
 	_, err := r.pool.Exec(ctx, `
