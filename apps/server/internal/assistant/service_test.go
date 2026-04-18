@@ -675,8 +675,135 @@ func TestStartConversationStreamRunsDeliberationBeforeMessageStarted(t *testing.
 	}
 }
 
-// TestAppendMessageStreamBuildsTaskSuggestionFromPolicyDecision 验证流式路径的任务建议也只来自 deliberation/policy。
-func TestAppendMessageStreamBuildsTaskSuggestionFromPolicyDecision(t *testing.T) {
+// TestAppendMessageStreamInvokesWorkflowPlannerForWorkflowCandidate 验证流式 workflow candidate 会调用 planner。
+func TestAppendMessageStreamInvokesWorkflowPlannerForWorkflowCandidate(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "students.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	planner := &fakeWorkflowPlanner{
+		result: &WorkflowPlanDecision{
+			ShouldEnterWorkflow:  true,
+			CandidateInstruction: stringPointer("请把学生手册第二章整理成可执行任务"),
+			Confidence:           0.91,
+			Reasons:              []string{"用户明确要求直接开始修改"},
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{chunks: []string{"这件事适合进入任务流。"}},
+		},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "workflow_command",
+				ResponseMode:        ResponseModePlanThenAnswer,
+				ChatFulfillable:     false,
+				WorkflowCommitment:  true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.88,
+				Reasons:             []string{"用户明确要求直接开始修改"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+	)
+
+	err := service.AppendMessageStream(context.Background(), session.ID, "直接开始整理第二章", func(StreamEvent) error { return nil })
+	if err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+	if planner.calls != 1 {
+		t.Fatalf("expected stream path to run planner once, got %d", planner.calls)
+	}
+}
+
+// TestAppendMessageStreamDoesNotEmitTaskSuggestionWhenPlannerKeepsChatFulfillable 验证流式路径被 planner 收回聊天后不会发 task_suggestion。
+func TestAppendMessageStreamDoesNotEmitTaskSuggestionWhenPlannerKeepsChatFulfillable(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "students.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	var emittedTaskSuggestion bool
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{chunks: []string{"我先把第二章原文输出给你。"}},
+			onStream: func(input ChatCompletionInput) {
+				if input.Decision == nil || input.Decision.ResponseMode != ResponseModeAnswerOnly {
+					t.Fatalf("expected stream responder to see answer-only decision, got %#v", input.Decision)
+				}
+			},
+		},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "workflow_command",
+				ResponseMode:        ResponseModePlanThenAnswer,
+				ChatFulfillable:     false,
+				WorkflowCommitment:  true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.76,
+				Reasons:             []string{"先让 planner 判断是否真的需要 workflow"},
+			},
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				ChatFulfillable: true,
+				Confidence:      0.82,
+				Reasons:         []string{"当前请求仍可在聊天里直接完成"},
+			},
+		}),
+	)
+
+	err := service.AppendMessageStream(context.Background(), session.ID, "把第二章先输出一遍", func(event StreamEvent) error {
+		if event.Type == StreamEventTaskSuggestion {
+			emittedTaskSuggestion = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+	if emittedTaskSuggestion {
+		t.Fatal("expected no task_suggestion event when planner keeps request chat-fulfillable")
+	}
+}
+
+// TestAppendMessageStreamEmitsTaskSuggestionWhenPlannerPromotesWorkflow 验证流式路径会基于 planner 结论发 task_suggestion。
+func TestAppendMessageStreamEmitsTaskSuggestionWhenPlannerPromotesWorkflow(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
 	repo.seedMessage(session.ID, postgres.AssistantMessage{
@@ -712,14 +839,21 @@ func TestAppendMessageStreamBuildsTaskSuggestionFromPolicyDecision(t *testing.T)
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
 			result: &DeliberationDecision{
-				RequestKind:              "workflow_command",
-				ResponseMode:             ResponseModeAnswerThenTaskCard,
-				ChatFulfillable:          false,
-				WorkflowCommitment:       true,
-				EvidenceSufficiency:      "sufficient",
-				CandidateTaskInstruction: stringPointer("请把学生手册第二章整理成可执行任务"),
-				Confidence:               0.91,
-				Reasons:                  []string{"用户明确要求直接开始修改"},
+				RequestKind:         "workflow_command",
+				ResponseMode:        ResponseModePlanThenAnswer,
+				ChatFulfillable:     false,
+				WorkflowCommitment:  true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.91,
+				Reasons:             []string{"用户明确要求直接开始修改"},
+			},
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				ShouldEnterWorkflow:  true,
+				CandidateInstruction: stringPointer("请把学生手册第二章整理成可执行任务"),
+				Confidence:           0.94,
+				Reasons:              []string{"planner 认为当前材料足够且目标明确"},
 			},
 		}),
 	)

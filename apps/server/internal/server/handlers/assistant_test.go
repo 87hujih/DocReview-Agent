@@ -534,6 +534,77 @@ func TestAssistantHandlerStreamStillEmitsTaskSuggestionForWorkflowDecision(t *te
 	}
 }
 
+// TestAssistantHandlerStreamKeepsProtocolStableWithWorkflowPlanner 验证接入 workflow planner 后 SSE 协议顺序保持不变。
+func TestAssistantHandlerStreamKeepsProtocolStableWithWorkflowPlanner(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{
+		getConversationResult: &assistant.ConversationResult{
+			Session: postgres.AssistantSession{ID: "session-1"},
+		},
+		appendMessageStreamEvents: []assistant.StreamEvent{
+			{Type: assistant.StreamEventMessageStarted},
+			{Type: assistant.StreamEventMessageDelta, Delta: "这件事适合进入任务流"},
+			{
+				Type: assistant.StreamEventMessageCompleted,
+				Message: &postgres.AssistantMessage{
+					ID:        "message-workflow",
+					SessionID: "session-1",
+					Role:      assistant.RoleAssistant,
+					Kind:      assistant.KindText,
+					Payload:   mustMarshalHandlerJSON(t, assistant.TextPayload{Content: "这件事适合进入任务流。"}),
+				},
+			},
+			{
+				Type: assistant.StreamEventTaskSuggestion,
+				Message: &postgres.AssistantMessage{
+					ID:        "message-suggestion",
+					SessionID: "session-1",
+					Role:      assistant.RoleAssistant,
+					Kind:      assistant.KindTaskSuggestion,
+					Payload: mustMarshalHandlerJSON(t, assistant.TaskSuggestionPayload{
+						ActionLabel:   "确认创建任务",
+						CanCreate:     true,
+						Instruction:   "请把第三个项目改成产品经理版本",
+						ResourceLabel: "简历 · upload",
+						StatusMessage: "资源已明确，可以创建任务。",
+						Title:         "建议创建任务",
+					}),
+				},
+			},
+		},
+	})
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/messages/stream", handler.AppendMessageStream)
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/"+testAssistantSessionUUID+"/messages/stream",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"message":"直接开始改第三个项目，创建任务"}`),
+			Len:  len(`{"message":"直接开始改第三个项目，创建任务"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	events := parseSSEEvents(t, string(response.Body()))
+	expectedTypes := []string{
+		assistant.StreamEventMessageStarted,
+		assistant.StreamEventMessageDelta,
+		assistant.StreamEventMessageCompleted,
+		assistant.StreamEventTaskSuggestion,
+		assistant.StreamEventDone,
+	}
+	if len(events) != len(expectedTypes) {
+		t.Fatalf("expected %d sse events, got %d", len(expectedTypes), len(events))
+	}
+	for index, expected := range expectedTypes {
+		if events[index].Type != expected {
+			t.Fatalf("expected event %d type %q, got %q", index, expected, events[index].Type)
+		}
+	}
+}
+
 // TestAppendMessageStreamHandlerReturnsJSON404BeforeOpeningStream 验证`appendMessageStreamHandler`在返回值分支下的行为，防止同类回归。
 func TestAppendMessageStreamHandlerReturnsJSON404BeforeOpeningStream(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
