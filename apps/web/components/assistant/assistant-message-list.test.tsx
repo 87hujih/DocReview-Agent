@@ -348,5 +348,19 @@ describe("AssistantMessageList", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "复制失败" })).toBeInTheDocument());
   });
+
+  it("renders the copy action as a stacked page icon", () => {
+    render(
+      <AssistantMessageList
+        activeTaskSuggestionId={null}
+        messages={[createTextMessage("assistant-text", "assistant", "原始 **markdown** 文本")]}
+        onConfirmTaskSuggestion={() => {}}
+      />
+    );
+
+    const button = screen.getByRole("button", { name: "复制消息" });
+    expect(button.querySelector('[data-copy-sheet="back"]')).not.toBeNull();
+    expect(button.querySelector('[data-copy-sheet="front"]')).not.toBeNull();
+  });
 });
 

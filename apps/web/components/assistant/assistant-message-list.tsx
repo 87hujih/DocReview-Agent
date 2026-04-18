@@ -48,30 +48,37 @@ function CopyActionIcon({ state }: CopyActionIconProps) {
   if (state === "success") {
     return (
       <svg className={styles.copyIcon} role="presentation" viewBox="0 0 24 24">
-        <path stroke="none" d="M0 0h24v24H0z" fill="none" />
-        <path
-          d="M7 9.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667l0 -8.666"
+        <rect
+          data-copy-sheet="back"
           fill="none"
+          height="11.5"
+          rx="1.75"
           stroke="currentColor"
-          strokeLinecap="round"
           strokeLinejoin="round"
-          strokeWidth="2"
+          strokeWidth="1.7"
+          width="8.6"
+          x="4.75"
+          y="5.25"
+        />
+        <rect
+          data-copy-sheet="front"
+          fill="none"
+          height="12.4"
+          rx="1.75"
+          stroke="currentColor"
+          strokeLinejoin="round"
+          strokeWidth="1.7"
+          width="9.35"
+          x="8.95"
+          y="7.1"
         />
         <path
-          d="M4.012 16.737a2 2 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1"
+          d="M11.3 13.6l2 2.1l4.3 -4.4"
           fill="none"
           stroke="currentColor"
           strokeLinecap="round"
           strokeLinejoin="round"
-          strokeWidth="2"
-        />
-        <path
-          d="M11 14l2 2l4 -4"
-          fill="none"
-          stroke="currentColor"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth="2"
+          strokeWidth="1.8"
         />
       </svg>
     );
@@ -104,22 +111,29 @@ function CopyActionIcon({ state }: CopyActionIconProps) {
 
   return (
     <svg className={styles.copyIcon} role="presentation" viewBox="0 0 24 24">
-      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
-      <path
-        d="M7 9.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667l0 -8.666"
+      <rect
+        data-copy-sheet="back"
         fill="none"
+        height="11.5"
+        rx="1.75"
         stroke="currentColor"
-        strokeLinecap="round"
         strokeLinejoin="round"
-        strokeWidth="2"
+        strokeWidth="1.7"
+        width="8.6"
+        x="4.75"
+        y="5.25"
       />
-      <path
-        d="M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1"
+      <rect
+        data-copy-sheet="front"
         fill="none"
+        height="12.4"
+        rx="1.75"
         stroke="currentColor"
-        strokeLinecap="round"
         strokeLinejoin="round"
-        strokeWidth="2"
+        strokeWidth="1.7"
+        width="9.35"
+        x="8.95"
+        y="7.1"
       />
     </svg>
   );
