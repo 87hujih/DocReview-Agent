@@ -74,10 +74,15 @@ describe("assistant layout css", () => {
     );
 
     expect(messageCss).toMatch(/\.copyAction\s*{[^}]*width:\s*28px;[^}]*height:\s*28px;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*min-height:\s*28px;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*padding:\s*0;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*gap:\s*0;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*flex:\s*0 0 28px;/s);
     expect(messageCss).toMatch(/\.copyAction\s*{[^}]*border:\s*none;/s);
     expect(messageCss).toMatch(/\.copyAction\s*{[^}]*opacity:\s*0(?:\.0+)?;/s);
     expect(messageCss).toMatch(/\.messageRow:hover\s+\.copyAction\s*{[^}]*opacity:\s*1;/s);
     expect(messageCss).toMatch(/\.messageRow:focus-within\s+\.copyAction\s*{[^}]*opacity:\s*1;/s);
     expect(messageCss).toMatch(/\.copyAction:hover\s*{[^}]*background:\s*rgba\(148,\s*163,\s*184,\s*0\.14\);/s);
+    expect(messageCss).toMatch(/\.copyIcon\s*{[^}]*width:\s*20px;[^}]*height:\s*20px;/s);
   });
 });

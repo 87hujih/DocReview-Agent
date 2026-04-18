@@ -125,8 +125,12 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 28px;
   width: 28px;
   height: 28px;
+  min-height: 28px;
+  padding: 0;
+  gap: 0;
   border: none;
   border-radius: 10px;
   background: transparent;
@@ -178,8 +182,8 @@
 }
 
 .copyIcon {
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
 }
 
 .assistantFooter {
