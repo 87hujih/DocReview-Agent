@@ -21,18 +21,7 @@ func ApplyPolicy(state RuntimeState, decision *DeliberationDecision) PolicyDecis
 	switch decision.ResponseMode {
 	case ResponseModeClarifyFirst:
 		return PolicyDecision{AllowClarification: true}
-	case ResponseModePlanThenAnswer:
-		if !decision.WorkflowCommitment {
-			return PolicyDecision{
-				AllowClarification: true,
-				BlockedReason:      "workflow_commitment_required",
-			}
-		}
-		return PolicyDecision{
-			AllowAnswer:           true,
-			AllowWorkflowPlanning: true,
-		}
-	case ResponseModeAnswerThenTaskCard:
+	case ResponseModePlanThenAnswer, ResponseModeAnswerThenTaskCard:
 		if state.ActiveResource == nil {
 			return PolicyDecision{
 				AllowAnswer:   true,
@@ -45,15 +34,10 @@ func ApplyPolicy(state RuntimeState, decision *DeliberationDecision) PolicyDecis
 				BlockedReason:      "workflow_commitment_required",
 			}
 		}
-		if normalizeOptionalText(decision.CandidateTaskInstruction) == nil {
-			return PolicyDecision{
-				AllowAnswer:   true,
-				BlockedReason: "missing_task_instruction",
-			}
-		}
 		return PolicyDecision{
-			AllowAnswer:         true,
-			AllowTaskSuggestion: true,
+			AllowAnswer:           true,
+			AllowTaskSuggestion:   true,
+			AllowWorkflowPlanning: true,
 		}
 	default:
 		return PolicyDecision{AllowAnswer: true}

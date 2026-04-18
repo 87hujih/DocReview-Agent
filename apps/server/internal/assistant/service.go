@@ -104,6 +104,7 @@ type Service struct {
 	retriever     resourceCitationRetriever
 	responder     chatResponder
 	deliberator   deliberationAgent
+	workflowPlanner workflowPlanner
 	tasks         taskCreator
 	summarizer    ConversationSummarizer
 	fileStore     uploadedFileStore
@@ -148,6 +149,9 @@ func NewService(
 	if service.deliberator == nil {
 		service.deliberator = heuristicDeliberationAgent{}
 	}
+	if service.workflowPlanner == nil {
+		service.workflowPlanner = passthroughWorkflowPlanner{}
+	}
 
 	return service
 }
@@ -171,6 +175,13 @@ func WithReplyContextLoader(loader replyContextLoader) ServiceOption {
 func WithDeliberationAgent(agent deliberationAgent) ServiceOption {
 	return func(service *Service) {
 		service.deliberator = agent
+	}
+}
+
+// WithWorkflowPlanner 为 assistant service 注入 workflow planner。
+func WithWorkflowPlanner(planner workflowPlanner) ServiceOption {
+	return func(service *Service) {
+		service.workflowPlanner = planner
 	}
 }
 
@@ -616,6 +627,10 @@ func (s *Service) buildReplyInputs(
 	if err != nil {
 		return nil, nil, err
 	}
+	planDecision, err := s.planWorkflow(ctx, runtimeState, decision, policy)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	reply, err := s.responder.Reply(ctx, ChatCompletionInput{
 		RuntimeState:   runtimeState,
@@ -625,13 +640,13 @@ func (s *Service) buildReplyInputs(
 		History:        replyContext.History,
 		Message:        content,
 		Resource:       replyContext.ActiveResource,
-		Decision:       decisionForReply(decision, policy),
+		Decision:       decisionForReply(decision, policy, planDecision),
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	assistantInputs, err := buildAssistantReplyInputsFromPolicy(reply, decision, policy, runtimeState.ActiveResource)
+	assistantInputs, err := buildAssistantReplyInputsFromPolicy(reply, decision, policy, planDecision, runtimeState.ActiveResource)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -657,6 +672,23 @@ func (s *Service) deliberateTurn(ctx context.Context, state RuntimeState) (*Deli
 	}
 
 	return decision, ApplyPolicy(state, decision), nil
+}
+
+// planWorkflow 在 policy 允许时执行 workflow planner，收敛最终 workflow 入口结论。
+func (s *Service) planWorkflow(
+	ctx context.Context,
+	state RuntimeState,
+	decision *DeliberationDecision,
+	policy PolicyDecision,
+) (*WorkflowPlanDecision, error) {
+	if !policy.AllowWorkflowPlanning {
+		return nil, nil
+	}
+	if s.workflowPlanner == nil {
+		s.workflowPlanner = passthroughWorkflowPlanner{}
+	}
+
+	return s.workflowPlanner.Plan(ctx, state, decision)
 }
 
 // buildUploadMessages 组装 `上传消息`，统一接收者返回结果的结构形态。
@@ -776,6 +808,7 @@ func buildAssistantReplyInputsFromPolicy(
 	reply *ChatCompletionResult,
 	decision *DeliberationDecision,
 	policy PolicyDecision,
+	plan *WorkflowPlanDecision,
 	resource *resourceContext,
 ) ([]postgres.AssistantMessageInput, error) {
 	if reply == nil || strings.TrimSpace(reply.Reply) == "" {
@@ -790,17 +823,17 @@ func buildAssistantReplyInputsFromPolicy(
 	}
 
 	inputs := []postgres.AssistantMessageInput{assistantInput}
-	if !policy.AllowTaskSuggestion || decision == nil || resource == nil {
+	if !policy.AllowTaskSuggestion || decision == nil || plan == nil || resource == nil {
 		return inputs, nil
 	}
-	if decision.CandidateTaskInstruction == nil || strings.TrimSpace(*decision.CandidateTaskInstruction) == "" {
+	if !plan.ShouldEnterWorkflow || plan.CandidateInstruction == nil || strings.TrimSpace(*plan.CandidateInstruction) == "" {
 		return inputs, nil
 	}
 
 	suggestionInput, err := buildMessageInput(
 		RoleAssistant,
 		KindTaskSuggestion,
-		buildTaskSuggestion(strings.TrimSpace(*decision.CandidateTaskInstruction), resource),
+		buildTaskSuggestion(strings.TrimSpace(*plan.CandidateInstruction), resource),
 	)
 	if err != nil {
 		return nil, err
@@ -810,7 +843,7 @@ func buildAssistantReplyInputsFromPolicy(
 }
 
 // decisionForReply 根据 policy 结果收窄 responder 可见的回复模式，避免 reply 误导后续体验。
-func decisionForReply(decision *DeliberationDecision, policy PolicyDecision) *DeliberationDecision {
+func decisionForReply(decision *DeliberationDecision, policy PolicyDecision, plan *WorkflowPlanDecision) *DeliberationDecision {
 	if decision == nil {
 		return nil
 	}
@@ -825,7 +858,31 @@ func decisionForReply(decision *DeliberationDecision, policy PolicyDecision) *De
 	case policy.AllowClarification:
 		cloned.ResponseMode = ResponseModeClarifyFirst
 		cloned.NeedsClarification = true
-	case !policy.AllowTaskSuggestion && cloned.ResponseMode == ResponseModeAnswerThenTaskCard:
+	case plan != nil && plan.NeedsClarification:
+		cloned.ResponseMode = ResponseModeClarifyFirst
+		cloned.ChatFulfillable = false
+		cloned.WorkflowCommitment = false
+		cloned.NeedsClarification = true
+		cloned.ClarificationQuestion = normalizeOptionalText(plan.ClarificationQuestion)
+		cloned.CandidateTaskInstruction = nil
+		cloned.CandidatePlanGoal = nil
+	case plan != nil && plan.ChatFulfillable:
+		cloned.ResponseMode = ResponseModeAnswerOnly
+		cloned.ChatFulfillable = true
+		cloned.WorkflowCommitment = false
+		cloned.NeedsClarification = false
+		cloned.ClarificationQuestion = nil
+		cloned.CandidateTaskInstruction = nil
+		cloned.CandidatePlanGoal = nil
+	case plan != nil && plan.ShouldEnterWorkflow:
+		cloned.ResponseMode = ResponseModeAnswerThenTaskCard
+		cloned.ChatFulfillable = false
+		cloned.WorkflowCommitment = true
+		cloned.NeedsClarification = false
+		cloned.ClarificationQuestion = nil
+		cloned.CandidateTaskInstruction = normalizeOptionalText(plan.CandidateInstruction)
+		cloned.CandidatePlanGoal = normalizeOptionalText(plan.CandidatePlanGoal)
+	case !policy.AllowTaskSuggestion && (cloned.ResponseMode == ResponseModeAnswerThenTaskCard || cloned.ResponseMode == ResponseModePlanThenAnswer):
 		cloned.ResponseMode = ResponseModeAnswerOnly
 	}
 
@@ -1108,6 +1165,10 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 	if err != nil {
 		return err
 	}
+	planDecision, err := s.planWorkflow(ctx, runtimeState, decision, policy)
+	if err != nil {
+		return err
+	}
 
 	stream, err := s.responder.Stream(ctx, ChatCompletionInput{
 		RuntimeState:   runtimeState,
@@ -1117,7 +1178,7 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		History:        replyContext.History,
 		Message:        input.content,
 		Resource:       replyContext.ActiveResource,
-		Decision:       decisionForReply(decision, policy),
+		Decision:       decisionForReply(decision, policy, planDecision),
 	})
 	if err != nil {
 		return mapAssistantStreamError(err)
@@ -1163,7 +1224,7 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		}
 	}
 
-	assistantInputs, err := buildAssistantReplyInputsFromPolicy(result, decision, policy, runtimeState.ActiveResource)
+	assistantInputs, err := buildAssistantReplyInputsFromPolicy(result, decision, policy, planDecision, runtimeState.ActiveResource)
 	if err != nil {
 		return NewStreamError(StreamErrorCodeEmptyReply, "本轮没有生成可展示内容。", err)
 	}

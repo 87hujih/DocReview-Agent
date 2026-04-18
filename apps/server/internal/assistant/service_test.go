@@ -216,6 +216,317 @@ func TestAppendMessageUsesDeliberationBeforeReply(t *testing.T) {
 	}
 }
 
+// TestAppendMessageInvokesWorkflowPlannerOnlyWhenPolicyAllowsPlanning 验证只有 workflow candidate 才会调用 planner。
+func TestAppendMessageInvokesWorkflowPlannerOnlyWhenPolicyAllowsPlanning(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "产品经理简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	planner := &fakeWorkflowPlanner{
+		result: &WorkflowPlanDecision{
+			ShouldEnterWorkflow:  true,
+			CandidateInstruction: stringPointer("请把第三个项目改成产品经理版本"),
+			Confidence:           0.91,
+			Reasons:              []string{"用户明确要求开始执行"},
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我先给你一张任务建议卡。"}},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "workflow_command",
+				ResponseMode:        ResponseModePlanThenAnswer,
+				ChatFulfillable:     false,
+				WorkflowCommitment:  true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.86,
+				Reasons:             []string{"用户已经进入执行语义"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "直接开始改第三个项目，创建任务"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if planner.calls != 1 {
+		t.Fatalf("expected planner to run once, got %d", planner.calls)
+	}
+	if planner.lastState == nil || planner.lastState.ActiveResource == nil || planner.lastState.ActiveResource.ID != "resource-1" {
+		t.Fatalf("expected planner to receive runtime state with active resource, got %#v", planner.lastState)
+	}
+	if planner.lastDecision == nil || planner.lastDecision.ResponseMode != ResponseModePlanThenAnswer {
+		t.Fatalf("expected planner to receive workflow candidate decision, got %#v", planner.lastDecision)
+	}
+}
+
+// TestAppendMessageDoesNotInvokeWorkflowPlannerForReadbackDecision 验证阅读型请求不会调用 planner。
+func TestAppendMessageDoesNotInvokeWorkflowPlannerForReadbackDecision(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "产品经理简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	planner := &fakeWorkflowPlanner{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我先把第三个项目原文输出给你。"}},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.85,
+				Reasons:             []string{"这是文件内阅读请求"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先输出一遍"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if planner.calls != 0 {
+		t.Fatalf("expected readback request to skip planner, got %d calls", planner.calls)
+	}
+}
+
+// TestAppendMessageUsesWorkflowPlannerInstructionForTaskSuggestion 验证任务建议使用 planner 收敛后的 instruction。
+func TestAppendMessageUsesWorkflowPlannerInstructionForTaskSuggestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "students.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "这件事适合进入任务流。"}},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("deliberation 初版 instruction"),
+				Confidence:               0.88,
+				Reasons:                  []string{"用户明确要求开始执行"},
+			},
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				ShouldEnterWorkflow:  true,
+				CandidateInstruction: stringPointer("planner 收敛后的 instruction"),
+				CandidatePlanGoal:    stringPointer("把修订目标整理成可执行任务"),
+				Confidence:           0.93,
+				Reasons:              []string{"planner 认为材料足够且目标明确"},
+			},
+		}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "直接开始整理第二章")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected user/assistant/task_suggestion messages, got %d", len(result.Messages))
+	}
+
+	suggestion := decodeTaskSuggestionPayload(t, result.Messages[2].Payload)
+	if suggestion.Instruction != "planner 收敛后的 instruction" {
+		t.Fatalf("expected suggestion to use planner instruction, got %q", suggestion.Instruction)
+	}
+}
+
+// TestAppendMessageSkipsTaskSuggestionWhenPlannerKeepsRequestChatFulfillable 验证 planner 收回聊天通道时不会弹任务建议。
+func TestAppendMessageSkipsTaskSuggestionWhenPlannerKeepsRequestChatFulfillable(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "产品经理简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "我先把第三个项目原文输出给你。"},
+		onReply: func(input ChatCompletionInput) {
+			if input.Decision == nil || input.Decision.ResponseMode != ResponseModeAnswerOnly || !input.Decision.ChatFulfillable {
+				t.Fatalf("expected responder to see chat-fulfillable reply decision, got %#v", input.Decision)
+			}
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "workflow_command",
+				ResponseMode:        ResponseModePlanThenAnswer,
+				ChatFulfillable:     false,
+				WorkflowCommitment:  true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.79,
+				Reasons:             []string{"需要 planner 判断是否真的要进入 workflow"},
+			},
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				ChatFulfillable: true,
+				Confidence:      0.83,
+				Reasons:         []string{"当前请求仍可直接在聊天里完成"},
+			},
+		}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先输出一遍")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected only user and assistant messages, got %d", len(result.Messages))
+	}
+	if result.Messages[1].Kind != KindText {
+		t.Fatalf("expected assistant text reply, got %s", result.Messages[1].Kind)
+	}
+}
+
+// TestAppendMessageTurnsPlannerClarificationIntoAssistantReplyWithoutTaskSuggestion 验证 planner 要求澄清时只回 assistant 文本。
+func TestAppendMessageTurnsPlannerClarificationIntoAssistantReplyWithoutTaskSuggestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "产品经理简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "你是想先输出原文，还是直接开始改写？"},
+		onReply: func(input ChatCompletionInput) {
+			if input.Decision == nil || !input.Decision.NeedsClarification {
+				t.Fatalf("expected responder to receive clarification decision, got %#v", input.Decision)
+			}
+			if input.Decision.ClarificationQuestion == nil || *input.Decision.ClarificationQuestion != "你是想先输出原文，还是直接开始改写？" {
+				t.Fatalf("expected clarification question to come from planner, got %#v", input.Decision)
+			}
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "workflow_command",
+				ResponseMode:        ResponseModePlanThenAnswer,
+				ChatFulfillable:     false,
+				WorkflowCommitment:  true,
+				EvidenceSufficiency: "partial",
+				Confidence:          0.72,
+				Reasons:             []string{"planner 需要先分流阅读还是改写"},
+			},
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				NeedsClarification:   true,
+				ClarificationQuestion: stringPointer("你是想先输出原文，还是直接开始改写？"),
+				Confidence:            0.87,
+				Reasons:               []string{"用户目标仍有歧义"},
+			},
+		}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "整理一下第三个项目")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected only user and assistant messages, got %d", len(result.Messages))
+	}
+	if result.Messages[1].Kind != KindText {
+		t.Fatalf("expected clarification to stay in assistant text lane, got %s", result.Messages[1].Kind)
+	}
+}
+
 // TestAppendMessagePassesLatestResourceContextAndCitationsToResponder 验证`appendMessage`在合法输入或兼容路径下的行为，防止同类回归。
 func TestAppendMessagePassesLatestResourceContextAndCitationsToResponder(t *testing.T) {
 	repo := newFakeSessionRepo()
@@ -2300,6 +2611,59 @@ func (a *fakeDeliberationAgent) Deliberate(_ context.Context, state RuntimeState
 	clonedDecision.CandidatePlanGoal = normalizeOptionalText(a.result.CandidatePlanGoal)
 	clonedDecision.Reasons = normalizeDecisionReasons(a.result.Reasons)
 	return &clonedDecision, nil
+}
+
+// fakeWorkflowPlanner 作为 workflow planner 的测试替身，用于在用例里提供可控的依赖行为。
+type fakeWorkflowPlanner struct {
+	result       *WorkflowPlanDecision
+	err          error
+	calls        int
+	lastState    *RuntimeState
+	lastDecision *DeliberationDecision
+	onPlan       func(RuntimeState, *DeliberationDecision)
+}
+
+// Plan 实现测试替身需要的 `Plan` 接口方法，为用例分支提供可控返回。
+func (p *fakeWorkflowPlanner) Plan(_ context.Context, state RuntimeState, decision *DeliberationDecision) (*WorkflowPlanDecision, error) {
+	p.calls++
+
+	clonedState := state
+	clonedState.Citations = append([]citation.Citation(nil), state.Citations...)
+	clonedState.History = append([]postgres.AssistantMessage(nil), state.History...)
+	p.lastState = &clonedState
+
+	if decision != nil {
+		clonedDecision := *decision
+		clonedDecision.ClarificationQuestion = normalizeOptionalText(decision.ClarificationQuestion)
+		clonedDecision.CandidateTaskInstruction = normalizeOptionalText(decision.CandidateTaskInstruction)
+		clonedDecision.CandidatePlanGoal = normalizeOptionalText(decision.CandidatePlanGoal)
+		clonedDecision.Reasons = normalizeDecisionReasons(decision.Reasons)
+		p.lastDecision = &clonedDecision
+	} else {
+		p.lastDecision = nil
+	}
+
+	if p.onPlan != nil {
+		p.onPlan(clonedState, p.lastDecision)
+	}
+	if p.err != nil {
+		return nil, p.err
+	}
+	if p.result == nil {
+		return &WorkflowPlanDecision{
+			ChatFulfillable: true,
+			Confidence:      0.5,
+			Reasons:         []string{"default fake workflow planner"},
+		}, nil
+	}
+
+	clonedPlan := *p.result
+	clonedPlan.ClarificationQuestion = normalizeOptionalText(p.result.ClarificationQuestion)
+	clonedPlan.CandidateInstruction = normalizeOptionalText(p.result.CandidateInstruction)
+	clonedPlan.CandidatePlanGoal = normalizeOptionalText(p.result.CandidatePlanGoal)
+	clonedPlan.MissingMaterials = append([]string(nil), p.result.MissingMaterials...)
+	clonedPlan.Reasons = normalizeDecisionReasons(p.result.Reasons)
+	return &clonedPlan, nil
 }
 
 // fakeResourceCitationRetriever 作为资源引用检索器的测试替身，用于在用例里提供可控的依赖行为。

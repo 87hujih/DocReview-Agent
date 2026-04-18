@@ -97,3 +97,43 @@ func normalizeWorkflowPlanMissingMaterials(items []string) []string {
 
 	return normalized
 }
+
+// passthroughWorkflowPlanner 在显式 workflow planner 尚未注入时复用现有 deliberation 结论。
+type passthroughWorkflowPlanner struct{}
+
+// Plan 基于现有 deliberation 结果生成兼容性的 workflow plan，避免主链因为缺省依赖失效。
+func (passthroughWorkflowPlanner) Plan(_ context.Context, _ RuntimeState, decision *DeliberationDecision) (*WorkflowPlanDecision, error) {
+	if decision == nil {
+		return normalizeWorkflowPlanDecision(&WorkflowPlanDecision{
+			ChatFulfillable: true,
+			Confidence:      0,
+			Reasons:         []string{"missing deliberation decision"},
+		})
+	}
+
+	switch decision.ResponseMode {
+	case ResponseModeClarifyFirst:
+		return normalizeWorkflowPlanDecision(&WorkflowPlanDecision{
+			NeedsClarification:   true,
+			ClarificationQuestion: normalizeOptionalText(decision.ClarificationQuestion),
+			Confidence:            decision.Confidence,
+			Reasons:               normalizeDecisionReasons(decision.Reasons),
+		})
+	case ResponseModePlanThenAnswer, ResponseModeAnswerThenTaskCard:
+		if decision.WorkflowCommitment && normalizeOptionalText(decision.CandidateTaskInstruction) != nil {
+			return normalizeWorkflowPlanDecision(&WorkflowPlanDecision{
+				ShouldEnterWorkflow:  true,
+				CandidateInstruction: normalizeOptionalText(decision.CandidateTaskInstruction),
+				CandidatePlanGoal:    normalizeOptionalText(decision.CandidatePlanGoal),
+				Confidence:           decision.Confidence,
+				Reasons:              normalizeDecisionReasons(decision.Reasons),
+			})
+		}
+	}
+
+	return normalizeWorkflowPlanDecision(&WorkflowPlanDecision{
+		ChatFulfillable: true,
+		Confidence:      decision.Confidence,
+		Reasons:         normalizeDecisionReasons(decision.Reasons),
+	})
+}
