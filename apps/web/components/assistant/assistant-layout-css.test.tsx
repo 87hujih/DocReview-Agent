@@ -58,9 +58,26 @@ describe("assistant layout css", () => {
     );
 
     expect(messageCss).not.toContain(".avatar {");
+    expect(messageCss).not.toContain(".role {");
     expect(messageCss).not.toMatch(/\.message\[data-role="assistant"\]\s*{[^}]*background:/s);
     expect(messageCss).not.toMatch(/\.message\[data-role="assistant"\]\s*{[^}]*border:/s);
     expect(messageCss).toMatch(/\.message\[data-role="assistant"\]\s*{[^}]*max-width:\s*100%;/s);
     expect(messageCss).toMatch(/\.message\[data-role="user"\]\s*{[^}]*width:\s*min\(78%,\s*680px\);/s);
+    expect(messageCss).toContain(".assistantFooter");
+    expect(messageCss).toContain(".userCopyRail");
+  });
+
+  it("styles copy actions like subtle hover tools instead of outlined pills", () => {
+    const messageCss = readFileSync(
+      join(process.cwd(), "components", "assistant", "assistant-message-list.module.css"),
+      "utf8"
+    );
+
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*width:\s*28px;[^}]*height:\s*28px;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*border:\s*none;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*opacity:\s*0(?:\.0+)?;/s);
+    expect(messageCss).toMatch(/\.messageRow:hover\s+\.copyAction\s*{[^}]*opacity:\s*1;/s);
+    expect(messageCss).toMatch(/\.messageRow:focus-within\s+\.copyAction\s*{[^}]*opacity:\s*1;/s);
+    expect(messageCss).toMatch(/\.copyAction:hover\s*{[^}]*background:\s*rgba\(148,\s*163,\s*184,\s*0\.14\);/s);
   });
 });

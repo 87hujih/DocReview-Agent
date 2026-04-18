@@ -20,6 +20,10 @@ type AssistantMessageListProps = {
 
 type CopyState = "error" | "success";
 
+type CopyActionIconProps = {
+  state?: CopyState;
+};
+
 function formatTime(isoString: string): string {
   const date = new Date(isoString);
   if (isNaN(date.getTime())) return "";
@@ -38,6 +42,87 @@ function collectConsumedSuggestionIds(messages: AssistantRenderableMessage[]): S
   }
 
   return consumedSuggestionIds;
+}
+
+function CopyActionIcon({ state }: CopyActionIconProps) {
+  if (state === "success") {
+    return (
+      <svg className={styles.copyIcon} role="presentation" viewBox="0 0 24 24">
+        <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+        <path
+          d="M7 9.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667l0 -8.666"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        />
+        <path
+          d="M4.012 16.737a2 2 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        />
+        <path
+          d="M11 14l2 2l4 -4"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        />
+      </svg>
+    );
+  }
+
+  if (state === "error") {
+    return (
+      <svg className={styles.copyIcon} role="presentation" viewBox="0 0 24 24">
+        <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+        <path
+          d="M12 9v4"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        />
+        <path
+          d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        />
+        <path d="M12 16h.01" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg className={styles.copyIcon} role="presentation" viewBox="0 0 24 24">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path
+        d="M7 9.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667l0 -8.666"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+      <path
+        d="M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+    </svg>
+  );
 }
 
 export function AssistantMessageList({
@@ -99,17 +184,33 @@ export function AssistantMessageList({
     scheduleCopyReset(messageId);
   }
 
-  function getCopyLabel(messageId: string): string {
+  function getCopyAriaLabel(messageId: string): string {
     const state = copyStates[messageId];
     if (state === "success") {
-      return "已复制";
+      return "复制成功";
     }
 
     if (state === "error") {
       return "复制失败";
     }
 
-    return "复制";
+    return "复制消息";
+  }
+
+  function renderCopyAction(messageId: string, content: string) {
+    const state = copyStates[messageId];
+
+    return (
+      <button
+        aria-label={getCopyAriaLabel(messageId)}
+        className={styles.copyAction}
+        data-state={state ?? "idle"}
+        onClick={() => void handleCopy(messageId, content)}
+        type="button"
+      >
+        <CopyActionIcon state={state} />
+      </button>
+    );
   }
 
   return (
@@ -226,48 +327,66 @@ export function AssistantMessageList({
         const isStreamingAssistant = message.kind === "local_text" && message.role === "assistant" && message.local_state === "streaming";
         const content = message.payload.content;
 
+        const messageBody = (
+          <>
+            <div className={styles.messageHeader}>
+              <time className={styles.timestamp} dateTime={message.created_at}>
+                {formatTime(message.created_at)}
+              </time>
+            </div>
+
+            {content ? (
+              message.role === "assistant" && !isStreamingAssistant ? (
+                <AssistantMarkdown content={content} />
+              ) : (
+                <p className={styles.content}>{content}</p>
+              )
+            ) : null}
+
+            {isStreamingAssistant ? (
+              <div className={styles.streamFooter}>
+                <div className={styles.pendingRow}>
+                  <span className={styles.pendingPulse} />
+                  <p className={styles.pendingText}>{content ? "继续生成中" : "正在生成回复"}</p>
+                </div>
+
+                {showStopAction && onStopGeneration ? (
+                  <button className={styles.streamAction} onClick={() => onStopGeneration()} type="button">
+                    {stopActionLabel}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        );
+
+        if (message.role === "assistant") {
+          return (
+            <div key={message.id} className={styles.messageRow} data-role={message.role}>
+              <article className={styles.message} data-role={message.role}>
+                {messageBody}
+                {content ? (
+                  <div className={styles.assistantFooter} data-copy-anchor="assistant-footer">
+                    {renderCopyAction(message.id, content)}
+                  </div>
+                ) : null}
+              </article>
+            </div>
+          );
+        }
+
         return (
           <div key={message.id} className={styles.messageRow} data-role={message.role}>
-            <article className={styles.message} data-role={message.role}>
-              <div className={styles.messageHeader}>
-                <p className={styles.role}>{message.role === "assistant" ? "助手" : "你"}</p>
-                <div className={styles.messageActions}>
-                  <time className={styles.timestamp} dateTime={message.created_at}>
-                    {formatTime(message.created_at)}
-                  </time>
-                  <button
-                    className={styles.copyAction}
-                    onClick={() => void handleCopy(message.id, content)}
-                    type="button"
-                  >
-                    {getCopyLabel(message.id)}
-                  </button>
-                </div>
-              </div>
-
+            <div className={styles.userMessageCluster}>
               {content ? (
-                message.role === "assistant" && !isStreamingAssistant ? (
-                  <AssistantMarkdown content={content} />
-                ) : (
-                  <p className={styles.content}>{content}</p>
-                )
-              ) : null}
-
-              {isStreamingAssistant ? (
-                <div className={styles.streamFooter}>
-                  <div className={styles.pendingRow}>
-                    <span aria-hidden="true" className={styles.pendingPulse} />
-                    <p className={styles.pendingText}>{content ? "继续生成中" : "正在生成回复"}</p>
-                  </div>
-
-                  {showStopAction && onStopGeneration ? (
-                    <button className={styles.streamAction} onClick={() => onStopGeneration()} type="button">
-                      {stopActionLabel}
-                    </button>
-                  ) : null}
+                <div className={styles.userCopyRail} data-copy-anchor="user-rail">
+                  {renderCopyAction(message.id, content)}
                 </div>
               ) : null}
-            </article>
+              <article className={styles.message} data-role={message.role}>
+                {messageBody}
+              </article>
+            </div>
           </div>
         );
       })}

@@ -212,7 +212,7 @@ describe("AssistantMessageList", () => {
   });
 
   it("renders copy buttons for assistant and user text messages only", () => {
-    render(
+    const { container } = render(
       <AssistantMessageList
         activeTaskSuggestionId={null}
         messages={[
@@ -239,7 +239,12 @@ describe("AssistantMessageList", () => {
       />
     );
 
-    expect(screen.getAllByRole("button", { name: "复制" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "复制消息" })).toHaveLength(2);
+    expect(screen.queryByText("复制")).not.toBeInTheDocument();
+    expect(screen.queryByText("助手")).not.toBeInTheDocument();
+    expect(screen.queryByText("你")).not.toBeInTheDocument();
+    expect(container.querySelector("[data-copy-anchor='assistant-footer']")).not.toBeNull();
+    expect(container.querySelector("[data-copy-anchor='user-rail']")).not.toBeNull();
   });
 
   it("renders assistant markdown after completion but keeps user text literal", () => {
@@ -318,10 +323,10 @@ describe("AssistantMessageList", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制消息" }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("原始 **markdown** 文本"));
-    expect(screen.getByRole("button", { name: "已复制" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制成功" })).toBeInTheDocument();
   });
 
   it("shows copy failure feedback when clipboard write fails", async () => {
@@ -339,7 +344,7 @@ describe("AssistantMessageList", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制消息" }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: "复制失败" })).toBeInTheDocument());
   });
