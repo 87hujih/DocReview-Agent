@@ -1,10 +1,12 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 import { getFileDownloadURL } from "../../lib/api/files";
 import { formatStatusLabel } from "../../lib/terminal";
 import type { AssistantRenderableMessage } from "../../lib/assistant/types";
+import { AssistantMarkdown } from "./assistant-markdown";
 import styles from "./assistant-message-list.module.css";
 
 type AssistantMessageListProps = {
@@ -15,6 +17,8 @@ type AssistantMessageListProps = {
   showStopAction?: boolean;
   stopActionLabel?: string;
 };
+
+type CopyState = "error" | "success";
 
 function formatTime(isoString: string): string {
   const date = new Date(isoString);
@@ -44,6 +48,17 @@ export function AssistantMessageList({
   showStopAction = false,
   stopActionLabel = "停止生成"
 }: AssistantMessageListProps) {
+  const consumedSuggestionIds = collectConsumedSuggestionIds(messages);
+  const [copyStates, setCopyStates] = useState<Record<string, CopyState>>({});
+  const copyResetTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    return () => {
+      Object.values(copyResetTimers.current).forEach((timerId) => clearTimeout(timerId));
+      copyResetTimers.current = {};
+    };
+  }, []);
+
   if (messages.length === 0) {
     return (
       <div className={styles.emptyState}>
@@ -54,7 +69,48 @@ export function AssistantMessageList({
     );
   }
 
-  const consumedSuggestionIds = collectConsumedSuggestionIds(messages);
+  function scheduleCopyReset(messageId: string) {
+    if (copyResetTimers.current[messageId]) {
+      clearTimeout(copyResetTimers.current[messageId]);
+    }
+
+    copyResetTimers.current[messageId] = setTimeout(() => {
+      setCopyStates((current) => {
+        const next = { ...current };
+        delete next[messageId];
+        return next;
+      });
+      delete copyResetTimers.current[messageId];
+    }, 1600);
+  }
+
+  async function handleCopy(messageId: string, content: string) {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("clipboard unavailable");
+      }
+
+      await navigator.clipboard.writeText(content);
+      setCopyStates((current) => ({ ...current, [messageId]: "success" }));
+    } catch {
+      setCopyStates((current) => ({ ...current, [messageId]: "error" }));
+    }
+
+    scheduleCopyReset(messageId);
+  }
+
+  function getCopyLabel(messageId: string): string {
+    const state = copyStates[messageId];
+    if (state === "success") {
+      return "已复制";
+    }
+
+    if (state === "error") {
+      return "复制失败";
+    }
+
+    return "复制";
+  }
 
   return (
     <div className={styles.list}>
@@ -172,26 +228,30 @@ export function AssistantMessageList({
 
         return (
           <div key={message.id} className={styles.messageRow} data-role={message.role}>
-            <span className={styles.avatar} aria-hidden="true">
-              {message.role === "assistant" ? (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2L14.09 8.26L20 9.27L15.55 13.97L16.91 20L12 16.9L7.09 20L8.45 13.97L4 9.27L9.91 8.26L12 2Z" />
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" />
-                </svg>
-              )}
-            </span>
             <article className={styles.message} data-role={message.role}>
               <div className={styles.messageHeader}>
                 <p className={styles.role}>{message.role === "assistant" ? "助手" : "你"}</p>
-                <time className={styles.timestamp} dateTime={message.created_at}>
-                  {formatTime(message.created_at)}
-                </time>
+                <div className={styles.messageActions}>
+                  <time className={styles.timestamp} dateTime={message.created_at}>
+                    {formatTime(message.created_at)}
+                  </time>
+                  <button
+                    className={styles.copyAction}
+                    onClick={() => void handleCopy(message.id, content)}
+                    type="button"
+                  >
+                    {getCopyLabel(message.id)}
+                  </button>
+                </div>
               </div>
 
-              {content ? <p className={styles.content}>{content}</p> : null}
+              {content ? (
+                message.role === "assistant" && !isStreamingAssistant ? (
+                  <AssistantMarkdown content={content} />
+                ) : (
+                  <p className={styles.content}>{content}</p>
+                )
+              ) : null}
 
               {isStreamingAssistant ? (
                 <div className={styles.streamFooter}>

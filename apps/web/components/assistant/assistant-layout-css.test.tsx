@@ -50,4 +50,17 @@ describe("assistant layout css", () => {
     expect(navCss).toMatch(/\.nav\s*{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(navCss).toMatch(/\.body\s*{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);
   });
+
+  it("uses a wide assistant content flow without user avatar placeholders", () => {
+    const messageCss = readFileSync(
+      join(process.cwd(), "components", "assistant", "assistant-message-list.module.css"),
+      "utf8"
+    );
+
+    expect(messageCss).not.toContain(".avatar {");
+    expect(messageCss).not.toMatch(/\.message\[data-role="assistant"\]\s*{[^}]*background:/s);
+    expect(messageCss).not.toMatch(/\.message\[data-role="assistant"\]\s*{[^}]*border:/s);
+    expect(messageCss).toMatch(/\.message\[data-role="assistant"\]\s*{[^}]*max-width:\s*100%;/s);
+    expect(messageCss).toMatch(/\.message\[data-role="user"\]\s*{[^}]*width:\s*min\(78%,\s*680px\);/s);
+  });
 });
