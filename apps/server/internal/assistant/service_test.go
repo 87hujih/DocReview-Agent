@@ -323,6 +323,258 @@ func TestAppendMessageUsesOrdinalGroundingBeforeAnsweringForFirstProject(t *test
 	}
 }
 
+func TestAppendMessageReturnsDeterministicSectionExcerptWithoutCallingResponder(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历阅读")
+	projector := &fakeSessionContextProjector{}
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	reader := &fakeActiveFileResourceReader{
+		currentVersion: &postgres.ResourceVersion{ID: "version-1", ResourceID: "resource-1"},
+		sectionByOrder: map[string]*postgres.ResourceSection{
+			sectionOrderKey("project", 3): {ID: "section-3", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "第三个项目", Content: "第三个项目完整正文"},
+		},
+		sectionByID: map[string]*postgres.ResourceSection{
+			"section-3": {ID: "section-3", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "第三个项目", Content: "第三个项目完整正文"},
+		},
+	}
+	responder := &fakeChatResponder{result: &ChatCompletionResult{Reply: "不该被调用"}}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithActiveFileResourceReader(reader),
+		WithSessionContextProjector(projector),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先输出一遍")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if responder.replyCalls != 0 {
+		t.Fatalf("expected deterministic path to skip responder, got %d calls", responder.replyCalls)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected 2 messages without task suggestion, got %d", len(result.Messages))
+	}
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if !strings.Contains(reply.Content, "第三个项目完整正文") {
+		t.Fatalf("expected deterministic excerpt reply, got %#v", reply)
+	}
+	if len(projector.groundingCalls) != 1 || projector.groundingCalls[0].ActiveSectionID != "section-3" {
+		t.Fatalf("expected grounding projection for deterministic excerpt, got %#v", projector.groundingCalls)
+	}
+}
+
+func TestAppendMessageListsProjectsDeterministically(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历阅读")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	reader := &fakeActiveFileResourceReader{
+		currentVersion: &postgres.ResourceVersion{ID: "version-1", ResourceID: "resource-1"},
+		sectionsByType: map[string][]postgres.ResourceSection{
+			"project": {
+				{ID: "section-1", VersionID: "version-1", SectionType: "project", SectionOrder: 1, Title: "CampusHub"},
+				{ID: "section-2", VersionID: "version-1", SectionType: "project", SectionOrder: 2, Title: "选课助手"},
+			},
+		},
+	}
+	responder := &fakeChatResponder{result: &ChatCompletionResult{Reply: "不该被调用"}}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithActiveFileResourceReader(reader),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "有哪些项目")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if responder.replyCalls != 0 {
+		t.Fatalf("expected deterministic path to skip responder, got %d calls", responder.replyCalls)
+	}
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if !strings.Contains(reply.Content, "1. CampusHub") || !strings.Contains(reply.Content, "2. 选课助手") {
+		t.Fatalf("expected deterministic project list, got %#v", reply)
+	}
+}
+
+func TestAppendMessageDoesNotCreateTaskSuggestionForReadRequest(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历阅读")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	reader := &fakeActiveFileResourceReader{
+		currentVersion: &postgres.ResourceVersion{ID: "version-1", ResourceID: "resource-1"},
+		sectionByOrder: map[string]*postgres.ResourceSection{
+			sectionOrderKey("project", 3): {ID: "section-3", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "第三个项目", Content: "第三个项目完整正文"},
+		},
+		sectionByID: map[string]*postgres.ResourceSection{
+			"section-3": {ID: "section-3", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "第三个项目", Content: "第三个项目完整正文"},
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{},
+		nil,
+		WithActiveFileResourceReader(reader),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目输出一遍")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected 2 messages without task suggestion, got %d", len(result.Messages))
+	}
+	if result.Messages[1].Kind != KindText {
+		t.Fatalf("expected deterministic read request to persist text reply only, got %#v", result.Messages[1])
+	}
+}
+
+func TestAppendMessageFeedsSectionTextIntoResponderForTransformRequest(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历分析")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	reader := &fakeActiveFileResourceReader{
+		currentVersion: &postgres.ResourceVersion{ID: "version-1", ResourceID: "resource-1"},
+		sectionByOrder: map[string]*postgres.ResourceSection{
+			sectionOrderKey("project", 3): {ID: "section-3", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "第三个项目", Content: "原始第三个项目正文"},
+		},
+		sectionByID: map[string]*postgres.ResourceSection{
+			"section-3": {ID: "section-3", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "第三个项目", Content: "原始第三个项目正文"},
+		},
+	}
+	responder := &fakeChatResponder{result: &ChatCompletionResult{Reply: "可以把亮点前置。"}}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithActiveFileResourceReader(reader),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "第三个项目怎么优化"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if responder.lastInput == nil || responder.lastInput.GroundedSection == nil {
+		t.Fatalf("expected grounded section input, got %#v", responder.lastInput)
+	}
+	if responder.lastInput.GroundedSection.SectionText != "原始第三个项目正文" {
+		t.Fatalf("expected concrete section text, got %#v", responder.lastInput.GroundedSection)
+	}
+}
+
+func TestAppendMessageRejectsReadRequestWhenSectionCannotBeLocated(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历阅读")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	responder := &fakeChatResponder{result: &ChatCompletionResult{Reply: "不该被调用"}}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithActiveFileResourceReader(&fakeActiveFileResourceReader{
+			currentVersion: &postgres.ResourceVersion{ID: "version-1", ResourceID: "resource-1"},
+		}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先输出一遍")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if responder.replyCalls != 0 {
+		t.Fatalf("expected missing section path to skip responder, got %d calls", responder.replyCalls)
+	}
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if !strings.Contains(reply.Content, "证据不足") && !strings.Contains(reply.Content, "无法定位") {
+		t.Fatalf("expected abstain reply when section cannot be located, got %#v", reply)
+	}
+}
+
 func TestAppendMessageTriggersAsyncSummaryRefreshAfterPersistingAssistantReply(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("长上下文会话")
@@ -1758,8 +2010,8 @@ func seedTextConversationHistory(t *testing.T, repo *fakeSessionRepo, sessionID 
 }
 
 type fakeDocumentImporter struct {
-	result *ImportDocumentResult
-	err    error
+	result    *ImportDocumentResult
+	err       error
 	lastInput *ImportDocumentInput
 }
 
@@ -1840,13 +2092,16 @@ func (c *fakeTaskCreator) CreateTaskFromAssistantSuggestion(
 }
 
 type fakeChatResponder struct {
-	lastInput *ChatCompletionInput
-	result    *ChatCompletionResult
-	err       error
-	stream    *fakeChatStream
+	lastInput   *ChatCompletionInput
+	result      *ChatCompletionResult
+	err         error
+	stream      *fakeChatStream
+	replyCalls  int
+	streamCalls int
 }
 
 func (r *fakeChatResponder) Reply(_ context.Context, input ChatCompletionInput) (*ChatCompletionResult, error) {
+	r.replyCalls++
 	copied := input
 	copied.History = append([]postgres.AssistantMessage(nil), input.History...)
 	copied.Citations = append([]citation.Citation(nil), input.Citations...)
@@ -1865,6 +2120,7 @@ func (r *fakeChatResponder) Reply(_ context.Context, input ChatCompletionInput) 
 }
 
 func (r *fakeChatResponder) Stream(_ context.Context, input ChatCompletionInput) (chatStream, error) {
+	r.streamCalls++
 	copied := input
 	copied.History = append([]postgres.AssistantMessage(nil), input.History...)
 	copied.Citations = append([]citation.Citation(nil), input.Citations...)
@@ -1939,11 +2195,11 @@ func (r *fakeResourceCitationRetriever) SearchByResource(_ context.Context, reso
 }
 
 type fakeConversationSummarizer struct {
-	result       *SummaryResult
-	err          error
-	calls        int
-	lastInput    SummaryInput
-	onSummarize  func(input SummaryInput)
+	result      *SummaryResult
+	err         error
+	calls       int
+	lastInput   SummaryInput
+	onSummarize func(input SummaryInput)
 }
 
 func (s *fakeConversationSummarizer) Summarize(_ context.Context, input SummaryInput) (*SummaryResult, error) {
@@ -1964,11 +2220,11 @@ func (s *fakeConversationSummarizer) Summarize(_ context.Context, input SummaryI
 }
 
 type fakeSummarySnapshotRepo struct {
-	record                  *postgres.SessionContextSnapshotRecord
-	err                     error
-	advanceCalls            int
-	lastSummary             *string
-	lastNextBaseSequenceNo  int
+	record                 *postgres.SessionContextSnapshotRecord
+	err                    error
+	advanceCalls           int
+	lastSummary            *string
+	lastNextBaseSequenceNo int
 }
 
 func (r *fakeSummarySnapshotRepo) GetBySessionID(_ context.Context, sessionID string) (*postgres.SessionContextSnapshotRecord, error) {

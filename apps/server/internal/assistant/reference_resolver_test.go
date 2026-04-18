@@ -81,6 +81,19 @@ func TestReferenceResolverFallsBackToActiveSectionForAnaphora(t *testing.T) {
 	}
 }
 
+func TestReferenceResolverTreatsReadingSectionAnaphoraAsActiveSection(t *testing.T) {
+	resolver := ReferenceResolver{}
+	snapshot := &SessionContextSnapshot{
+		ActiveSection:    &SnapshotActiveSection{ID: "section-campushub", Type: "project"},
+		ActiveEntityName: stringPointer("CampusHub"),
+	}
+
+	result := resolver.Resolve("这一节先输出一遍", snapshot)
+	if result == nil || result.SectionID != "section-campushub" {
+		t.Fatalf("expected reading anaphora to resolve active section, got %#v", result)
+	}
+}
+
 func TestContextLoaderLoadsGroundingState(t *testing.T) {
 	loader := NewContextLoader(&fakeSessionContextSnapshotReader{
 		record: &postgres.SessionContextSnapshotRecord{

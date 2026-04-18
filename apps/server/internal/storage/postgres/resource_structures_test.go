@@ -109,6 +109,212 @@ func TestStructuredDocumentRepoPersistsVersionStructureAndSections(t *testing.T)
 	}
 }
 
+func TestResourceStructureRepoGetsSectionByID(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	structureRepo := NewResourceStructureRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, resourceRepo, ctx, "读取模式按ID测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	sections, err := structureRepo.ReplaceSectionsForVersion(ctx, version.ID, resource.ID, []ResourceSectionInput{
+		{
+			SectionKey:   "project-1",
+			SectionType:  "project",
+			SectionOrder: 1,
+			Title:        "CampusHub",
+			Content:      "项目一正文",
+		},
+		{
+			SectionKey:   "project-2",
+			SectionType:  "project",
+			SectionOrder: 2,
+			Title:        "选课助手",
+			Content:      "项目二正文",
+		},
+	})
+	if err != nil {
+		t.Fatalf("replace sections: %v", err)
+	}
+
+	got, err := structureRepo.GetSectionByID(ctx, sections[1].ID)
+	if err != nil {
+		t.Fatalf("get section by id: %v", err)
+	}
+	if got == nil || got.Title != "选课助手" {
+		t.Fatalf("expected section %q, got %#v", "选课助手", got)
+	}
+}
+
+func TestResourceStructureRepoGetsSectionByOrder(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	structureRepo := NewResourceStructureRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, resourceRepo, ctx, "读取模式按序号测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	_, err := structureRepo.ReplaceSectionsForVersion(ctx, version.ID, resource.ID, []ResourceSectionInput{
+		{
+			SectionKey:   "project-1",
+			SectionType:  "project",
+			SectionOrder: 1,
+			Title:        "CampusHub",
+			Content:      "项目一正文",
+		},
+		{
+			SectionKey:   "project-2",
+			SectionType:  "project",
+			SectionOrder: 2,
+			Title:        "选课助手",
+			Content:      "项目二正文",
+		},
+		{
+			SectionKey:   "skills",
+			SectionType:  "skills",
+			SectionOrder: 1,
+			Title:        "技术栈",
+			Content:      "Go PostgreSQL",
+		},
+	})
+	if err != nil {
+		t.Fatalf("replace sections: %v", err)
+	}
+
+	got, err := structureRepo.GetSectionByOrder(ctx, version.ID, "project", 2)
+	if err != nil {
+		t.Fatalf("get section by order: %v", err)
+	}
+	if got == nil || got.Title != "选课助手" {
+		t.Fatalf("expected second project, got %#v", got)
+	}
+}
+
+func TestResourceStructureRepoFindsSectionByEntityNameOrAlias(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	structureRepo := NewResourceStructureRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, resourceRepo, ctx, "读取模式实体定位测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	_, err := structureRepo.ReplaceSectionsForVersion(ctx, version.ID, resource.ID, []ResourceSectionInput{
+		{
+			SectionKey:          "project-1",
+			SectionType:         "project",
+			SectionOrder:        1,
+			Title:               "CampusHub校园活动平台",
+			CanonicalEntityName: stringPointer("CampusHub校园活动平台"),
+			AliasesJSON:         mustMarshalJSON(t, []string{"CampusHub", "活动平台"}),
+			Content:             "项目一正文",
+		},
+	})
+	if err != nil {
+		t.Fatalf("replace sections: %v", err)
+	}
+
+	canonical, err := structureRepo.FindSectionByEntity(ctx, version.ID, "CampusHub校园活动平台")
+	if err != nil {
+		t.Fatalf("find section by canonical entity: %v", err)
+	}
+	if canonical == nil || canonical.Title != "CampusHub校园活动平台" {
+		t.Fatalf("expected canonical match, got %#v", canonical)
+	}
+
+	alias, err := structureRepo.FindSectionByEntity(ctx, version.ID, "CampusHub")
+	if err != nil {
+		t.Fatalf("find section by alias: %v", err)
+	}
+	if alias == nil || alias.Title != "CampusHub校园活动平台" {
+		t.Fatalf("expected alias match, got %#v", alias)
+	}
+}
+
+func TestResourceRepoExposesActiveFileSectionReaders(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	structureRepo := NewResourceStructureRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, resourceRepo, ctx, "读取模式资源包装测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	sections, err := structureRepo.ReplaceSectionsForVersion(ctx, version.ID, resource.ID, []ResourceSectionInput{
+		{
+			SectionKey:          "project-1",
+			SectionType:         "project",
+			SectionOrder:        1,
+			Title:               "CampusHub校园活动平台",
+			CanonicalEntityName: stringPointer("CampusHub校园活动平台"),
+			AliasesJSON:         mustMarshalJSON(t, []string{"CampusHub"}),
+			Content:             "项目一正文",
+		},
+		{
+			SectionKey:   "project-2",
+			SectionType:  "project",
+			SectionOrder: 2,
+			Title:        "选课助手",
+			Content:      "项目二正文",
+		},
+		{
+			SectionKey:   "skills",
+			SectionType:  "skills",
+			SectionOrder: 3,
+			Title:        "技术栈",
+			Content:      "Go PostgreSQL",
+		},
+	})
+	if err != nil {
+		t.Fatalf("replace sections: %v", err)
+	}
+
+	gotByID, err := resourceRepo.GetSectionByID(ctx, sections[0].ID)
+	if err != nil {
+		t.Fatalf("resource repo get section by id: %v", err)
+	}
+	if gotByID == nil || gotByID.Title != "CampusHub校园活动平台" {
+		t.Fatalf("expected get section by id to return CampusHub, got %#v", gotByID)
+	}
+
+	gotByOrder, err := resourceRepo.GetSectionByOrder(ctx, version.ID, "project", 2)
+	if err != nil {
+		t.Fatalf("resource repo get section by order: %v", err)
+	}
+	if gotByOrder == nil || gotByOrder.Title != "选课助手" {
+		t.Fatalf("expected second project, got %#v", gotByOrder)
+	}
+
+	gotByEntity, err := resourceRepo.FindSectionByEntity(ctx, version.ID, "CampusHub")
+	if err != nil {
+		t.Fatalf("resource repo find section by entity: %v", err)
+	}
+	if gotByEntity == nil || gotByEntity.Title != "CampusHub校园活动平台" {
+		t.Fatalf("expected entity match, got %#v", gotByEntity)
+	}
+
+	readingSections, err := resourceRepo.ListSectionsForReading(ctx, version.ID, "project")
+	if err != nil {
+		t.Fatalf("resource repo list sections for reading: %v", err)
+	}
+	if len(readingSections) != 2 {
+		t.Fatalf("expected 2 reading sections, got %d", len(readingSections))
+	}
+	if readingSections[0].SectionOrder != 1 || readingSections[1].SectionOrder != 2 {
+		t.Fatalf("expected reading sections ordered by section_order, got %#v", readingSections)
+	}
+}
+
 func TestStructuredDocumentRepoPersistsEmptyParserVersionAsNonNullText(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)

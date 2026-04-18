@@ -67,3 +67,33 @@ func TestEvidenceGateAcceptsConcreteSectionEvidence(t *testing.T) {
 		t.Fatalf("expected concrete section evidence to pass, got reason %q", reason)
 	}
 }
+
+func TestEvidenceGateRejectsExcerptRequestWithoutConcreteSection(t *testing.T) {
+	ok, reason := EvaluateEvidenceQuality(EvidenceEvaluationInput{
+		QueryIntent: "excerpt_section",
+	})
+	if ok {
+		t.Fatal("expected excerpt request without concrete section to fail")
+	}
+	if reason != "missing_concrete_section" {
+		t.Fatalf("expected missing_concrete_section, got %q", reason)
+	}
+}
+
+func TestEvidenceGateRejectsGroundedSectionWithHeadingOnlyContent(t *testing.T) {
+	ok, reason := EvaluateEvidenceQuality(EvidenceEvaluationInput{
+		QueryIntent: "transform_section",
+		GroundedSection: &GroundedAnalysisInput{
+			SectionID:    "section-campushub",
+			SectionType:  "project",
+			SectionTitle: "CampusHub",
+			SectionText:  "项目描述：",
+		},
+	})
+	if ok {
+		t.Fatal("expected heading-only grounded section to fail")
+	}
+	if reason != "heading_only" {
+		t.Fatalf("expected heading_only, got %q", reason)
+	}
+}
