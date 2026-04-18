@@ -135,28 +135,17 @@
   border-radius: 10px;
   background: transparent;
   color: rgba(206, 224, 235, 0.48);
-  opacity: 0;
-  transform: translateY(2px);
+  opacity: 1;
+  transform: translateY(0);
   transition:
     background 140ms ease,
-    color 140ms ease,
-    opacity 140ms ease,
-    transform 140ms ease;
-}
-
-.messageRow:hover .copyAction {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.messageRow:focus-within .copyAction {
-  opacity: 1;
-  transform: translateY(0);
+    color 140ms ease;
 }
 
 .copyAction:hover {
   background: rgba(148, 163, 184, 0.14);
   color: #f4fbff;
+  outline: none;
 }
 
 .copyAction:focus-visible {
@@ -406,13 +395,6 @@
 
   .userCopyRail {
     padding-top: 18px;
-  }
-}
-
-@media (hover: none) {
-  .copyAction {
-    opacity: 1;
-    transform: translateY(0);
   }
 }
 

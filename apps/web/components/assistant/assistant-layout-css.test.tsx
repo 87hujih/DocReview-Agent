@@ -79,10 +79,11 @@ describe("assistant layout css", () => {
     expect(messageCss).toMatch(/\.copyAction\s*{[^}]*gap:\s*0;/s);
     expect(messageCss).toMatch(/\.copyAction\s*{[^}]*flex:\s*0 0 28px;/s);
     expect(messageCss).toMatch(/\.copyAction\s*{[^}]*border:\s*none;/s);
-    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*opacity:\s*0(?:\.0+)?;/s);
-    expect(messageCss).toMatch(/\.messageRow:hover\s+\.copyAction\s*{[^}]*opacity:\s*1;/s);
-    expect(messageCss).toMatch(/\.messageRow:focus-within\s+\.copyAction\s*{[^}]*opacity:\s*1;/s);
-    expect(messageCss).toMatch(/\.copyAction:hover\s*{[^}]*background:\s*rgba\(148,\s*163,\s*184,\s*0\.14\);/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*opacity:\s*1;/s);
+    expect(messageCss).not.toContain(".messageRow:hover .copyAction");
+    expect(messageCss).not.toContain(".messageRow:focus-within .copyAction");
+    expect(messageCss).toMatch(/\.copyAction:hover\s*{[^}]*background:\s*rgba\(148,\s*163,\s*184,\s*0\.14\);[^}]*outline:\s*none;/s);
+    expect(messageCss).toMatch(/\.copyAction:focus-visible\s*{[^}]*outline:\s*none;/s);
     expect(messageCss).toMatch(/\.copyIcon\s*{[^}]*width:\s*20px;[^}]*height:\s*20px;/s);
   });
 });
