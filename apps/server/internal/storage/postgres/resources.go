@@ -6,6 +6,9 @@ import (
 	"strings"
 	"time"
 
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
+	"agent_project/apps/server/internal/knowledge/sections"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pgvector/pgvector-go"
@@ -266,6 +269,8 @@ func (r *ResourceRepo) UpdateSourceRef(ctx context.Context, resourceID string, s
 
 // CreateChunk 持久化一个可检索分块，并把生成出的 ID 和时间戳回填到入参结构体。
 func (r *ResourceRepo) CreateChunk(ctx context.Context, chunk *ResourceChunk) error {
+	normalizeChunkForInsert(chunk)
+
 	return r.pool.QueryRow(ctx, `
 		INSERT INTO resource_chunks (
 		    resource_id,
@@ -670,6 +675,8 @@ func collectResourceChunks(rows pgx.Rows) ([]ResourceChunk, error) {
 }
 
 func createChunkTx(ctx context.Context, tx pgx.Tx, chunk *ResourceChunk) error {
+	normalizeChunkForInsert(chunk)
+
 	return tx.QueryRow(ctx, `
 		INSERT INTO resource_chunks (
 		    resource_id,
@@ -776,4 +783,81 @@ func scanResourceChunk(row pgx.Row) (ResourceChunk, error) {
 
 func normalizeLexicalQuery(query string) string {
 	return strings.ToLower(strings.TrimSpace(query))
+}
+
+func normalizeChunkForInsert(chunk *ResourceChunk) {
+	if chunk == nil {
+		return
+	}
+
+	chunk.SectionType = defaultChunkSectionType(chunk.SectionType, chunk.SectionTitle)
+	chunk.ChunkRole = defaultChunkRole(chunk.ChunkRole)
+	chunk.WindowGroupID = defaultChunkWindowGroupID(chunk.WindowGroupID, chunk.SectionID, chunk.SectionTitle)
+	chunk.PageStart, chunk.PageEnd = defaultChunkPages(chunk.PageStart, chunk.PageEnd)
+}
+
+func defaultChunkSectionType(current *string, sectionTitle string) *string {
+	if trimmed := optionalTrimmedText(derefOptionalString(current)); trimmed != nil {
+		return trimmed
+	}
+
+	defaultType := string(documentnormalize.SectionTypeSection)
+	title := strings.TrimSpace(sectionTitle)
+	if title == "" || title == sections.WholeDocumentTitle {
+		defaultType = string(documentnormalize.SectionTypeDocument)
+	}
+
+	return &defaultType
+}
+
+func defaultChunkRole(current *string) *string {
+	if trimmed := optionalTrimmedText(derefOptionalString(current)); trimmed != nil {
+		return trimmed
+	}
+
+	defaultRole := "section_body"
+	return &defaultRole
+}
+
+func defaultChunkWindowGroupID(current *string, sectionID *string, sectionTitle string) *string {
+	if trimmed := optionalTrimmedText(derefOptionalString(current)); trimmed != nil {
+		return trimmed
+	}
+	if trimmed := optionalTrimmedText(derefOptionalString(sectionID)); trimmed != nil {
+		return trimmed
+	}
+	if trimmed := optionalTrimmedText(sectionTitle); trimmed != nil {
+		return trimmed
+	}
+
+	empty := ""
+	return &empty
+}
+
+func defaultChunkPages(pageStart *int, pageEnd *int) (*int, *int) {
+	start := 0
+	end := 0
+
+	if pageStart != nil {
+		start = *pageStart
+	}
+	if pageEnd != nil {
+		end = *pageEnd
+	}
+	if pageStart == nil && pageEnd != nil {
+		start = end
+	}
+	if pageEnd == nil && pageStart != nil {
+		end = start
+	}
+
+	return &start, &end
+}
+
+func derefOptionalString(value *string) string {
+	if value == nil {
+		return ""
+	}
+
+	return *value
 }

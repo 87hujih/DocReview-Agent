@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +122,227 @@ func TestMigrationCreatesTaskQueryIndexes(t *testing.T) {
 	for _, expectedIndex := range expectedIndexes {
 		if !slices.Contains(indexNames, expectedIndex) {
 			t.Fatalf("expected index %q to exist, got %v", expectedIndex, indexNames)
+		}
+	}
+}
+
+// TestRunMigrationsRepairsLegacyResourceSectionsTable 验证 011 迁移能兼容已存在旧版 resource_sections 表的数据库。
+func TestRunMigrationsRepairsLegacyResourceSectionsTable(t *testing.T) {
+	pool := newRawTestPool(t)
+	ctx := testContext(t)
+
+	if err := runMigrationsBefore(ctx, pool, "011_grounded_structured_document_rag_phase1.sql"); err != nil {
+		t.Fatalf("run migrations before 011: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE resource_sections (
+			id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			resource_id           UUID        NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+			version_id            UUID        NOT NULL REFERENCES resource_versions(id) ON DELETE CASCADE,
+			section_key           TEXT        NOT NULL,
+			section_type          TEXT        NOT NULL,
+			title                 TEXT        NOT NULL DEFAULT '',
+			canonical_entity_name TEXT,
+			aliases_json          JSONB       NOT NULL DEFAULT '[]'::jsonb,
+			summary               TEXT        NOT NULL DEFAULT '',
+			content               TEXT        NOT NULL DEFAULT '',
+			page_start            INT,
+			page_end              INT,
+			metadata_json         JSONB       NOT NULL DEFAULT '{}'::jsonb,
+			created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+		)
+	`); err != nil {
+		t.Fatalf("create legacy resource_sections: %v", err)
+	}
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations against legacy resource_sections: %v", err)
+	}
+
+	type columnInfo struct {
+		ColumnName string
+		IsNullable string
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT column_name, is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'resource_sections'
+		  AND column_name = 'section_order'
+	`)
+	if err != nil {
+		t.Fatalf("query resource_sections.section_order: %v", err)
+	}
+	defer rows.Close()
+
+	columns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (columnInfo, error) {
+		var info columnInfo
+		err := row.Scan(&info.ColumnName, &info.IsNullable)
+		return info, err
+	})
+	if err != nil {
+		t.Fatalf("collect section_order column info: %v", err)
+	}
+	if len(columns) != 1 {
+		t.Fatalf("expected section_order column to exist once, got %d", len(columns))
+	}
+	if columns[0].IsNullable != "NO" {
+		t.Fatalf("expected section_order to be non-nullable, got %q", columns[0].IsNullable)
+	}
+
+	var indexCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND tablename = 'resource_sections'
+		  AND indexname = 'idx_resource_sections_version_order'
+	`).Scan(&indexCount); err != nil {
+		t.Fatalf("query idx_resource_sections_version_order: %v", err)
+	}
+	if indexCount != 1 {
+		t.Fatalf("expected idx_resource_sections_version_order to exist once, got %d", indexCount)
+	}
+}
+
+func TestMigrationAlignsResourceChunkGroundedColumnsWithDefaults(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	type columnInfo struct {
+		ColumnName    string
+		IsNullable    string
+		ColumnDefault *string
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT column_name, is_nullable, column_default
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'resource_chunks'
+		  AND column_name = ANY($1)
+		ORDER BY column_name
+	`, []string{
+		"chunk_role",
+		"metadata_json",
+		"page_end",
+		"page_start",
+		"section_type",
+		"window_group_id",
+	})
+	if err != nil {
+		t.Fatalf("query resource_chunks grounded columns: %v", err)
+	}
+	defer rows.Close()
+
+	columns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (columnInfo, error) {
+		var info columnInfo
+		err := row.Scan(&info.ColumnName, &info.IsNullable, &info.ColumnDefault)
+		return info, err
+	})
+	if err != nil {
+		t.Fatalf("collect resource_chunks grounded columns: %v", err)
+	}
+
+	expected := map[string]struct {
+		nullable string
+		def      string
+	}{
+		"chunk_role":      {nullable: "NO", def: "'section_body'::text"},
+		"metadata_json":   {nullable: "NO", def: "'{}'::jsonb"},
+		"page_end":        {nullable: "NO", def: "0"},
+		"page_start":      {nullable: "NO", def: "0"},
+		"section_type":    {nullable: "NO", def: "'document'::text"},
+		"window_group_id": {nullable: "NO", def: "''::text"},
+	}
+	if len(columns) != len(expected) {
+		t.Fatalf("expected %d grounded columns, got %d (%v)", len(expected), len(columns), columns)
+	}
+
+	for _, column := range columns {
+		want, ok := expected[column.ColumnName]
+		if !ok {
+			t.Fatalf("unexpected grounded column info: %#v", column)
+		}
+		if column.IsNullable != want.nullable {
+			t.Fatalf("expected %s nullable=%s, got %s", column.ColumnName, want.nullable, column.IsNullable)
+		}
+		if column.ColumnDefault == nil || *column.ColumnDefault != want.def {
+			t.Fatalf("expected %s default %q, got %#v", column.ColumnName, want.def, column.ColumnDefault)
+		}
+	}
+}
+
+func TestMigrationAlignsResourceVersionStructureColumnsWithDefaults(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	type columnInfo struct {
+		ColumnName    string
+		IsNullable    string
+		ColumnDefault *string
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT column_name, is_nullable, column_default
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'resource_version_structures'
+		  AND column_name = ANY($1)
+		ORDER BY column_name
+	`, []string{
+		"parser_name",
+		"parser_version",
+		"quality_flags_json",
+		"source_format",
+	})
+	if err != nil {
+		t.Fatalf("query resource_version_structures columns: %v", err)
+	}
+	defer rows.Close()
+
+	columns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (columnInfo, error) {
+		var info columnInfo
+		err := row.Scan(&info.ColumnName, &info.IsNullable, &info.ColumnDefault)
+		return info, err
+	})
+	if err != nil {
+		t.Fatalf("collect resource_version_structures columns: %v", err)
+	}
+
+	expected := map[string]struct {
+		nullable string
+		def      string
+	}{
+		"parser_name":        {nullable: "NO", def: "''::text"},
+		"parser_version":     {nullable: "NO", def: "''::text"},
+		"quality_flags_json": {nullable: "NO", def: "'[]'::jsonb"},
+		"source_format":      {nullable: "NO", def: "''::text"},
+	}
+	if len(columns) != len(expected) {
+		t.Fatalf("expected %d structure columns, got %d (%v)", len(expected), len(columns), columns)
+	}
+
+	for _, column := range columns {
+		want, ok := expected[column.ColumnName]
+		if !ok {
+			t.Fatalf("unexpected structure column info: %#v", column)
+		}
+		if column.IsNullable != want.nullable {
+			t.Fatalf("expected %s nullable=%s, got %s", column.ColumnName, want.nullable, column.IsNullable)
+		}
+		if column.ColumnDefault == nil || *column.ColumnDefault != want.def {
+			t.Fatalf("expected %s default %q, got %#v", column.ColumnName, want.def, column.ColumnDefault)
 		}
 	}
 }
@@ -699,6 +922,34 @@ func TestCountChunksByVersion(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("expected 1 chunk after insert, got %d", count)
 	}
+
+	var (
+		sectionType   *string
+		chunkRole     *string
+		windowGroupID *string
+		pageStart     *int
+		pageEnd       *int
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT section_type, chunk_role, window_group_id, page_start, page_end
+		FROM resource_chunks
+		WHERE version_id = $1
+		  AND chunk_index = 0
+	`, version.ID).Scan(&sectionType, &chunkRole, &windowGroupID, &pageStart, &pageEnd); err != nil {
+		t.Fatalf("query inserted chunk defaults: %v", err)
+	}
+	if sectionType == nil || *sectionType != "section" {
+		t.Fatalf("expected default section_type %q, got %#v", "section", sectionType)
+	}
+	if chunkRole == nil || *chunkRole != "section_body" {
+		t.Fatalf("expected default chunk_role %q, got %#v", "section_body", chunkRole)
+	}
+	if windowGroupID == nil || *windowGroupID != "考勤管理" {
+		t.Fatalf("expected default window_group_id %q, got %#v", "考勤管理", windowGroupID)
+	}
+	if pageStart == nil || *pageStart != 0 || pageEnd == nil || *pageEnd != 0 {
+		t.Fatalf("expected default pages 0-0, got %#v-%#v", pageStart, pageEnd)
+	}
 }
 
 func TestReplaceVersionChunksIsIdempotent(t *testing.T) {
@@ -747,7 +998,14 @@ func TestReplaceVersionChunksIsIdempotent(t *testing.T) {
 	}
 
 	rows, err := pool.Query(ctx, `
-		SELECT section_title, content, chunk_index
+		SELECT section_title,
+		       content,
+		       chunk_index,
+		       section_type,
+		       chunk_role,
+		       window_group_id,
+		       page_start,
+		       page_end
 		FROM resource_chunks
 		WHERE version_id = $1
 	`, version.ID)
@@ -760,12 +1018,17 @@ func TestReplaceVersionChunksIsIdempotent(t *testing.T) {
 		sectionTitle string
 		content      string
 		chunkIndex   int
+		sectionType  *string
+		chunkRole    *string
+		windowGroup  *string
+		pageStart    *int
+		pageEnd      *int
 	}
 
 	storedChunks := make([]storedChunk, 0)
 	for rows.Next() {
 		var chunk storedChunk
-		if err := rows.Scan(&chunk.sectionTitle, &chunk.content, &chunk.chunkIndex); err != nil {
+		if err := rows.Scan(&chunk.sectionTitle, &chunk.content, &chunk.chunkIndex, &chunk.sectionType, &chunk.chunkRole, &chunk.windowGroup, &chunk.pageStart, &chunk.pageEnd); err != nil {
 			t.Fatalf("scan stored chunk: %v", err)
 		}
 
@@ -786,6 +1049,18 @@ func TestReplaceVersionChunksIsIdempotent(t *testing.T) {
 	}
 	if storedChunks[0].chunkIndex != 0 {
 		t.Fatalf("expected chunk index 0, got %d", storedChunks[0].chunkIndex)
+	}
+	if storedChunks[0].sectionType == nil || *storedChunks[0].sectionType != "section" {
+		t.Fatalf("expected stored section_type %q, got %#v", "section", storedChunks[0].sectionType)
+	}
+	if storedChunks[0].chunkRole == nil || *storedChunks[0].chunkRole != "section_body" {
+		t.Fatalf("expected stored chunk_role %q, got %#v", "section_body", storedChunks[0].chunkRole)
+	}
+	if storedChunks[0].windowGroup == nil || *storedChunks[0].windowGroup != "考勤管理" {
+		t.Fatalf("expected stored window_group_id %q, got %#v", "考勤管理", storedChunks[0].windowGroup)
+	}
+	if storedChunks[0].pageStart == nil || *storedChunks[0].pageStart != 0 || storedChunks[0].pageEnd == nil || *storedChunks[0].pageEnd != 0 {
+		t.Fatalf("expected stored pages 0-0, got %#v-%#v", storedChunks[0].pageStart, storedChunks[0].pageEnd)
 	}
 }
 
@@ -945,6 +1220,62 @@ func newRawTestPool(t *testing.T) *pgxpool.Pool {
 	ctx := testContext(t)
 	databaseURL := testDatabaseURL()
 	return postgrestest.NewRawIsolatedPool(t, ctx, databaseURL, "storage_postgres_raw", NewPool)
+}
+
+// runMigrationsBefore 在测试里按顺序执行指定迁移之前的所有 SQL，便于构造历史 schema。
+func runMigrationsBefore(ctx context.Context, pool *pgxpool.Pool, stopBefore string) error {
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("read migrations dir: %w", err)
+	}
+
+	var migrationNames []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		if entry.Name() >= stopBefore {
+			continue
+		}
+
+		migrationNames = append(migrationNames, entry.Name())
+	}
+
+	sort.Strings(migrationNames)
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration conn: %w", err)
+	}
+	defer conn.Release()
+
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, migrationLockNamespace, migrationLockKey); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
+	}
+
+	for _, migrationName := range migrationNames {
+		statement, err := migrationsFS.ReadFile("migrations/" + migrationName)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", migrationName, err)
+		}
+		if _, err := tx.Exec(ctx, string(statement)); err != nil {
+			return fmt.Errorf("exec migration %s: %w", migrationName, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit migration tx: %w", err)
+	}
+
+	return nil
 }
 
 // testDatabaseURL 从当前配置中读取测试数据库地址。

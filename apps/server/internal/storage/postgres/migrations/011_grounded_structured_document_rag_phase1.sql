@@ -33,6 +33,64 @@ CREATE TABLE IF NOT EXISTS resource_sections (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 兼容历史库里已存在旧版 resource_sections 表但缺少新列的情况。
+ALTER TABLE resource_sections
+    ADD COLUMN IF NOT EXISTS section_order INT,
+    ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS canonical_entity_name TEXT,
+    ADD COLUMN IF NOT EXISTS aliases_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS content TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS page_start INT,
+    ADD COLUMN IF NOT EXISTS page_end INT,
+    ADD COLUMN IF NOT EXISTS metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+UPDATE resource_sections
+SET title = COALESCE(title, ''),
+    aliases_json = COALESCE(aliases_json, '[]'::jsonb),
+    summary = COALESCE(summary, ''),
+    content = COALESCE(content, ''),
+    metadata_json = COALESCE(metadata_json, '{}'::jsonb),
+    created_at = COALESCE(created_at, now())
+WHERE title IS NULL
+   OR aliases_json IS NULL
+   OR summary IS NULL
+   OR content IS NULL
+   OR metadata_json IS NULL
+   OR created_at IS NULL;
+
+WITH ordered_sections AS (
+    SELECT id,
+           ROW_NUMBER() OVER (
+               PARTITION BY version_id
+               ORDER BY page_start NULLS LAST, page_end NULLS LAST, created_at ASC, id ASC
+           ) - 1 AS normalized_order
+    FROM resource_sections
+    WHERE section_order IS NULL
+)
+UPDATE resource_sections AS sections
+SET section_order = ordered_sections.normalized_order
+FROM ordered_sections
+WHERE sections.id = ordered_sections.id;
+
+ALTER TABLE resource_sections
+    ALTER COLUMN title SET DEFAULT '',
+    ALTER COLUMN aliases_json SET DEFAULT '[]'::jsonb,
+    ALTER COLUMN summary SET DEFAULT '',
+    ALTER COLUMN content SET DEFAULT '',
+    ALTER COLUMN metadata_json SET DEFAULT '{}'::jsonb,
+    ALTER COLUMN created_at SET DEFAULT now();
+
+ALTER TABLE resource_sections
+    ALTER COLUMN section_order SET NOT NULL,
+    ALTER COLUMN title SET NOT NULL,
+    ALTER COLUMN aliases_json SET NOT NULL,
+    ALTER COLUMN summary SET NOT NULL,
+    ALTER COLUMN content SET NOT NULL,
+    ALTER COLUMN metadata_json SET NOT NULL,
+    ALTER COLUMN created_at SET NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_resource_sections_version_order
 ON resource_sections (version_id, section_order);
 

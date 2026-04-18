@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	"agent_project/apps/server/internal/knowledge/sections"
 	"agent_project/apps/server/internal/storage/postgres"
 )
@@ -53,8 +54,20 @@ func TestReindexVersionRebuildsMarkdownChunks(t *testing.T) {
 	if repo.lastChunks[0].SectionTitle != "考勤管理" {
 		t.Fatalf("expected first section title %q, got %q", "考勤管理", repo.lastChunks[0].SectionTitle)
 	}
+	if repo.lastChunks[0].SectionType == nil || *repo.lastChunks[0].SectionType != string(documentnormalize.SectionTypeSection) {
+		t.Fatalf("expected first section type %q, got %#v", documentnormalize.SectionTypeSection, repo.lastChunks[0].SectionType)
+	}
+	if repo.lastChunks[0].WindowGroupID == nil || *repo.lastChunks[0].WindowGroupID != "考勤管理" {
+		t.Fatalf("expected first window_group_id %q, got %#v", "考勤管理", repo.lastChunks[0].WindowGroupID)
+	}
 	if repo.lastChunks[1].SectionTitle != "请假管理" {
 		t.Fatalf("expected second section title %q, got %q", "请假管理", repo.lastChunks[1].SectionTitle)
+	}
+	if repo.lastChunks[1].SectionType == nil || *repo.lastChunks[1].SectionType != string(documentnormalize.SectionTypeSection) {
+		t.Fatalf("expected second section type %q, got %#v", documentnormalize.SectionTypeSection, repo.lastChunks[1].SectionType)
+	}
+	if repo.lastChunks[1].WindowGroupID == nil || *repo.lastChunks[1].WindowGroupID != "请假管理" {
+		t.Fatalf("expected second window_group_id %q, got %#v", "请假管理", repo.lastChunks[1].WindowGroupID)
 	}
 }
 
@@ -86,6 +99,15 @@ func TestReindexVersionUsesSingleChunkFallback(t *testing.T) {
 	if repo.lastChunks[0].Content != "这是没有二级标题的正文。" {
 		t.Fatalf("expected fallback content %q, got %q", "这是没有二级标题的正文。", repo.lastChunks[0].Content)
 	}
+	if repo.lastChunks[0].SectionType == nil || *repo.lastChunks[0].SectionType != string(documentnormalize.SectionTypeDocument) {
+		t.Fatalf("expected fallback section type %q, got %#v", documentnormalize.SectionTypeDocument, repo.lastChunks[0].SectionType)
+	}
+	if repo.lastChunks[0].ChunkRole == nil || *repo.lastChunks[0].ChunkRole != "section_body" {
+		t.Fatalf("expected fallback chunk role %q, got %#v", "section_body", repo.lastChunks[0].ChunkRole)
+	}
+	if repo.lastChunks[0].WindowGroupID == nil || *repo.lastChunks[0].WindowGroupID != sections.WholeDocumentTitle {
+		t.Fatalf("expected fallback window_group_id %q, got %#v", sections.WholeDocumentTitle, repo.lastChunks[0].WindowGroupID)
+	}
 }
 
 func TestBuildVersionChunksKeepsWholeDocumentFallback(t *testing.T) {
@@ -112,6 +134,15 @@ func TestBuildVersionChunksKeepsWholeDocumentFallback(t *testing.T) {
 	}
 	if chunks[0].SectionTitle != sections.WholeDocumentTitle {
 		t.Fatalf("expected fallback section title %q, got %q", sections.WholeDocumentTitle, chunks[0].SectionTitle)
+	}
+	if chunks[0].SectionType == nil || *chunks[0].SectionType != string(documentnormalize.SectionTypeDocument) {
+		t.Fatalf("expected fallback section type %q, got %#v", documentnormalize.SectionTypeDocument, chunks[0].SectionType)
+	}
+	if chunks[0].ChunkRole == nil || *chunks[0].ChunkRole != "section_body" {
+		t.Fatalf("expected fallback chunk role %q, got %#v", "section_body", chunks[0].ChunkRole)
+	}
+	if chunks[0].WindowGroupID == nil || *chunks[0].WindowGroupID != sections.WholeDocumentTitle {
+		t.Fatalf("expected fallback window_group_id %q, got %#v", sections.WholeDocumentTitle, chunks[0].WindowGroupID)
 	}
 }
 

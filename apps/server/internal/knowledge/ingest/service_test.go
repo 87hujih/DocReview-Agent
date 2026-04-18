@@ -274,6 +274,9 @@ func TestImportDocumentUsesAtomicGraphWriteForPersistence(t *testing.T) {
 	if len(repo.graphChunks) == 0 {
 		t.Fatal("expected graph write to receive chunks")
 	}
+	if repo.graphChunks[0].SectionType == nil || *repo.graphChunks[0].SectionType != string(documentnormalize.SectionTypeDocument) {
+		t.Fatalf("expected fallback graph chunk section type %q, got %#v", documentnormalize.SectionTypeDocument, repo.graphChunks[0].SectionType)
+	}
 }
 
 func TestImportDocumentAllowsCustomSourceTypeAndVersionSource(t *testing.T) {

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	"agent_project/apps/server/internal/knowledge/chunker"
+	"agent_project/apps/server/internal/knowledge/sections"
 	"agent_project/apps/server/internal/storage/postgres"
 
 	"github.com/pgvector/pgvector-go"
@@ -51,11 +53,23 @@ func (s *Service) BuildVersionChunks(ctx context.Context, input Input) ([]postgr
 	if len(chunks) == 0 {
 		legacyChunks := chunker.ChunkMarkdown(content)
 		chunks = make([]postgres.ResourceChunkInput, 0, len(legacyChunks))
+		sectionOrders := make(map[string]int, len(legacyChunks))
 		for _, chunk := range legacyChunks {
+			sectionKey := strings.TrimSpace(chunk.SectionTitle)
+			sectionOrders[sectionKey]++
+			sectionType := string(documentnormalize.SectionTypeSection)
+			if sectionKey == sections.WholeDocumentTitle {
+				sectionType = string(documentnormalize.SectionTypeDocument)
+			}
+
 			chunks = append(chunks, postgres.ResourceChunkInput{
-				ChunkIndex:   chunk.ChunkIndex,
-				SectionTitle: chunk.SectionTitle,
-				Content:      chunk.Content,
+				ChunkIndex:     chunk.ChunkIndex,
+				SectionTitle:   chunk.SectionTitle,
+				Content:        chunk.Content,
+				SectionType:    optionalString(sectionType),
+				ChunkRole:      optionalString("section_body"),
+				WindowGroupID:  optionalString(sectionKey),
+				OrderInSection: optionalInt(sectionOrders[sectionKey]),
 			})
 		}
 	}

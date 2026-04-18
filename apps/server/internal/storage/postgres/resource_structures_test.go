@@ -109,6 +109,111 @@ func TestStructuredDocumentRepoPersistsVersionStructureAndSections(t *testing.T)
 	}
 }
 
+func TestStructuredDocumentRepoPersistsEmptyParserVersionAsNonNullText(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	structureRepo := NewResourceStructureRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, resourceRepo, ctx, "结构化解析版本默认值测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	documentJSON := mustMarshalJSON(t, map[string]any{
+		"source_format": "markdown",
+		"blocks": []map[string]any{
+			{"type": "paragraph", "text": "解析版本为空时也要能写库"},
+		},
+	})
+
+	createdStructure, err := structureRepo.CreateVersionStructure(ctx, CreateVersionStructureParams{
+		ResourceID:    resource.ID,
+		VersionID:     version.ID,
+		SourceFormat:  "markdown",
+		ParserName:    "text",
+		DocumentJSON:  documentJSON,
+		ParserVersion: "",
+	})
+	if err != nil {
+		t.Fatalf("create version structure with empty parser version: %v", err)
+	}
+	if createdStructure.ParserVersion == nil {
+		t.Fatal("expected parser version pointer, got nil")
+	}
+	if *createdStructure.ParserVersion != "" {
+		t.Fatalf("expected empty parser version, got %q", *createdStructure.ParserVersion)
+	}
+
+	var storedParserVersion string
+	if err := pool.QueryRow(ctx, `
+		SELECT parser_version
+		FROM resource_version_structures
+		WHERE version_id = $1
+	`, version.ID).Scan(&storedParserVersion); err != nil {
+		t.Fatalf("query parser_version: %v", err)
+	}
+	if storedParserVersion != "" {
+		t.Fatalf("expected stored parser_version to be empty string, got %q", storedParserVersion)
+	}
+}
+
+func TestStructuredDocumentRepoReplaceSectionsDefaultsNonNullGroundedFields(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	structureRepo := NewResourceStructureRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, resourceRepo, ctx, "结构化分节默认值测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	sections, err := structureRepo.ReplaceSectionsForVersion(ctx, version.ID, resource.ID, []ResourceSectionInput{{
+		SectionKey:   "general-1",
+		SectionType:  " ",
+		SectionOrder: 0,
+		Title:        "概览",
+		Summary:      "摘要",
+		Content:      "正文",
+	}})
+	if err != nil {
+		t.Fatalf("replace sections for version with defaults: %v", err)
+	}
+	if len(sections) != 1 {
+		t.Fatalf("expected 1 inserted section, got %d", len(sections))
+	}
+
+	if sections[0].SectionType != "unknown" {
+		t.Fatalf("expected default section type %q, got %q", "unknown", sections[0].SectionType)
+	}
+	if sections[0].PageStart == nil || *sections[0].PageStart != 0 {
+		t.Fatalf("expected default page_start 0, got %#v", sections[0].PageStart)
+	}
+	if sections[0].PageEnd == nil || *sections[0].PageEnd != 0 {
+		t.Fatalf("expected default page_end 0, got %#v", sections[0].PageEnd)
+	}
+
+	var (
+		storedSectionType string
+		storedPageStart   int
+		storedPageEnd     int
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT section_type, page_start, page_end
+		FROM resource_sections
+		WHERE version_id = $1
+	`, version.ID).Scan(&storedSectionType, &storedPageStart, &storedPageEnd); err != nil {
+		t.Fatalf("query section defaults: %v", err)
+	}
+	if storedSectionType != "unknown" {
+		t.Fatalf("expected stored section_type %q, got %q", "unknown", storedSectionType)
+	}
+	if storedPageStart != 0 || storedPageEnd != 0 {
+		t.Fatalf("expected stored pages 0-0, got %d-%d", storedPageStart, storedPageEnd)
+	}
+}
+
 func TestStructuredDocumentRepoReplaceVersionChunksPreservesGroundedMetadata(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)

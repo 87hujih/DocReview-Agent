@@ -80,6 +80,8 @@ func NewResourceStructureRepo(pool *pgxpool.Pool) *ResourceStructureRepo {
 
 // CreateVersionStructure 为某个版本写入结构化解析结果。
 func (r *ResourceStructureRepo) CreateVersionStructure(ctx context.Context, params CreateVersionStructureParams) (*ResourceVersionStructure, error) {
+	params = normalizeVersionStructureParamsForInsert(params)
+
 	structure, err := scanResourceVersionStructure(r.pool.QueryRow(ctx, `
 		INSERT INTO resource_version_structures (
 		    resource_id,
@@ -103,9 +105,9 @@ func (r *ResourceStructureRepo) CreateVersionStructure(ctx context.Context, para
 	`,
 		params.ResourceID,
 		params.VersionID,
-		strings.TrimSpace(params.SourceFormat),
-		strings.TrimSpace(params.ParserName),
-		optionalTrimmedText(params.ParserVersion),
+		params.SourceFormat,
+		params.ParserName,
+		params.ParserVersion,
 		normalizeJSONArgument(params.DocumentJSON, `{}`),
 		normalizeJSONArgument(params.QualityFlagsJSON, `[]`),
 	))
@@ -161,6 +163,8 @@ func (r *ResourceStructureRepo) ReplaceSectionsForVersion(ctx context.Context, v
 
 	inserted := make([]ResourceSection, 0, len(sections))
 	for _, section := range sections {
+		section = normalizeSectionInputForInsert(section)
+
 		record, err := scanResourceSection(tx.QueryRow(ctx, `
 			INSERT INTO resource_sections (
 			    resource_id,
@@ -196,14 +200,14 @@ func (r *ResourceStructureRepo) ReplaceSectionsForVersion(ctx context.Context, v
 		`,
 			resourceID,
 			versionID,
-			strings.TrimSpace(section.SectionKey),
-			strings.TrimSpace(section.SectionType),
+			section.SectionKey,
+			section.SectionType,
 			section.SectionOrder,
-			strings.TrimSpace(section.Title),
-			trimOptionalString(section.CanonicalEntityName),
+			section.Title,
+			section.CanonicalEntityName,
 			normalizeJSONArgument(section.AliasesJSON, `[]`),
-			strings.TrimSpace(section.Summary),
-			strings.TrimSpace(section.Content),
+			section.Summary,
+			section.Content,
 			section.PageStart,
 			section.PageEnd,
 			normalizeJSONArgument(section.MetadataJSON, `{}`),
@@ -352,6 +356,55 @@ func normalizeJSONArgument(value []byte, fallback string) string {
 	}
 
 	return trimmed
+}
+
+func normalizeVersionStructureParamsForInsert(params CreateVersionStructureParams) CreateVersionStructureParams {
+	params.SourceFormat = strings.TrimSpace(params.SourceFormat)
+	params.ParserName = strings.TrimSpace(params.ParserName)
+	params.ParserVersion = strings.TrimSpace(params.ParserVersion)
+
+	return params
+}
+
+func normalizeSectionInputForInsert(section ResourceSectionInput) ResourceSectionInput {
+	section.SectionKey = strings.TrimSpace(section.SectionKey)
+	section.SectionType = defaultSectionType(section.SectionType)
+	section.Title = strings.TrimSpace(section.Title)
+	section.CanonicalEntityName = trimOptionalString(section.CanonicalEntityName)
+	section.Summary = strings.TrimSpace(section.Summary)
+	section.Content = strings.TrimSpace(section.Content)
+	section.PageStart, section.PageEnd = defaultSectionPages(section.PageStart, section.PageEnd)
+
+	return section
+}
+
+func defaultSectionType(sectionType string) string {
+	trimmed := strings.TrimSpace(sectionType)
+	if trimmed == "" {
+		return "unknown"
+	}
+
+	return trimmed
+}
+
+func defaultSectionPages(pageStart *int, pageEnd *int) (*int, *int) {
+	start := 0
+	end := 0
+
+	if pageStart != nil {
+		start = *pageStart
+	}
+	if pageEnd != nil {
+		end = *pageEnd
+	}
+	if pageStart == nil && pageEnd != nil {
+		start = end
+	}
+	if pageEnd == nil && pageStart != nil {
+		end = start
+	}
+
+	return &start, &end
 }
 
 func optionalTrimmedText(value string) *string {
