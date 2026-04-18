@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -256,6 +257,153 @@ func (r *ResourceStructureRepo) ListSectionsByVersion(ctx context.Context, versi
 	return collectResourceSections(rows)
 }
 
+// GetSectionByID 按主键读取单个逻辑 section，不存在时返回 nil。
+func (r *ResourceStructureRepo) GetSectionByID(ctx context.Context, sectionID string) (*ResourceSection, error) {
+	sectionID = strings.TrimSpace(sectionID)
+	if sectionID == "" {
+		return nil, nil
+	}
+
+	section, err := scanResourceSection(r.pool.QueryRow(ctx, `
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       section_key,
+		       section_type,
+		       section_order,
+		       title,
+		       canonical_entity_name,
+		       aliases_json,
+		       summary,
+		       content,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
+		FROM resource_sections
+		WHERE id = $1
+	`, sectionID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &section, nil
+}
+
+// GetSectionByOrder 按版本、类型和顺序号读取单个逻辑 section，不存在时返回 nil。
+func (r *ResourceStructureRepo) GetSectionByOrder(ctx context.Context, versionID string, sectionType string, ordinal int) (*ResourceSection, error) {
+	section, err := scanResourceSection(r.pool.QueryRow(ctx, `
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       section_key,
+		       section_type,
+		       section_order,
+		       title,
+		       canonical_entity_name,
+		       aliases_json,
+		       summary,
+		       content,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
+		FROM resource_sections
+		WHERE version_id = $1
+		  AND section_type = $2
+		  AND section_order = $3
+		ORDER BY created_at ASC
+		LIMIT 1
+	`, versionID, strings.TrimSpace(sectionType), ordinal))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &section, nil
+}
+
+// FindSectionByEntity 优先按 canonical_entity_name，再按 aliases_json 精确定位 section。
+func (r *ResourceStructureRepo) FindSectionByEntity(ctx context.Context, versionID string, entityName string) (*ResourceSection, error) {
+	trimmedEntityName := strings.TrimSpace(entityName)
+	if trimmedEntityName == "" {
+		return nil, nil
+	}
+
+	section, err := scanResourceSection(r.pool.QueryRow(ctx, `
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       section_key,
+		       section_type,
+		       section_order,
+		       title,
+		       canonical_entity_name,
+		       aliases_json,
+		       summary,
+		       content,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
+		FROM resource_sections
+		WHERE version_id = $1
+		  AND canonical_entity_name = $2
+		ORDER BY section_order ASC, created_at ASC
+		LIMIT 1
+	`, versionID, trimmedEntityName))
+	if err == nil {
+		return &section, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+
+	aliasJSON, err := json.Marshal([]string{trimmedEntityName})
+	if err != nil {
+		return nil, err
+	}
+
+	section, err = scanResourceSection(r.pool.QueryRow(ctx, `
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       section_key,
+		       section_type,
+		       section_order,
+		       title,
+		       canonical_entity_name,
+		       aliases_json,
+		       summary,
+		       content,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
+		FROM resource_sections
+		WHERE version_id = $1
+		  AND aliases_json @> $2::jsonb
+		ORDER BY section_order ASC, created_at ASC
+		LIMIT 1
+	`, versionID, string(aliasJSON)))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &section, nil
+}
+
 // ListSectionsByVersionAndType 返回某个版本下指定类型的 sections。
 func (r *ResourceStructureRepo) ListSectionsByVersionAndType(ctx context.Context, versionID string, sectionType string) ([]ResourceSection, error) {
 	rows, err := r.pool.Query(ctx, `
@@ -285,6 +433,15 @@ func (r *ResourceStructureRepo) ListSectionsByVersionAndType(ctx context.Context
 	defer rows.Close()
 
 	return collectResourceSections(rows)
+}
+
+// ListSectionsForReading 返回当前阅读模式下按 section_order 排序的 section 列表。
+func (r *ResourceStructureRepo) ListSectionsForReading(ctx context.Context, versionID string, sectionType string) ([]ResourceSection, error) {
+	if strings.TrimSpace(sectionType) == "" {
+		return r.ListSectionsByVersion(ctx, versionID)
+	}
+
+	return r.ListSectionsByVersionAndType(ctx, versionID, sectionType)
 }
 
 func collectResourceSections(rows pgx.Rows) ([]ResourceSection, error) {

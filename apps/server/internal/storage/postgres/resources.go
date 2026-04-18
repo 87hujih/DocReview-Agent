@@ -211,6 +211,26 @@ func (r *ResourceRepo) ListSectionsByVersion(ctx context.Context, versionID stri
 	return NewResourceStructureRepo(r.pool).ListSectionsByVersion(ctx, versionID)
 }
 
+// GetSectionByID 按主键读取单个逻辑 section，不存在时返回 nil。
+func (r *ResourceRepo) GetSectionByID(ctx context.Context, sectionID string) (*ResourceSection, error) {
+	return NewResourceStructureRepo(r.pool).GetSectionByID(ctx, sectionID)
+}
+
+// GetSectionByOrder 按版本、类型和顺序号读取单个逻辑 section，不存在时返回 nil。
+func (r *ResourceRepo) GetSectionByOrder(ctx context.Context, versionID string, sectionType string, ordinal int) (*ResourceSection, error) {
+	return NewResourceStructureRepo(r.pool).GetSectionByOrder(ctx, versionID, sectionType, ordinal)
+}
+
+// FindSectionByEntity 优先按 canonical_entity_name，再按 aliases_json 精确定位 section。
+func (r *ResourceRepo) FindSectionByEntity(ctx context.Context, versionID string, entityName string) (*ResourceSection, error) {
+	return NewResourceStructureRepo(r.pool).FindSectionByEntity(ctx, versionID, entityName)
+}
+
+// ListSectionsForReading 返回当前阅读模式下按顺序排列的 section 列表。
+func (r *ResourceRepo) ListSectionsForReading(ctx context.Context, versionID string, sectionType string) ([]ResourceSection, error) {
+	return NewResourceStructureRepo(r.pool).ListSectionsForReading(ctx, versionID, sectionType)
+}
+
 // CountChunksByVersion 返回指定版本当前已有的 chunk 数。
 func (r *ResourceRepo) CountChunksByVersion(ctx context.Context, versionID string) (int, error) {
 	var count int

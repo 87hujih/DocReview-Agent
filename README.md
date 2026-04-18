@@ -73,6 +73,14 @@ Grounded Structured Document RAG Phase 1 已接入上传问答链：
 - 助手会优先按 section 和承接引用检索，支持 `有哪些项目`、`第一个项目做了什么`、`针对第一个项目，给出修改示例` 这类 grounded 问答
 - 扫描版 PDF / OCR 不足的材料当前只会标记质量不足（如 `requires_ocr`），不保证一定可答
 
+#### 当前活跃文件阅读模式
+
+上传后的 assistant 现在会先判断用户是在“读文件”还是“改文件”：
+
+- `有哪些项目`、`把第三个项目先输出一遍` 这类阅读型请求，会优先用 `resource_sections` 直接定位 section，并走 deterministic read，不再默认先做 citation 检索或弹任务建议。
+- `第三个项目怎么优化` 这类分析型请求，会先读取目标 section 的真实正文，再把 section 原文作为 grounded analysis 输入交给模型；citation 只保留为辅助证据。
+- 如果当前活跃文件里拿不到 concrete section，assistant 会明确说明证据不足，而不是继续假装已经理解整份文件。
+
 ```bash
 DOCUMENT_PARSER=tika
 TIKA_URL=http://127.0.0.1:9998

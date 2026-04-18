@@ -62,6 +62,7 @@ type ChatCompletionInput struct {
 	Snapshot               *SessionContextSnapshot
 	Citations              []citation.Citation
 	GroundedTarget         *ResolvedReference
+	GroundedSection        *GroundedAnalysisInput
 	History                []postgres.AssistantMessage
 	Message                string
 	Resource               *resourceContext
@@ -277,6 +278,23 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 		if reason := strings.TrimSpace(input.GroundedTarget.Reason); reason != "" {
 			lines = append(lines, "定位原因："+reason)
 		}
+		sections = append(sections, strings.Join(lines, "\n"))
+	}
+	if input.GroundedSection != nil {
+		lines := []string{
+			"当前需要分析的 section 原文：",
+			fmt.Sprintf(
+				"- section_id=%s；section_type=%s；section_order=%d；section_title=%s。",
+				strings.TrimSpace(input.GroundedSection.SectionID),
+				strings.TrimSpace(input.GroundedSection.SectionType),
+				input.GroundedSection.SectionOrder,
+				strings.TrimSpace(input.GroundedSection.SectionTitle),
+			),
+		}
+		if instruction := strings.TrimSpace(input.GroundedSection.UserInstruction); instruction != "" {
+			lines = append(lines, "- 用户要求："+instruction)
+		}
+		lines = append(lines, strings.TrimSpace(input.GroundedSection.SectionText))
 		sections = append(sections, strings.Join(lines, "\n"))
 	}
 

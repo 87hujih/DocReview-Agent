@@ -322,6 +322,38 @@ func TestContextLoaderFallsBackWhenSummaryMissing(t *testing.T) {
 	}
 }
 
+func TestContextLoaderLoadBaseContextDoesNotFetchCitations(t *testing.T) {
+	retriever := &fakeResourceCitationRetriever{}
+	loader := NewContextLoader(&fakeSessionContextSnapshotReader{
+		record: &postgres.SessionContextSnapshotRecord{
+			SessionID:                  "session-1",
+			ActiveResourceID:           stringPointer("resource-1"),
+			ActiveResourceTitle:        stringPointer("简历"),
+			ActiveResourceSourceType:   stringPointer("upload"),
+			ConfirmedConstraintsJSON:   []byte("[]"),
+			ActiveSectionID:            stringPointer("section-campushub"),
+			ActiveSectionType:          stringPointer("project"),
+			ActiveEntityName:           stringPointer("CampusHub"),
+			LastEnumeratedEntitiesJSON: []byte(`[{"section_id":"section-campushub","section_type":"project","entity_name":"CampusHub","ordinal":1}]`),
+			OrdinalReferenceFrameJSON:  []byte(`[{"ordinal":1,"section_id":"section-campushub","section_type":"project","entity_name":"CampusHub"}]`),
+		},
+	}, retriever, &fakeAssistantMessageWindowReader{})
+
+	replyContext, err := loader.LoadBaseContext(context.Background(), "session-1", nil, "第一个项目先输出一遍")
+	if err != nil {
+		t.Fatalf("load base context: %v", err)
+	}
+	if replyContext == nil || replyContext.ActiveResource == nil {
+		t.Fatalf("expected base context to include active resource, got %#v", replyContext)
+	}
+	if replyContext.GroundedTarget == nil || replyContext.GroundedTarget.SectionID != "section-campushub" {
+		t.Fatalf("expected base context to keep grounding target, got %#v", replyContext.GroundedTarget)
+	}
+	if retriever.calls != 0 {
+		t.Fatalf("expected load base context to skip retriever, got %d", retriever.calls)
+	}
+}
+
 type fakeSessionContextSnapshotReader struct {
 	record    *postgres.SessionContextSnapshotRecord
 	err       error
