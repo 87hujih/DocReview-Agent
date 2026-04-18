@@ -59,12 +59,14 @@ type chatStreamResultProvider interface {
 
 // ChatCompletionInput 描述一次助手回复所需的会话上下文。
 type ChatCompletionInput struct {
+	RuntimeState           RuntimeState
 	Snapshot               *SessionContextSnapshot
 	Citations              []citation.Citation
 	GroundedTarget         *ResolvedReference
 	History                []postgres.AssistantMessage
 	Message                string
 	Resource               *resourceContext
+	Decision               *DeliberationDecision
 	TaskSuggestionDecision *TaskSuggestionDecision
 }
 
@@ -221,14 +223,17 @@ func (r *ChatResponder) openStreamWithRetry(ctx context.Context, messages []*sch
 
 // buildChatMessages 组装 `聊天消息` 序列，统一角色顺序和上下文裁剪规则。
 func buildChatMessages(input ChatCompletionInput) []*schema.Message {
+	history := chatInputHistory(input)
+	message := chatInputMessage(input)
+
 	messages := []*schema.Message{
 		{Role: schema.System, Content: buildSystemPrompt(input)},
 	}
 
-	messages = append(messages, buildHistoryMessages(input.History)...)
+	messages = append(messages, buildHistoryMessages(history)...)
 	messages = append(messages, &schema.Message{
 		Role:    schema.User,
-		Content: strings.TrimSpace(input.Message),
+		Content: message,
 	})
 
 	return messages
@@ -236,7 +241,10 @@ func buildChatMessages(input ChatCompletionInput) []*schema.Message {
 
 // buildSystemPrompt 组装 `系统提示词`，统一模型输入文案和约束说明。
 func buildSystemPrompt(input ChatCompletionInput) string {
-	parts := []string{assistantSystemPrompt, buildAssistantResponseSchemaPrompt(input.TaskSuggestionDecision)}
+	parts := []string{assistantSystemPrompt, buildAssistantResponseSchemaPrompt()}
+	if decisionHint := buildReplyDecisionHint(input.Decision); decisionHint != "" {
+		parts = append(parts, decisionHint)
+	}
 	if runtimeContext := buildRuntimeContext(input); runtimeContext != "" {
 		parts = append(parts, runtimeContext)
 	}
@@ -245,53 +253,74 @@ func buildSystemPrompt(input ChatCompletionInput) string {
 }
 
 // buildAssistantResponseSchemaPrompt 组装 `助手响应Schema提示词`，统一模型输入文案和约束说明。
-func buildAssistantResponseSchemaPrompt(decision *TaskSuggestionDecision) string {
-	if decision != nil && decision.ReadinessState == ReadinessStateReadyForTask {
-		return "只输出 JSON：\n{\"reply\":\"给用户的回复\",\"task_instruction\":\"仅当用户要求立即开始执行且材料已明确时才填写，可选\"}"
+func buildAssistantResponseSchemaPrompt() string {
+	return "只输出 JSON：\n{\"reply\":\"给用户的回复\"}"
+}
+
+// buildReplyDecisionHint 组装 `回复决策提示`，把上层判定作为只读线索传给 responder。
+func buildReplyDecisionHint(decision *DeliberationDecision) string {
+	if decision == nil {
+		return ""
 	}
 
-	return "只输出 JSON：\n{\"reply\":\"给用户的回复\"}"
+	lines := []string{"上层决策提示："}
+	if decision.RequestKind != "" {
+		lines = append(lines, "request_kind="+strings.TrimSpace(decision.RequestKind))
+	}
+	if decision.ResponseMode != "" {
+		lines = append(lines, "response_mode="+strings.TrimSpace(decision.ResponseMode))
+	}
+	if decision.ChatFulfillable {
+		lines = append(lines, "chat_fulfillable=true")
+	}
+	if decision.NeedsClarification {
+		lines = append(lines, "needs_clarification=true")
+	}
+	lines = append(lines, "你只负责生成自然语言 reply，不输出额外动作字段。")
+
+	return strings.Join(lines, "\n")
 }
 
 // buildRuntimeContext 组装 `运行时上下文`，为后续助手流程提供可直接消费的上下文。
 func buildRuntimeContext(input ChatCompletionInput) string {
+	state := runtimeStateFromChatInput(input)
 	var sections []string
 
-	if snapshotProjection := buildSnapshotProjection(input.Snapshot); snapshotProjection != "" {
+	if snapshotProjection := buildSnapshotProjection(state.Snapshot); snapshotProjection != "" {
 		sections = append(sections, snapshotProjection)
 	}
-	if rollingSummary := buildRollingSummaryProjection(input.Snapshot); rollingSummary != "" {
+	if rollingSummary := buildRollingSummaryProjection(state.Snapshot); rollingSummary != "" {
 		sections = append(sections, rollingSummary)
 	}
 
-	if input.Resource != nil {
+	if state.ActiveResource != nil {
 		sections = append(sections, fmt.Sprintf(
 			"本轮检索所用资源：标题=%s；来源=%s；资源ID=%s。",
-			input.Resource.Title,
-			input.Resource.Source,
-			input.Resource.ID,
+			state.ActiveResource.Title,
+			state.ActiveResource.Source,
+			state.ActiveResource.ID,
 		))
 	}
-	if input.GroundedTarget != nil {
+	if state.GroundedTarget != nil {
 		lines := []string{
 			fmt.Sprintf("本轮 grounding 目标：section_id=%s；section_type=%s。",
-				strings.TrimSpace(input.GroundedTarget.SectionID),
-				strings.TrimSpace(input.GroundedTarget.SectionType),
+				strings.TrimSpace(state.GroundedTarget.SectionID),
+				strings.TrimSpace(state.GroundedTarget.SectionType),
 			),
 		}
-		if entity := strings.TrimSpace(input.GroundedTarget.EntityName); entity != "" {
+		if entity := strings.TrimSpace(state.GroundedTarget.EntityName); entity != "" {
 			lines = append(lines, "目标实体："+entity)
 		}
-		if reason := strings.TrimSpace(input.GroundedTarget.Reason); reason != "" {
+		if reason := strings.TrimSpace(state.GroundedTarget.Reason); reason != "" {
 			lines = append(lines, "定位原因："+reason)
 		}
 		sections = append(sections, strings.Join(lines, "\n"))
 	}
 
-	if len(input.Citations) > 0 {
-		lines := make([]string, 0, len(input.Citations)+1)
+	if len(state.Citations) > 0 {
+		lines := make([]string, 0, len(state.Citations)+1)
 		lines = append(lines, "与本轮用户问题最相关的资源片段：")
-		for index, item := range input.Citations {
+		for index, item := range state.Citations {
 			labelParts := []string{fallbackSectionTitle(item.SectionTitle)}
 			if strings.TrimSpace(item.SectionType) != "" || strings.TrimSpace(item.SectionID) != "" {
 				labelParts = append(labelParts, fmt.Sprintf("section=%s/%s", strings.TrimSpace(item.SectionType), strings.TrimSpace(item.SectionID)))
@@ -307,11 +336,54 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 			))
 		}
 		sections = append(sections, strings.Join(lines, "\n"))
-	} else if input.Resource != nil {
+	} else if state.ActiveResource != nil {
 		sections = append(sections, "当前已有资源，但本轮没有命中直接证据片段；若用户追问资源细节，请明确说明信息不足。")
 	}
 
 	return strings.Join(sections, "\n\n")
+}
+
+// runtimeStateFromChatInput 把旧回复输入归一化成 runtime state，便于 responder 与 deliberation 共用上下文投影逻辑。
+func runtimeStateFromChatInput(input ChatCompletionInput) RuntimeState {
+	state := input.RuntimeState
+	if strings.TrimSpace(state.Message) == "" {
+		state.Message = strings.TrimSpace(input.Message)
+	}
+	if state.Snapshot == nil {
+		state.Snapshot = input.Snapshot
+	}
+	if state.ActiveResource == nil {
+		state.ActiveResource = input.Resource
+	}
+	if state.GroundedTarget == nil {
+		state.GroundedTarget = input.GroundedTarget
+	}
+	if len(state.Citations) == 0 {
+		state.Citations = input.Citations
+	}
+	if len(state.History) == 0 {
+		state.History = input.History
+	}
+
+	return state
+}
+
+// chatInputHistory 返回 responder 本轮应消费的 recent history，兼容旧输入与 runtime state 输入。
+func chatInputHistory(input ChatCompletionInput) []postgres.AssistantMessage {
+	if len(input.RuntimeState.History) > 0 {
+		return input.RuntimeState.History
+	}
+
+	return input.History
+}
+
+// chatInputMessage 返回 responder 本轮应消费的当前消息，兼容旧输入与 runtime state 输入。
+func chatInputMessage(input ChatCompletionInput) string {
+	if strings.TrimSpace(input.RuntimeState.Message) != "" {
+		return strings.TrimSpace(input.RuntimeState.Message)
+	}
+
+	return strings.TrimSpace(input.Message)
 }
 
 // buildSnapshotProjection 组装 `快照Projection`，保持状态投影结果在不同调用点口径一致。

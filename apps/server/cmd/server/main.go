@@ -174,6 +174,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("助手对话模型初始化失败：%v", err)
 	}
+	deliberationAgent, err := assistant.NewDeliberationAgent(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
+		TimeoutMS: cfg.LLMTimeoutMS,
+		RetryMax:  cfg.LLMRetryMax,
+		BackoffMS: cfg.LLMRetryBackoffMS,
+	})
+	if err != nil {
+		log.Fatalf("助手 deliberation agent 初始化失败：%v", err)
+	}
 	conversationSummarizer, err := assistant.NewConversationSummarizer(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
 		TimeoutMS: cfg.LLMTimeoutMS,
 		RetryMax:  cfg.LLMRetryMax,
@@ -189,6 +197,7 @@ func main() {
 		assistantResponder,
 		retrieverService,
 		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
+		assistant.WithDeliberationAgent(deliberationAgent),
 		assistant.WithConversationSummarizer(conversationSummarizer, sessionContextSnapshotRepo),
 		assistant.WithSessionContextProjector(sessionContextProjector),
 	)

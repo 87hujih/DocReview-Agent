@@ -424,6 +424,116 @@ func TestAppendMessageStreamHandler(t *testing.T) {
 	}
 }
 
+// TestAssistantHandlerStreamDoesNotEmitTaskSuggestionForReadbackDecision 验证阅读型流式响应不会额外发 task_suggestion 事件。
+func TestAssistantHandlerStreamDoesNotEmitTaskSuggestionForReadbackDecision(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{
+		getConversationResult: &assistant.ConversationResult{
+			Session: postgres.AssistantSession{ID: "session-1"},
+		},
+		appendMessageStreamEvents: []assistant.StreamEvent{
+			{Type: assistant.StreamEventMessageStarted},
+			{Type: assistant.StreamEventMessageDelta, Delta: "我先把第三个项目输出给你"},
+			{
+				Type: assistant.StreamEventMessageCompleted,
+				Message: &postgres.AssistantMessage{
+					ID:        "message-readback",
+					SessionID: "session-1",
+					Role:      assistant.RoleAssistant,
+					Kind:      assistant.KindText,
+					Payload:   mustMarshalHandlerJSON(t, assistant.TextPayload{Content: "我先把第三个项目输出给你。"}),
+				},
+			},
+		},
+	})
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/messages/stream", handler.AppendMessageStream)
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/"+testAssistantSessionUUID+"/messages/stream",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"message":"把第三个项目先输出一遍"}`),
+			Len:  len(`{"message":"把第三个项目先输出一遍"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	events := parseSSEEvents(t, string(response.Body()))
+	for _, event := range events {
+		if event.Type == assistant.StreamEventTaskSuggestion {
+			t.Fatalf("expected no task_suggestion event for readback stream, got %#v", events)
+		}
+	}
+}
+
+// TestAssistantHandlerStreamStillEmitsTaskSuggestionForWorkflowDecision 验证任务型流式响应仍会透传 task_suggestion 事件。
+func TestAssistantHandlerStreamStillEmitsTaskSuggestionForWorkflowDecision(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{
+		getConversationResult: &assistant.ConversationResult{
+			Session: postgres.AssistantSession{ID: "session-1"},
+		},
+		appendMessageStreamEvents: []assistant.StreamEvent{
+			{Type: assistant.StreamEventMessageStarted},
+			{Type: assistant.StreamEventMessageDelta, Delta: "这件事适合进入任务流"},
+			{
+				Type: assistant.StreamEventMessageCompleted,
+				Message: &postgres.AssistantMessage{
+					ID:        "message-workflow",
+					SessionID: "session-1",
+					Role:      assistant.RoleAssistant,
+					Kind:      assistant.KindText,
+					Payload:   mustMarshalHandlerJSON(t, assistant.TextPayload{Content: "这件事适合进入任务流。"}),
+				},
+			},
+			{
+				Type: assistant.StreamEventTaskSuggestion,
+				Message: &postgres.AssistantMessage{
+					ID:        "message-suggestion",
+					SessionID: "session-1",
+					Role:      assistant.RoleAssistant,
+					Kind:      assistant.KindTaskSuggestion,
+					Payload: mustMarshalHandlerJSON(t, assistant.TaskSuggestionPayload{
+						ActionLabel:   "确认创建任务",
+						CanCreate:     true,
+						Instruction:   "请把第三个项目改成产品经理版本",
+						ResourceLabel: "简历 · upload",
+						StatusMessage: "资源已明确，可以创建任务。",
+						Title:         "建议创建任务",
+					}),
+				},
+			},
+		},
+	})
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/messages/stream", handler.AppendMessageStream)
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/"+testAssistantSessionUUID+"/messages/stream",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"message":"直接开始改第三个项目，创建任务"}`),
+			Len:  len(`{"message":"直接开始改第三个项目，创建任务"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	events := parseSSEEvents(t, string(response.Body()))
+	foundTaskSuggestion := false
+	for _, event := range events {
+		if event.Type == assistant.StreamEventTaskSuggestion {
+			foundTaskSuggestion = true
+			break
+		}
+	}
+	if !foundTaskSuggestion {
+		t.Fatalf("expected task_suggestion event for workflow stream, got %#v", events)
+	}
+}
+
 // TestAppendMessageStreamHandlerReturnsJSON404BeforeOpeningStream 验证`appendMessageStreamHandler`在返回值分支下的行为，防止同类回归。
 func TestAppendMessageStreamHandlerReturnsJSON404BeforeOpeningStream(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{

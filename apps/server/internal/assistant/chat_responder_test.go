@@ -82,28 +82,25 @@ func TestReplyParsesOptionalTaskInstruction(t *testing.T) {
 	}
 }
 
-// TestBuildChatMessagesPromptMentionsTaskInstructionIsOptionalOnlyWhenReady 验证`buildChatMessagesPromptMentionsTaskInstructionIsOptionalOnlyWhenReady`在特定边界条件下的行为，防止同类回归。
-func TestBuildChatMessagesPromptMentionsTaskInstructionIsOptionalOnlyWhenReady(t *testing.T) {
-	readyMessages := buildChatMessages(ChatCompletionInput{
+// TestBuildChatMessagesPromptUsesDecisionHintsButDoesNotRequestTaskInstruction 验证 responder prompt 只消费上层决策提示，不再要求 task_instruction 副产物。
+func TestBuildChatMessagesPromptUsesDecisionHintsButDoesNotRequestTaskInstruction(t *testing.T) {
+	messages := buildChatMessages(ChatCompletionInput{
 		Message: "请直接把这份简历改成产品经理版本",
-		TaskSuggestionDecision: &TaskSuggestionDecision{
-			ReadinessState: ReadinessStateReadyForTask,
+		Decision: &DeliberationDecision{
+			RequestKind:    "workflow_command",
+			ResponseMode:   "answer_then_task_card",
+			ChatFulfillable: false,
 		},
 	})
-	readyPrompt := readyMessages[0].Content
-	if !strings.Contains(readyPrompt, `"task_instruction":"仅当用户要求立即开始执行且材料已明确时才填写，可选"`) {
-		t.Fatalf("expected ready prompt to mention optional task_instruction, got %q", readyPrompt)
+	prompt := messages[0].Content
+	if strings.Contains(prompt, "task_instruction") {
+		t.Fatalf("expected responder prompt to stop mentioning task_instruction, got %q", prompt)
 	}
-
-	notReadyMessages := buildChatMessages(ChatCompletionInput{
-		Message: "这份简历还有什么需要优化的吗",
-		TaskSuggestionDecision: &TaskSuggestionDecision{
-			ReadinessState: ReadinessStateReadyButNotExecuting,
-		},
-	})
-	notReadyPrompt := notReadyMessages[0].Content
-	if strings.Contains(notReadyPrompt, "task_instruction") {
-		t.Fatalf("expected non-ready prompt to avoid task_instruction hint, got %q", notReadyPrompt)
+	if !strings.Contains(prompt, `"reply":"给用户的回复"`) {
+		t.Fatalf("expected responder prompt to keep reply-only JSON schema, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "response_mode=answer_then_task_card") {
+		t.Fatalf("expected responder prompt to include response mode hint, got %q", prompt)
 	}
 }
 

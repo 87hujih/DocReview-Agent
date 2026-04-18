@@ -85,8 +85,8 @@ func TestStartConversationDoesNotSuggestTaskForCapabilityQuestion(t *testing.T) 
 	}
 }
 
-// TestAppendMessageCreatesTaskSuggestionFromResponderInstructionWhenReadinessPasses 验证`appendMessage`在写入或副作用路径下的行为，防止同类回归。
-func TestAppendMessageCreatesTaskSuggestionFromResponderInstructionWhenReadinessPasses(t *testing.T) {
+// TestAppendMessageBuildsTaskSuggestionFromPolicyDecisionNotReplySideEffect 验证任务建议只来自 deliberation/policy，不来自 reply 副产物。
+func TestAppendMessageBuildsTaskSuggestionFromPolicyDecisionNotReplySideEffect(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
 	repo.seedMessage(session.ID, postgres.AssistantMessage{
@@ -104,14 +104,32 @@ func TestAppendMessageCreatesTaskSuggestionFromResponderInstructionWhenReadiness
 		}),
 		CreatedAt: time.Now(),
 	})
-	instruction := "请把学生手册第二章整理成可执行的修订任务"
 	responder := &fakeChatResponder{
 		result: &ChatCompletionResult{
 			Reply:           "这件事已经适合进入任务流了，我先给你一张建议卡。",
-			TaskInstruction: &instruction,
+			TaskInstruction: stringPointer("模型自己编的旧字段"),
 		},
 	}
-	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, responder, nil)
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModeAnswerThenTaskCard,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				NeedsClarification:       false,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请把学生手册第二章整理成可执行的修订任务"),
+				Confidence:               0.92,
+				Reasons:                  []string{"用户明确要求直接进入执行"},
+			},
+		}),
+	)
 
 	result, err := service.AppendMessage(context.Background(), session.ID, "把第二章做成后续事项")
 	if err != nil {
@@ -128,8 +146,73 @@ func TestAppendMessageCreatesTaskSuggestionFromResponderInstructionWhenReadiness
 	}
 
 	suggestion := decodeTaskSuggestionPayload(t, result.Messages[2].Payload)
-	if suggestion.Instruction != instruction {
-		t.Fatalf("expected suggestion instruction %q, got %q", instruction, suggestion.Instruction)
+	if suggestion.Instruction != "请把学生手册第二章整理成可执行的修订任务" {
+		t.Fatalf("expected suggestion to come from deliberation decision, got %q", suggestion.Instruction)
+	}
+}
+
+// TestAppendMessageUsesDeliberationBeforeReply 验证非流式路径会先跑 deliberation，再调用 responder。
+func TestAppendMessageUsesDeliberationBeforeReply(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "产品经理简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	order := make([]string, 0, 2)
+	deliberator := &fakeDeliberationAgent{
+		result: &DeliberationDecision{
+			RequestKind:        "readback",
+			ResponseMode:       ResponseModeAnswerWithGrounding,
+			ChatFulfillable:    true,
+			WorkflowCommitment: false,
+			EvidenceSufficiency:"sufficient",
+			Confidence:         0.83,
+			Reasons:            []string{"这是文件内阅读请求"},
+		},
+		onDeliberate: func(state RuntimeState) {
+			order = append(order, "deliberate")
+			if state.ActiveResource == nil || state.ActiveResource.ID != "resource-1" {
+				t.Fatalf("expected deliberation to receive runtime state with active resource, got %#v", state.ActiveResource)
+			}
+		},
+	}
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "我先把第三个项目按原文输出给你。"},
+		onReply: func(input ChatCompletionInput) {
+			order = append(order, "reply")
+			if input.Decision == nil || input.Decision.ResponseMode != ResponseModeAnswerWithGrounding {
+				t.Fatalf("expected responder to receive deliberation decision, got %#v", input.Decision)
+			}
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithDeliberationAgent(deliberator),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先输出一遍"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(order) != 2 || order[0] != "deliberate" || order[1] != "reply" {
+		t.Fatalf("expected call order deliberate -> reply, got %#v", order)
 	}
 }
 
@@ -236,6 +319,116 @@ func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testin
 	}
 	if len(responder.lastInput.Citations) != 1 || responder.lastInput.Citations[0].CitationID != "cite_1" {
 		t.Fatalf("expected stream responder to receive retriever citation")
+	}
+}
+
+// TestStartConversationStreamRunsDeliberationBeforeMessageStarted 验证流式首轮会在发出 message_started 前完成 deliberation。
+func TestStartConversationStreamRunsDeliberationBeforeMessageStarted(t *testing.T) {
+	repo := newFakeSessionRepo()
+	order := make([]string, 0, 3)
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{chunks: []string{"当然可以，我们先看第三个项目。"}},
+		},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "insufficient",
+				Confidence:          0.8,
+				Reasons:             []string{"首轮先按聊天回答处理"},
+			},
+			onDeliberate: func(RuntimeState) {
+				order = append(order, "deliberate")
+			},
+		}),
+	)
+
+	err := service.StartConversationStream(context.Background(), "帮我先看看第三个项目", func(event StreamEvent) error {
+		if event.Type == StreamEventMessageStarted {
+			order = append(order, "message_started")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("start conversation stream: %v", err)
+	}
+
+	if len(order) != 2 || order[0] != "deliberate" || order[1] != "message_started" {
+		t.Fatalf("expected deliberation before message_started, got %#v", order)
+	}
+}
+
+// TestAppendMessageStreamBuildsTaskSuggestionFromPolicyDecision 验证流式路径的任务建议也只来自 deliberation/policy。
+func TestAppendMessageStreamBuildsTaskSuggestionFromPolicyDecision(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "students.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	var suggestionEvent *postgres.AssistantMessage
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{
+				chunks: []string{"这件事适合进入任务流。"},
+				result: &ChatCompletionResult{
+					Reply:           "这件事适合进入任务流。",
+					TaskInstruction: stringPointer("模型旧字段，不应再被使用"),
+				},
+			},
+		},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModeAnswerThenTaskCard,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请把学生手册第二章整理成可执行任务"),
+				Confidence:               0.91,
+				Reasons:                  []string{"用户明确要求直接开始修改"},
+			},
+		}),
+	)
+
+	err := service.AppendMessageStream(context.Background(), session.ID, "直接开始整理第二章", func(event StreamEvent) error {
+		if event.Type == StreamEventTaskSuggestion {
+			suggestionEvent = event.Message
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+	if suggestionEvent == nil {
+		t.Fatal("expected stream task suggestion event")
+	}
+
+	suggestion := decodeTaskSuggestionPayload(t, suggestionEvent.Payload)
+	if suggestion.Instruction != "请把学生手册第二章整理成可执行任务" {
+		t.Fatalf("expected stream suggestion to come from deliberation decision, got %q", suggestion.Instruction)
 	}
 }
 
@@ -813,17 +1006,42 @@ func TestAppendMessageDoesNotCreateTaskSuggestionForDiscussionQuestion(t *testin
 	}
 }
 
-// TestAppendMessageIgnoresModelTaskInstructionWhenReadinessGateFails 验证`appendMessageIgnoresModelTaskInstructionWhenReadinessGateFails`在特定边界条件下的行为，防止同类回归。
-func TestAppendMessageIgnoresModelTaskInstructionWhenReadinessGateFails(t *testing.T) {
+// TestAppendMessageDoesNotDependOnModelTaskInstruction 验证 service 不再依赖 reply 里的 task_instruction 来驱动任务建议。
+func TestAppendMessageDoesNotDependOnModelTaskInstruction(t *testing.T) {
 	repo := newFakeSessionRepo()
-	session := repo.seedSession("空白会话")
+	session := repo.seedSession("学生手册会话")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "students.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
 	instruction := "请把学生手册整理成执行任务"
 	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
 		result: &ChatCompletionResult{
 			Reply:           "要进入任务流还需要先给我可处理的材料。",
 			TaskInstruction: &instruction,
 		},
-	}, nil)
+	}, nil, WithDeliberationAgent(&fakeDeliberationAgent{
+		result: &DeliberationDecision{
+			RequestKind:        "analysis",
+			ResponseMode:       ResponseModeAnswerWithGrounding,
+			ChatFulfillable:    true,
+			WorkflowCommitment: false,
+			EvidenceSufficiency:"sufficient",
+			Confidence:         0.72,
+			Reasons:            []string{"本轮仍应停留在聊天回答"},
+		},
+	}))
 
 	result, err := service.AppendMessage(context.Background(), session.ID, "请先告诉我还缺什么材料")
 	if err != nil {
@@ -831,7 +1049,55 @@ func TestAppendMessageIgnoresModelTaskInstructionWhenReadinessGateFails(t *testi
 	}
 
 	if len(result.Messages) != 2 {
-		t.Fatalf("expected 2 new messages when readiness gate fails, got %d", len(result.Messages))
+		t.Fatalf("expected 2 new messages when policy keeps request in answer lane, got %d", len(result.Messages))
+	}
+}
+
+// TestAppendMessageKeepsReadbackRequestWithoutTaskSuggestion 验证已有资源下的 readback 请求只会回复，不会弹任务建议。
+func TestAppendMessageKeepsReadbackRequestWithoutTaskSuggestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "产品经理简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我先把第三个项目原文输出给你。"}},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.88,
+				Reasons:             []string{"这是当前资源内的阅读型请求"},
+			},
+		}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先输出一遍")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected readback request to persist only user+assistant messages, got %d", len(result.Messages))
 	}
 }
 
@@ -1902,6 +2168,8 @@ type fakeChatResponder struct {
 	result    *ChatCompletionResult
 	err       error
 	stream    *fakeChatStream
+	onReply   func(ChatCompletionInput)
+	onStream  func(ChatCompletionInput)
 }
 
 // Reply 实现测试替身需要的 `Reply` 接口方法，为用例分支提供可控返回。
@@ -1910,6 +2178,9 @@ func (r *fakeChatResponder) Reply(_ context.Context, input ChatCompletionInput) 
 	copied.History = append([]postgres.AssistantMessage(nil), input.History...)
 	copied.Citations = append([]citation.Citation(nil), input.Citations...)
 	r.lastInput = &copied
+	if r.onReply != nil {
+		r.onReply(copied)
+	}
 
 	if r.err != nil {
 		return nil, r.err
@@ -1929,6 +2200,9 @@ func (r *fakeChatResponder) Stream(_ context.Context, input ChatCompletionInput)
 	copied.History = append([]postgres.AssistantMessage(nil), input.History...)
 	copied.Citations = append([]citation.Citation(nil), input.Citations...)
 	r.lastInput = &copied
+	if r.onStream != nil {
+		r.onStream(copied)
+	}
 
 	if r.err != nil {
 		return nil, r.err
@@ -1942,9 +2216,11 @@ func (r *fakeChatResponder) Stream(_ context.Context, input ChatCompletionInput)
 
 // fakeChatStream 作为聊天流式消息的测试替身，用于在用例里提供可控的依赖行为。
 type fakeChatStream struct {
-	chunks []string
-	errs   []error
-	index  int
+	chunks    []string
+	errs      []error
+	index     int
+	result    *ChatCompletionResult
+	resultErr error
 }
 
 // Recv 实现测试替身需要的 `Recv` 接口方法，为用例分支提供可控返回。
@@ -1971,6 +2247,59 @@ func (s *fakeChatStream) Recv() (string, error) {
 // Close 实现测试替身需要的 `Close` 接口方法，为用例分支提供可控返回。
 func (s *fakeChatStream) Close() error {
 	return nil
+}
+
+// Result 返回测试流式结果的最终聚合值，便于覆盖带副产物的旧协议兼容场景。
+func (s *fakeChatStream) Result() (*ChatCompletionResult, error) {
+	if s.resultErr != nil {
+		return nil, s.resultErr
+	}
+	if s.result != nil {
+		return s.result, nil
+	}
+
+	return &ChatCompletionResult{
+		Reply: strings.Join(s.chunks, ""),
+	}, nil
+}
+
+// fakeDeliberationAgent 作为 deliberation agent 的测试替身，用于在用例里提供可控的依赖行为。
+type fakeDeliberationAgent struct {
+	result       *DeliberationDecision
+	err          error
+	lastState    *RuntimeState
+	onDeliberate func(RuntimeState)
+}
+
+// Deliberate 实现测试替身需要的 `Deliberate` 接口方法，为用例分支提供可控返回。
+func (a *fakeDeliberationAgent) Deliberate(_ context.Context, state RuntimeState) (*DeliberationDecision, error) {
+	cloned := state
+	cloned.Citations = append([]citation.Citation(nil), state.Citations...)
+	cloned.History = append([]postgres.AssistantMessage(nil), state.History...)
+	a.lastState = &cloned
+	if a.onDeliberate != nil {
+		a.onDeliberate(cloned)
+	}
+	if a.err != nil {
+		return nil, a.err
+	}
+	if a.result == nil {
+		return &DeliberationDecision{
+			RequestKind:         "readback",
+			ResponseMode:        ResponseModeAnswerWithGrounding,
+			ChatFulfillable:     true,
+			EvidenceSufficiency: "sufficient",
+			Confidence:          0.5,
+			Reasons:             []string{"default fake deliberation"},
+		}, nil
+	}
+
+	clonedDecision := *a.result
+	clonedDecision.ClarificationQuestion = normalizeOptionalText(a.result.ClarificationQuestion)
+	clonedDecision.CandidateTaskInstruction = normalizeOptionalText(a.result.CandidateTaskInstruction)
+	clonedDecision.CandidatePlanGoal = normalizeOptionalText(a.result.CandidatePlanGoal)
+	clonedDecision.Reasons = normalizeDecisionReasons(a.result.Reasons)
+	return &clonedDecision, nil
 }
 
 // fakeResourceCitationRetriever 作为资源引用检索器的测试替身，用于在用例里提供可控的依赖行为。

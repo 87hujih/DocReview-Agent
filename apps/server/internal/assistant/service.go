@@ -103,6 +103,7 @@ type Service struct {
 	repo          sessionRepository
 	retriever     resourceCitationRetriever
 	responder     chatResponder
+	deliberator   deliberationAgent
 	tasks         taskCreator
 	summarizer    ConversationSummarizer
 	fileStore     uploadedFileStore
@@ -110,6 +111,7 @@ type Service struct {
 	contextLoader replyContextLoader
 	projector     sessionContextProjector
 	summaryRepo   summarySnapshotRepository
+	stateBuilder  *RuntimeStateBuilder
 	asyncRunner   func(task func())
 }
 
@@ -123,11 +125,12 @@ func NewService(
 	options ...ServiceOption,
 ) *Service {
 	service := &Service{
-		importer:  importer,
-		repo:      repo,
-		retriever: retriever,
-		responder: responder,
-		tasks:     tasks,
+		importer:     importer,
+		repo:         repo,
+		retriever:    retriever,
+		responder:    responder,
+		tasks:        tasks,
+		stateBuilder: &RuntimeStateBuilder{},
 		asyncRunner: func(task func()) {
 			go task()
 		},
@@ -141,6 +144,9 @@ func NewService(
 
 	if service.contextLoader == nil {
 		service.contextLoader = NewContextLoader(snapshotReaderFromProjector(service.projector), service.retriever, service.repo)
+	}
+	if service.deliberator == nil {
+		service.deliberator = heuristicDeliberationAgent{}
 	}
 
 	return service
@@ -158,6 +164,13 @@ func WithUploadedFileStorage(store uploadedFileStore, repo uploadedFileRepositor
 func WithReplyContextLoader(loader replyContextLoader) ServiceOption {
 	return func(service *Service) {
 		service.contextLoader = loader
+	}
+}
+
+// WithDeliberationAgent 为 assistant service 注入 deliberation agent。
+func WithDeliberationAgent(agent deliberationAgent) ServiceOption {
+	return func(service *Service) {
+		service.deliberator = agent
 	}
 }
 
@@ -598,31 +611,27 @@ func (s *Service) buildReplyInputs(
 		return nil, nil, err
 	}
 
-	taskDecision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
-		CurrentMessage: content,
-		ActiveResource: replyContext.ActiveResource,
-	})
+	runtimeState := s.stateBuilder.Build(content, replyContext)
+	decision, policy, err := s.deliberateTurn(ctx, runtimeState)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	reply, err := s.responder.Reply(ctx, ChatCompletionInput{
-		Snapshot:               replyContext.Snapshot,
-		Citations:              replyContext.Citations,
-		GroundedTarget:         replyContext.GroundedTarget,
-		History:                replyContext.History,
-		Message:                content,
-		Resource:               replyContext.ActiveResource,
-		TaskSuggestionDecision: &taskDecision,
+		RuntimeState:   runtimeState,
+		Snapshot:       replyContext.Snapshot,
+		Citations:      replyContext.Citations,
+		GroundedTarget: replyContext.GroundedTarget,
+		History:        replyContext.History,
+		Message:        content,
+		Resource:       replyContext.ActiveResource,
+		Decision:       decisionForReply(decision, policy),
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	taskDecision = EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
-		CurrentMessage:       content,
-		ActiveResource:       replyContext.ActiveResource,
-		ModelTaskInstruction: reply.TaskInstruction,
-	})
-
-	assistantInputs, err := buildAssistantReplyInputs(reply, taskDecision)
+	assistantInputs, err := buildAssistantReplyInputsFromPolicy(reply, decision, policy, runtimeState.ActiveResource)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -634,6 +643,20 @@ func (s *Service) buildReplyInputs(
 	inputs = append(inputs, assistantInputs...)
 
 	return inputs, replyContext, nil
+}
+
+// deliberateTurn 执行当前轮的 deliberation 与 policy 裁决。
+func (s *Service) deliberateTurn(ctx context.Context, state RuntimeState) (*DeliberationDecision, PolicyDecision, error) {
+	if s.deliberator == nil {
+		s.deliberator = heuristicDeliberationAgent{}
+	}
+
+	decision, err := s.deliberator.Deliberate(ctx, state)
+	if err != nil {
+		return nil, PolicyDecision{}, err
+	}
+
+	return decision, ApplyPolicy(state, decision), nil
 }
 
 // buildUploadMessages 组装 `上传消息`，统一接收者返回结果的结构形态。
@@ -748,6 +771,67 @@ func buildAssistantReplyInputs(
 	return append(inputs, suggestionInput), nil
 }
 
+// buildAssistantReplyInputsFromPolicy 根据 deliberation 与 policy 结果组装最终 assistant 输出。
+func buildAssistantReplyInputsFromPolicy(
+	reply *ChatCompletionResult,
+	decision *DeliberationDecision,
+	policy PolicyDecision,
+	resource *resourceContext,
+) ([]postgres.AssistantMessageInput, error) {
+	if reply == nil || strings.TrimSpace(reply.Reply) == "" {
+		return nil, errors.New("助手模型返回了空回复")
+	}
+
+	assistantInput, err := buildMessageInput(RoleAssistant, KindText, TextPayload{
+		Content: strings.TrimSpace(reply.Reply),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	inputs := []postgres.AssistantMessageInput{assistantInput}
+	if !policy.AllowTaskSuggestion || decision == nil || resource == nil {
+		return inputs, nil
+	}
+	if decision.CandidateTaskInstruction == nil || strings.TrimSpace(*decision.CandidateTaskInstruction) == "" {
+		return inputs, nil
+	}
+
+	suggestionInput, err := buildMessageInput(
+		RoleAssistant,
+		KindTaskSuggestion,
+		buildTaskSuggestion(strings.TrimSpace(*decision.CandidateTaskInstruction), resource),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(inputs, suggestionInput), nil
+}
+
+// decisionForReply 根据 policy 结果收窄 responder 可见的回复模式，避免 reply 误导后续体验。
+func decisionForReply(decision *DeliberationDecision, policy PolicyDecision) *DeliberationDecision {
+	if decision == nil {
+		return nil
+	}
+
+	cloned := *decision
+	cloned.ClarificationQuestion = normalizeOptionalText(decision.ClarificationQuestion)
+	cloned.CandidateTaskInstruction = normalizeOptionalText(decision.CandidateTaskInstruction)
+	cloned.CandidatePlanGoal = normalizeOptionalText(decision.CandidatePlanGoal)
+	cloned.Reasons = normalizeDecisionReasons(decision.Reasons)
+
+	switch {
+	case policy.AllowClarification:
+		cloned.ResponseMode = ResponseModeClarifyFirst
+		cloned.NeedsClarification = true
+	case !policy.AllowTaskSuggestion && cloned.ResponseMode == ResponseModeAnswerThenTaskCard:
+		cloned.ResponseMode = ResponseModeAnswerOnly
+	}
+
+	return &cloned
+}
+
 // preparedTurnContext 归拢preparedTurn所需的上下文依赖，避免调用方手工拼装。
 type preparedTurnContext struct {
 	AdditionalInputs []postgres.AssistantMessageInput
@@ -858,6 +942,54 @@ func buildTaskSuggestion(content string, resource *resourceContext) TaskSuggesti
 	suggestion.ResourceLabel = resource.Title + " · " + resource.Source
 	suggestion.StatusMessage = "资源已明确，可以创建任务。"
 	return suggestion
+}
+
+// heuristicDeliberationAgent 在显式 deliberation agent 尚未接线时提供兼容性的临时判定。
+type heuristicDeliberationAgent struct{}
+
+// Deliberate 基于现有 readiness 规则生成过渡期 deliberation 决策。
+func (heuristicDeliberationAgent) Deliberate(_ context.Context, state RuntimeState) (*DeliberationDecision, error) {
+	taskDecision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
+		CurrentMessage: state.Message,
+		ActiveResource: state.ActiveResource,
+	})
+
+	decision := &DeliberationDecision{
+		RequestKind:         "discussion",
+		ResponseMode:        ResponseModeAnswerOnly,
+		ChatFulfillable:     true,
+		EvidenceSufficiency: "insufficient",
+		Confidence:          0.5,
+		Reasons:             []string{"fallback heuristic deliberation"},
+	}
+	if state.ActiveResource != nil {
+		decision.EvidenceSufficiency = "sufficient"
+	}
+
+	switch taskDecision.IntentState {
+	case IntentStateCapabilityQuery:
+		decision.RequestKind = "capability_query"
+	case IntentStateExecution:
+		decision.RequestKind = "workflow_command"
+		decision.ChatFulfillable = false
+		if state.ActiveResource != nil {
+			decision.ResponseMode = ResponseModeAnswerThenTaskCard
+			decision.WorkflowCommitment = true
+			decision.CandidateTaskInstruction = stringPointer(strings.TrimSpace(state.Message))
+			break
+		}
+		decision.ResponseMode = ResponseModeClarifyFirst
+		decision.ChatFulfillable = true
+		decision.NeedsClarification = true
+		decision.ClarificationQuestion = stringPointer("要进入任务流还需要可执行的材料，你想先上传文件还是继续说明要修改的内容？")
+	default:
+		if state.ActiveResource != nil {
+			decision.RequestKind = "readback"
+			decision.ResponseMode = ResponseModeAnswerWithGrounding
+		}
+	}
+
+	return decision, nil
 }
 
 // buildSessionTitle 生成 `会话标题`，避免上层重复拼接展示文案。
@@ -971,19 +1103,21 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		return err
 	}
 
-	taskDecision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
-		CurrentMessage: input.content,
-		ActiveResource: replyContext.ActiveResource,
-	})
+	runtimeState := s.stateBuilder.Build(input.content, replyContext)
+	decision, policy, err := s.deliberateTurn(ctx, runtimeState)
+	if err != nil {
+		return err
+	}
 
 	stream, err := s.responder.Stream(ctx, ChatCompletionInput{
-		Snapshot:               replyContext.Snapshot,
-		Citations:              replyContext.Citations,
-		GroundedTarget:         replyContext.GroundedTarget,
-		History:                replyContext.History,
-		Message:                input.content,
-		Resource:               replyContext.ActiveResource,
-		TaskSuggestionDecision: &taskDecision,
+		RuntimeState:   runtimeState,
+		Snapshot:       replyContext.Snapshot,
+		Citations:      replyContext.Citations,
+		GroundedTarget: replyContext.GroundedTarget,
+		History:        replyContext.History,
+		Message:        input.content,
+		Resource:       replyContext.ActiveResource,
+		Decision:       decisionForReply(decision, policy),
 	})
 	if err != nil {
 		return mapAssistantStreamError(err)
@@ -1029,13 +1163,7 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		}
 	}
 
-	taskDecision = EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
-		CurrentMessage:       input.content,
-		ActiveResource:       replyContext.ActiveResource,
-		ModelTaskInstruction: result.TaskInstruction,
-	})
-
-	assistantInputs, err := buildAssistantReplyInputs(result, taskDecision)
+	assistantInputs, err := buildAssistantReplyInputsFromPolicy(result, decision, policy, runtimeState.ActiveResource)
 	if err != nil {
 		return NewStreamError(StreamErrorCodeEmptyReply, "本轮没有生成可展示内容。", err)
 	}
