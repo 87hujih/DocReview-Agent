@@ -47,38 +47,35 @@ function collectConsumedSuggestionIds(messages: AssistantRenderableMessage[]): S
 function CopyActionIcon({ state }: CopyActionIconProps) {
   if (state === "success") {
     return (
-      <svg className={styles.copyIcon} role="presentation" viewBox="0 0 24 24">
+      <svg className={styles.copyIcon} data-copy-icon="copy-check" role="presentation" viewBox="0 0 24 24">
         <rect
-          data-copy-sheet="back"
           fill="none"
-          height="11.5"
-          rx="1.75"
+          height="14"
+          rx="2"
+          ry="2"
           stroke="currentColor"
+          strokeLinecap="round"
           strokeLinejoin="round"
-          strokeWidth="1.7"
-          width="8.6"
-          x="4.75"
-          y="5.25"
-        />
-        <rect
-          data-copy-sheet="front"
-          fill="none"
-          height="12.4"
-          rx="1.75"
-          stroke="currentColor"
-          strokeLinejoin="round"
-          strokeWidth="1.7"
-          width="9.35"
-          x="8.95"
-          y="7.1"
+          strokeWidth="2"
+          width="14"
+          x="8"
+          y="8"
         />
         <path
-          d="M11.3 13.6l2 2.1l4.3 -4.4"
+          d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
           fill="none"
           stroke="currentColor"
           strokeLinecap="round"
           strokeLinejoin="round"
-          strokeWidth="1.8"
+          strokeWidth="2"
+        />
+        <path
+          d="m12 15 2 2 4-4"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
         />
       </svg>
     );
@@ -110,30 +107,27 @@ function CopyActionIcon({ state }: CopyActionIconProps) {
   }
 
   return (
-    <svg className={styles.copyIcon} role="presentation" viewBox="0 0 24 24">
+    <svg className={styles.copyIcon} data-copy-icon="copy" role="presentation" viewBox="0 0 24 24">
       <rect
-        data-copy-sheet="back"
         fill="none"
-        height="11.5"
-        rx="1.75"
+        height="14"
+        rx="2"
+        ry="2"
         stroke="currentColor"
+        strokeLinecap="round"
         strokeLinejoin="round"
-        strokeWidth="1.7"
-        width="8.6"
-        x="4.75"
-        y="5.25"
+        strokeWidth="2"
+        width="14"
+        x="8"
+        y="8"
       />
-      <rect
-        data-copy-sheet="front"
+      <path
+        d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
         fill="none"
-        height="12.4"
-        rx="1.75"
         stroke="currentColor"
+        strokeLinecap="round"
         strokeLinejoin="round"
-        strokeWidth="1.7"
-        width="9.35"
-        x="8.95"
-        y="7.1"
+        strokeWidth="2"
       />
     </svg>
   );
