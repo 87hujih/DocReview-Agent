@@ -13,15 +13,15 @@ type workflowPlanner interface {
 
 // WorkflowPlanDecision 表示 workflow planner 对“是否进入任务流”的结构化结论。
 type WorkflowPlanDecision struct {
-	ShouldEnterWorkflow  bool
-	ChatFulfillable      bool
-	NeedsClarification   bool
-	ClarificationQuestion *string
-	CandidateInstruction *string
-	CandidatePlanGoal    *string
-	MissingMaterials     []string
-	Confidence           float64
-	Reasons              []string
+	ShouldEnterWorkflow   bool     `json:"should_enter_workflow"`
+	ChatFulfillable       bool     `json:"chat_fulfillable"`
+	NeedsClarification    bool     `json:"needs_clarification"`
+	ClarificationQuestion *string  `json:"clarification_question,omitempty"`
+	CandidateInstruction  *string  `json:"candidate_instruction,omitempty"`
+	CandidatePlanGoal     *string  `json:"candidate_plan_goal,omitempty"`
+	MissingMaterials      []string `json:"missing_materials,omitempty"`
+	Confidence            float64  `json:"confidence"`
+	Reasons               []string `json:"reasons"`
 }
 
 // normalizeWorkflowPlanDecision 归一化 workflow planner 输出，避免矛盾字段继续向后传播。
