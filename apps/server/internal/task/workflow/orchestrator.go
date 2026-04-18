@@ -269,7 +269,8 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 	}
 	o.recordStepEvent(ctx, task, editorStep, "info", "step.started", "编辑步骤开始")
 
-	diffPreview, err := o.editorAgent.Edit(ctx, agentCtx.Content, reviewSummary, citations)
+	editorContent := buildEditorContent(version.Content, planResult.FocusSections, citations)
+	diffPreview, err := o.editorAgent.Edit(ctx, editorContent, reviewSummary, citations)
 	if err != nil {
 		o.failTask(ctx, task, editorStep, err)
 		return
@@ -299,6 +300,10 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 
 	// 2.4: 严格校验 diff 内容
 	if err := validateDiffPreview(diffPreview, citations); err != nil {
+		o.failTask(ctx, task, editorStep, err)
+		return
+	}
+	if err := validateDiffPreviewAgainstBaseContent(diffPreview, version.Content); err != nil {
 		o.failTask(ctx, task, editorStep, err)
 		return
 	}

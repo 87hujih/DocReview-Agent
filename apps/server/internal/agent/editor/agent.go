@@ -11,6 +11,7 @@ import (
 
 	"agent_project/apps/server/internal/agent/llmclient"
 	"agent_project/apps/server/internal/knowledge/citation"
+	"agent_project/apps/server/internal/knowledge/sections"
 
 	openaiacl "github.com/cloudwego/eino-ext/libs/acl/openai"
 	"github.com/cloudwego/eino/schema"
@@ -138,6 +139,7 @@ func (a *Agent) Edit(ctx context.Context, resourceContent string, reviewSummary 
 		preview.Sections[index].Reason = strings.TrimSpace(preview.Sections[index].Reason)
 		preview.Sections[index].CitationIDs = normalizeStringSlice(preview.Sections[index].CitationIDs)
 	}
+	normalizePreviewForResourceContent(&preview, resourceContent)
 
 	return &preview, nil
 }
@@ -167,4 +169,21 @@ func normalizeStringSlice(values []string) []string {
 	}
 
 	return normalized
+}
+
+// normalizePreviewForResourceContent 在无二级标题正文上兜底修正 section 标识，避免模型返回伪造章节标题。
+func normalizePreviewForResourceContent(preview *DiffPreview, resourceContent string) {
+	if preview == nil || preview.NoChange || len(preview.Sections) == 0 {
+		return
+	}
+
+	parsedSections := sections.ParseMarkdown(resourceContent)
+	if len(parsedSections) != 1 || parsedSections[0].Heading != "" {
+		return
+	}
+
+	for index := range preview.Sections {
+		preview.Sections[index].SectionTitle = sections.WholeDocumentTitle
+		preview.Sections[index].SectionOccurrence = 1
+	}
 }
