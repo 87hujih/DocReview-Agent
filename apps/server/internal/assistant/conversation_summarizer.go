@@ -42,6 +42,7 @@ type ConversationSummarizer interface {
 	Summarize(ctx context.Context, input SummaryInput) (*SummaryResult, error)
 }
 
+// llmConversationSummarizer 承载llm会话Summarizer相关状态，明确助手链路中的数据边界。
 type llmConversationSummarizer struct {
 	client      assistantLLMClient
 	retryConfig llmclient.Config
@@ -75,6 +76,7 @@ func NewConversationSummarizer(
 	return newConversationSummarizerWithClient(&openAIClientAdapter{client: client}, cfg), nil
 }
 
+// newConversationSummarizerWithClient 创建带客户端的会话Summarizer，并补齐助手链路需要的默认依赖和缺省行为。
 func newConversationSummarizerWithClient(client assistantLLMClient, cfg llmclient.Config) ConversationSummarizer {
 	timeoutMS := cfg.TimeoutMS
 	if timeoutMS <= 0 {
@@ -92,6 +94,7 @@ func newConversationSummarizerWithClient(client assistantLLMClient, cfg llmclien
 	}
 }
 
+// Summarize 汇总 `Summarize`，产出后续链路可直接复用的摘要结果。
 func (s *llmConversationSummarizer) Summarize(ctx context.Context, input SummaryInput) (*SummaryResult, error) {
 	if s == nil || s.client == nil {
 		return nil, nil
@@ -115,6 +118,7 @@ func (s *llmConversationSummarizer) Summarize(ctx context.Context, input Summary
 	return &SummaryResult{Summary: summary}, nil
 }
 
+// generateWithRetry 生成 `Retry`，把模型调用和重试策略收口在接收者内部。
 func (s *llmConversationSummarizer) generateWithRetry(ctx context.Context, messages []*schema.Message) (*schema.Message, error) {
 	var response *schema.Message
 
@@ -137,6 +141,7 @@ func (s *llmConversationSummarizer) generateWithRetry(ctx context.Context, messa
 	return response, nil
 }
 
+// buildConversationSummaryMessages 组装 `会话摘要消息` 序列，统一角色顺序和上下文裁剪规则。
 func buildConversationSummaryMessages(input SummaryInput, transcriptLines []string) []*schema.Message {
 	return []*schema.Message{
 		{
@@ -154,6 +159,7 @@ func buildConversationSummaryMessages(input SummaryInput, transcriptLines []stri
 	}
 }
 
+// buildSummaryPreviousSummarySection 把上一版摘要整理成提示词段落，缺失时显式写出“无”以稳定模型输入。
 func buildSummaryPreviousSummarySection(previousSummary *string) string {
 	if summary := strings.TrimSpace(optionalStringValue(previousSummary)); summary != "" {
 		return "已有摘要：\n" + summary
@@ -162,6 +168,7 @@ func buildSummaryPreviousSummarySection(previousSummary *string) string {
 	return "已有摘要：\n无"
 }
 
+// buildSummarySnapshotContextSection 把快照里的活跃资源、待确认任务和最近任务状态整理成摘要提示词段落。
 func buildSummarySnapshotContextSection(snapshot *SessionContextSnapshot) string {
 	lines := []string{"稳定上下文："}
 
@@ -196,6 +203,7 @@ func buildSummarySnapshotContextSection(snapshot *SessionContextSnapshot) string
 	return strings.Join(lines, "\n")
 }
 
+// buildSummaryTranscriptLines 把历史文本消息转换成供摘要模型消费的 transcript 行列表。
 func buildSummaryTranscriptLines(history []postgres.AssistantMessage) []string {
 	if len(history) == 0 {
 		return nil
@@ -227,6 +235,7 @@ func buildSummaryTranscriptLines(history []postgres.AssistantMessage) []string {
 	return lines
 }
 
+// historyMessageContentLength 统计历史消息正文长度，供滚动摘要和窗口裁剪控制预算。
 func historyMessageContentLength(message *schema.Message) int {
 	if message == nil {
 		return 0

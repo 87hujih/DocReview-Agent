@@ -285,6 +285,7 @@ func (r *TaskRepo) GetArtifacts(ctx context.Context, taskID string) ([]TaskArtif
 	return artifacts, rows.Err()
 }
 
+// scanTask 把当前数据库行扫描成 `任务`，统一查询结果到领域结构的映射。
 func scanTask(row pgx.Row) (Task, error) {
 	var task Task
 
@@ -305,6 +306,7 @@ func scanTask(row pgx.Row) (Task, error) {
 	return task, nil
 }
 
+// scanTaskStep 把当前数据库行扫描成 `任务Step`，统一查询结果到领域结构的映射。
 func scanTaskStep(row pgx.Row) (TaskStep, error) {
 	var step TaskStep
 
@@ -325,6 +327,7 @@ func scanTaskStep(row pgx.Row) (TaskStep, error) {
 	return step, nil
 }
 
+// scanTaskArtifact 把当前数据库行扫描成 `任务产物`，统一查询结果到领域结构的映射。
 func scanTaskArtifact(row pgx.Row) (TaskArtifact, error) {
 	var artifact TaskArtifact
 

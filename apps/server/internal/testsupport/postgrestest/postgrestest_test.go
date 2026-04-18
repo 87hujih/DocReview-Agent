@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// TestWithSearchPathPreservesExistingQueryAndAppendsPublic 验证`withSearchPath`在状态保持路径下的行为，防止同类回归。
 func TestWithSearchPathPreservesExistingQueryAndAppendsPublic(t *testing.T) {
 	databaseURL := "postgres://user:pass@localhost:5432/agent_project?sslmode=disable"
 
@@ -33,6 +34,7 @@ func TestWithSearchPathPreservesExistingQueryAndAppendsPublic(t *testing.T) {
 	}
 }
 
+// TestWithSearchPathKeepsCustomVectorSchemaAheadOfPublic 验证`withSearchPath`在状态保持路径下的行为，防止同类回归。
 func TestWithSearchPathKeepsCustomVectorSchemaAheadOfPublic(t *testing.T) {
 	databaseURL := "postgres://user:pass@localhost:5432/agent_project"
 
@@ -51,6 +53,7 @@ func TestWithSearchPathKeepsCustomVectorSchemaAheadOfPublic(t *testing.T) {
 	}
 }
 
+// TestNewSchemaNameSanitizesNamespaceAndCapsLength 验证`newSchemaNameSanitizesNamespaceAndCapsLength`在特定边界条件下的行为，防止同类回归。
 func TestNewSchemaNameSanitizesNamespaceAndCapsLength(t *testing.T) {
 	schemaName := newSchemaName(strings.Repeat("server/handlers-", 8))
 

@@ -18,6 +18,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
+// TestCreateTaskHandler 验证`createTaskHandler`在特定边界条件下的行为，防止同类回归。
 func TestCreateTaskHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -62,6 +63,7 @@ func TestCreateTaskHandler(t *testing.T) {
 	}
 }
 
+// TestNewTaskHandlerRequiresEventRepo 验证`newTaskHandler`在约束校验路径下的行为，防止同类回归。
 func TestNewTaskHandlerRequiresEventRepo(t *testing.T) {
 	defer func() {
 		if recover() == nil {
@@ -72,6 +74,7 @@ func TestNewTaskHandlerRequiresEventRepo(t *testing.T) {
 	_ = NewTaskHandler(nil, nil, nil)
 }
 
+// TestCreateTaskHandlerMissingVersion 验证`createTaskHandlerMissingVersion`在特定边界条件下的行为，防止同类回归。
 func TestCreateTaskHandlerMissingVersion(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -107,6 +110,7 @@ func TestCreateTaskHandlerMissingVersion(t *testing.T) {
 	}
 }
 
+// TestCreateTaskHandlerReturnsCreatedFailedTaskWhenSchedulingFails 验证`createTaskHandler`在返回值分支下的行为，防止同类回归。
 func TestCreateTaskHandlerReturnsCreatedFailedTaskWhenSchedulingFails(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -156,6 +160,7 @@ func TestCreateTaskHandlerReturnsCreatedFailedTaskWhenSchedulingFails(t *testing
 	}
 }
 
+// TestListTasksHandler 验证`listTasksHandler`在特定边界条件下的行为，防止同类回归。
 func TestListTasksHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -186,6 +191,7 @@ func TestListTasksHandler(t *testing.T) {
 	}
 }
 
+// TestGetTaskByIDHandler 验证`getTaskByIDHandler`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskByIDHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -222,6 +228,7 @@ func TestGetTaskByIDHandler(t *testing.T) {
 	}
 }
 
+// TestTaskToDetailResponseIncludesSourceSessionID 验证`taskToDetailResponse`在流程控制路径下的行为，防止同类回归。
 func TestTaskToDetailResponseIncludesSourceSessionID(t *testing.T) {
 	sourceSessionID := "session-1"
 	response := taskToDetailResponse(postgres.Task{
@@ -237,6 +244,7 @@ func TestTaskToDetailResponseIncludesSourceSessionID(t *testing.T) {
 	}
 }
 
+// TestGetTaskByIDHandlerIncludesAssistantSourceSessionID 验证`getTaskByIDHandler`在流程控制路径下的行为，防止同类回归。
 func TestGetTaskByIDHandlerIncludesAssistantSourceSessionID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -298,6 +306,7 @@ func TestGetTaskByIDHandlerIncludesAssistantSourceSessionID(t *testing.T) {
 	}
 }
 
+// TestGetTaskByIDHandlerIncludesErrorMessages 验证`getTaskByIDHandler`在流程控制路径下的行为，防止同类回归。
 func TestGetTaskByIDHandlerIncludesErrorMessages(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -350,6 +359,7 @@ func TestGetTaskByIDHandlerIncludesErrorMessages(t *testing.T) {
 	}
 }
 
+// TestGetTaskArtifactsHandler 验证`getTaskArtifactsHandler`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskArtifactsHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -404,6 +414,7 @@ func TestGetTaskArtifactsHandler(t *testing.T) {
 	}
 }
 
+// TestGetTaskEventsHandler 验证`getTaskEventsHandler`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskEventsHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -471,6 +482,7 @@ func TestGetTaskEventsHandler(t *testing.T) {
 	}
 }
 
+// TestGetTaskNotFound 验证`getTaskNotFound`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -488,6 +500,7 @@ func TestGetTaskNotFound(t *testing.T) {
 	}
 }
 
+// TestGetTaskByInvalidUUID 验证`getTaskByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskByInvalidUUID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -505,6 +518,7 @@ func TestGetTaskByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestGetTaskArtifactsByInvalidUUID 验证`getTaskArtifactsByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskArtifactsByInvalidUUID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -522,6 +536,7 @@ func TestGetTaskArtifactsByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestGetTaskEventsByInvalidUUID 验证`getTaskEventsByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskEventsByInvalidUUID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -539,6 +554,7 @@ func TestGetTaskEventsByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestCreateTaskInvalidResourceIDFormat 验证`createTaskInvalidResourceIDFormat`在特定边界条件下的行为，防止同类回归。
 func TestCreateTaskInvalidResourceIDFormat(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -563,6 +579,7 @@ func TestCreateTaskInvalidResourceIDFormat(t *testing.T) {
 	}
 }
 
+// TestHealthHandlerSetsRequestIDHeader 验证`healthHandlerSetsRequestIDHeader`在特定边界条件下的行为，防止同类回归。
 func TestHealthHandlerSetsRequestIDHeader(t *testing.T) {
 	engine := server.New()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))

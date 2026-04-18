@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestParseMarkdownAssignsOccurrenceToDuplicateHeadings 验证`parseMarkdownAssignsOccurrenceToDuplicateHeadings`在特定边界条件下的行为，防止同类回归。
 func TestParseMarkdownAssignsOccurrenceToDuplicateHeadings(t *testing.T) {
 	input := strings.Join([]string{
 		"# 手册",
@@ -35,6 +36,7 @@ func TestParseMarkdownAssignsOccurrenceToDuplicateHeadings(t *testing.T) {
 	}
 }
 
+// TestParseMarkdownFallsBackToWholeDocumentSection 验证`parseMarkdown`在回退路径下的行为，防止同类回归。
 func TestParseMarkdownFallsBackToWholeDocumentSection(t *testing.T) {
 	input := "这是没有二级标题的正文。\n\n第二段也应该保留。"
 

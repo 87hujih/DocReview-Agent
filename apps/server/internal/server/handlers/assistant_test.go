@@ -29,6 +29,7 @@ const (
 	testAssistantMissingSuggestionID = "00000000-0000-0000-0000-000000000998"
 )
 
+// TestListAssistantSessionsHandler 验证`listAssistantSessionsHandler`在特定边界条件下的行为，防止同类回归。
 func TestListAssistantSessionsHandler(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		listSessionsResult: []postgres.AssistantSession{
@@ -69,6 +70,7 @@ func TestListAssistantSessionsHandler(t *testing.T) {
 	}
 }
 
+// TestGetAssistantCapabilitiesHandlerReturnsUploadCapabilities 验证`getAssistantCapabilitiesHandler`在返回值分支下的行为，防止同类回归。
 func TestGetAssistantCapabilitiesHandlerReturnsUploadCapabilities(t *testing.T) {
 	handler := NewAssistantHandlerWithUploadLimitAndPolicy(
 		fakeAssistantService{},
@@ -106,6 +108,7 @@ func TestGetAssistantCapabilitiesHandlerReturnsUploadCapabilities(t *testing.T) 
 	}
 }
 
+// TestCreateConversationHandler 验证`createConversationHandler`在特定边界条件下的行为，防止同类回归。
 func TestCreateConversationHandler(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		startConversationResult: &assistant.ConversationResult{
@@ -170,6 +173,7 @@ func TestCreateConversationHandler(t *testing.T) {
 	}
 }
 
+// TestAppendAssistantMessageHandler 验证`appendAssistantMessageHandler`在特定边界条件下的行为，防止同类回归。
 func TestAppendAssistantMessageHandler(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		appendMessageResult: &assistant.ConversationResult{
@@ -220,6 +224,7 @@ func TestAppendAssistantMessageHandler(t *testing.T) {
 	}
 }
 
+// TestCreateConversationStreamHandler 验证`createConversationStreamHandler`在特定边界条件下的行为，防止同类回归。
 func TestCreateConversationStreamHandler(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		startConversationStreamEvents: []assistant.StreamEvent{
@@ -305,6 +310,7 @@ func TestCreateConversationStreamHandler(t *testing.T) {
 	}
 }
 
+// TestWriteAssistantStreamEventSupportsSessionFile 验证`writeAssistantStreamEvent`在合法输入或兼容路径下的行为，防止同类回归。
 func TestWriteAssistantStreamEventSupportsSessionFile(t *testing.T) {
 	reader, writer := io.Pipe()
 	done := make(chan string, 1)
@@ -346,6 +352,7 @@ func TestWriteAssistantStreamEventSupportsSessionFile(t *testing.T) {
 	}
 }
 
+// TestAppendMessageStreamHandler 验证`appendMessageStreamHandler`在特定边界条件下的行为，防止同类回归。
 func TestAppendMessageStreamHandler(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		getConversationResult: &assistant.ConversationResult{
@@ -417,6 +424,7 @@ func TestAppendMessageStreamHandler(t *testing.T) {
 	}
 }
 
+// TestAppendMessageStreamHandlerReturnsJSON404BeforeOpeningStream 验证`appendMessageStreamHandler`在返回值分支下的行为，防止同类回归。
 func TestAppendMessageStreamHandlerReturnsJSON404BeforeOpeningStream(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		getConversationErr: assistant.ErrSessionNotFound,
@@ -445,6 +453,7 @@ func TestAppendMessageStreamHandlerReturnsJSON404BeforeOpeningStream(t *testing.
 	}
 }
 
+// TestCreateConversationStreamHandlerWritesErrorEventAfterStreamStarts 验证`createConversationStreamHandler`在写入或副作用路径下的行为，防止同类回归。
 func TestCreateConversationStreamHandlerWritesErrorEventAfterStreamStarts(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		startConversationStreamErr: errors.New("stream failed"),
@@ -487,6 +496,7 @@ func TestCreateConversationStreamHandlerWritesErrorEventAfterStreamStarts(t *tes
 	}
 }
 
+// TestUploadAssistantFileHandler 验证`uploadAssistantFileHandler`在特定边界条件下的行为，防止同类回归。
 func TestUploadAssistantFileHandler(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		uploadFileResult: &assistant.UploadFileResult{
@@ -558,6 +568,7 @@ func TestUploadAssistantFileHandler(t *testing.T) {
 	}
 }
 
+// TestUploadAssistantFileHandlerRejectsTikaDocumentInTextMode 验证`uploadAssistantFileHandler`在非法输入或失败路径下的行为，防止同类回归。
 func TestUploadAssistantFileHandlerRejectsTikaDocumentInTextMode(t *testing.T) {
 	var uploadCalled bool
 	policy := mustDocumentParser(t, documentparser.Options{Mode: documentparser.ModeText})
@@ -583,6 +594,7 @@ func TestUploadAssistantFileHandlerRejectsTikaDocumentInTextMode(t *testing.T) {
 	}
 }
 
+// TestUploadAssistantFileHandlerAllowsDocumentInTikaMode 验证`uploadAssistantFileHandler`在合法输入或兼容路径下的行为，防止同类回归。
 func TestUploadAssistantFileHandlerAllowsDocumentInTikaMode(t *testing.T) {
 	var uploadedFileName string
 	policy := mustDocumentParser(t, documentparser.Options{
@@ -608,6 +620,7 @@ func TestUploadAssistantFileHandlerAllowsDocumentInTikaMode(t *testing.T) {
 	}
 }
 
+// TestUploadAssistantFileHandlerRejectsUnsupportedExtension 验证`uploadAssistantFileHandler`在非法输入或失败路径下的行为，防止同类回归。
 func TestUploadAssistantFileHandlerRejectsUnsupportedExtension(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -641,6 +654,7 @@ func TestUploadAssistantFileHandlerRejectsUnsupportedExtension(t *testing.T) {
 	}
 }
 
+// TestUploadAssistantFileHandlerRejectsTooLargeFile 验证`uploadAssistantFileHandler`在非法输入或失败路径下的行为，防止同类回归。
 func TestUploadAssistantFileHandlerRejectsTooLargeFile(t *testing.T) {
 	handler := NewAssistantHandlerWithUploadLimit(fakeAssistantService{}, 4)
 	engine := server.New()
@@ -675,6 +689,7 @@ func TestUploadAssistantFileHandlerRejectsTooLargeFile(t *testing.T) {
 	}
 }
 
+// TestConfirmTaskSuggestionHandlerReturnsHandledFailurePayload 验证`confirmTaskSuggestionHandler`在返回值分支下的行为，防止同类回归。
 func TestConfirmTaskSuggestionHandlerReturnsHandledFailurePayload(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		confirmTaskResult: &assistant.ConfirmTaskResult{
@@ -723,6 +738,7 @@ func TestConfirmTaskSuggestionHandlerReturnsHandledFailurePayload(t *testing.T) 
 	}
 }
 
+// TestDeleteAssistantSessionHandler 验证`deleteAssistantSessionHandler`在特定边界条件下的行为，防止同类回归。
 func TestDeleteAssistantSessionHandler(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		deleteSessionResult: true,
@@ -737,6 +753,7 @@ func TestDeleteAssistantSessionHandler(t *testing.T) {
 	}
 }
 
+// fakeAssistantService 作为助手服务的测试替身，用于在用例里提供可控的依赖行为。
 type fakeAssistantService struct {
 	listSessionsResult            []postgres.AssistantSession
 	getConversationResult         *assistant.ConversationResult
@@ -761,18 +778,22 @@ type fakeAssistantService struct {
 	uploadFileHook func(context.Context, string, string, []byte)
 }
 
+// ListSessions 实现测试替身需要的 `ListSessions` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantService) ListSessions(context.Context) ([]postgres.AssistantSession, error) {
 	return f.listSessionsResult, f.listSessionsErr
 }
 
+// GetConversation 实现测试替身需要的 `GetConversation` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantService) GetConversation(context.Context, string) (*assistant.ConversationResult, error) {
 	return f.getConversationResult, f.getConversationErr
 }
 
+// StartConversation 实现测试替身需要的 `StartConversation` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantService) StartConversation(context.Context, string) (*assistant.ConversationResult, error) {
 	return f.startConversationResult, f.startConversationErr
 }
 
+// StartConversationStream 实现测试替身需要的 `StartConversationStream` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantService) StartConversationStream(_ context.Context, _ string, emit func(assistant.StreamEvent) error) error {
 	for _, event := range f.startConversationStreamEvents {
 		if err := emit(event); err != nil {
@@ -783,10 +804,12 @@ func (f fakeAssistantService) StartConversationStream(_ context.Context, _ strin
 	return f.startConversationStreamErr
 }
 
+// AppendMessage 实现测试替身需要的 `AppendMessage` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantService) AppendMessage(context.Context, string, string) (*assistant.ConversationResult, error) {
 	return f.appendMessageResult, f.appendMessageErr
 }
 
+// AppendMessageStream 实现测试替身需要的 `AppendMessageStream` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantService) AppendMessageStream(_ context.Context, _ string, _ string, emit func(assistant.StreamEvent) error) error {
 	for _, event := range f.appendMessageStreamEvents {
 		if err := emit(event); err != nil {
@@ -797,6 +820,7 @@ func (f fakeAssistantService) AppendMessageStream(_ context.Context, _ string, _
 	return f.appendMessageStreamErr
 }
 
+// UploadFile 实现测试替身需要的 `UploadFile` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantService) UploadFile(ctx context.Context, sessionID string, fileName string, content []byte) (*assistant.UploadFileResult, error) {
 	if f.uploadFileHook != nil {
 		f.uploadFileHook(ctx, sessionID, fileName, content)
@@ -804,30 +828,37 @@ func (f fakeAssistantService) UploadFile(ctx context.Context, sessionID string, 
 	return f.uploadFileResult, f.uploadFileErr
 }
 
+// ConfirmTaskSuggestion 实现测试替身需要的 `ConfirmTaskSuggestion` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantService) ConfirmTaskSuggestion(context.Context, string) (*assistant.ConfirmTaskResult, error) {
 	return f.confirmTaskResult, f.confirmTaskErr
 }
 
+// DeleteSession 实现测试替身需要的 `DeleteSession` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantService) DeleteSession(context.Context, string) (bool, error) {
 	return f.deleteSessionResult, f.deleteSessionErr
 }
 
+// fakeAssistantUploadPolicy 作为助手上传策略的测试替身，用于在用例里提供可控的依赖行为。
 type fakeAssistantUploadPolicy struct {
 	supportedExtensions []string
 }
 
+// SupportsFileName 返回接收者对指定文件名的兼容性判断，供上层尽早拦截不支持的输入。
 func (f fakeAssistantUploadPolicy) SupportsFileName(string) bool {
 	return true
 }
 
+// SupportedExtensions 返回接收者允许的扩展名集合，避免调用方重复维护能力清单。
 func (f fakeAssistantUploadPolicy) SupportedExtensions() []string {
 	return append([]string(nil), f.supportedExtensions...)
 }
 
+// UnsupportedFileMessage 为不支持的文件生成对外提示文案，避免各入口分散拼接错误消息。
 func (f fakeAssistantUploadPolicy) UnsupportedFileMessage(string) string {
 	return "unsupported"
 }
 
+// mustMarshalHandlerJSON 在测试里强制构造 `MarshalhandlerJSON`，失败时立即终止当前用例。
 func mustMarshalHandlerJSON(t *testing.T, value any) []byte {
 	t.Helper()
 
@@ -839,10 +870,12 @@ func mustMarshalHandlerJSON(t *testing.T, value any) []byte {
 	return payload
 }
 
+// stringPointer 返回字符串指针，简化构造可选文本字段时的样板代码。
 func stringPointer(value string) *string {
 	return &value
 }
 
+// mustDocumentParser 在测试里强制构造 `文档解析器`，失败时立即终止当前用例。
 func mustDocumentParser(t *testing.T, options documentparser.Options) documentparser.Parser {
 	t.Helper()
 
@@ -854,12 +887,14 @@ func mustDocumentParser(t *testing.T, options documentparser.Options) documentpa
 	return parser
 }
 
+// performUploadRequest 为测试用例执行 `上传请求`，收口常见请求发起步骤。
 func performUploadRequest(t *testing.T, engine *server.Hertz, fileName string, contentType string, content []byte) *protocol.Response {
 	t.Helper()
 
 	return performUploadRequestToPath(t, engine, "/api/assistant/sessions/"+testAssistantSessionUUID+"/files", fileName, contentType, content)
 }
 
+// performUploadRequestToPath 为测试用例执行 `上传请求路径`，收口常见请求发起步骤。
 func performUploadRequestToPath(
 	t *testing.T,
 	engine *server.Hertz,
@@ -898,11 +933,13 @@ func performUploadRequestToPath(
 	).Result()
 }
 
+// parsedSSEEvent 保存解析后的 SSE 事件类型和载荷，便于测试按事件顺序与内容断言流式响应。
 type parsedSSEEvent struct {
 	Type string
 	Data json.RawMessage
 }
 
+// parseSSEEvents 为测试场景处理 `parseSSE事件` 的辅助步骤，减少重复搭建逻辑。
 func parseSSEEvents(t *testing.T, body string) []parsedSSEEvent {
 	t.Helper()
 
@@ -930,6 +967,7 @@ func parseSSEEvents(t *testing.T, body string) []parsedSSEEvent {
 	return events
 }
 
+// TestGetAssistantConversationNotFound 验证`getAssistantConversationNotFound`在特定边界条件下的行为，防止同类回归。
 func TestGetAssistantConversationNotFound(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		getConversationErr: assistant.ErrSessionNotFound,
@@ -944,6 +982,7 @@ func TestGetAssistantConversationNotFound(t *testing.T) {
 	}
 }
 
+// TestGetAssistantConversationInvalidID 验证`getAssistantConversationInvalidID`在特定边界条件下的行为，防止同类回归。
 func TestGetAssistantConversationInvalidID(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{})
 
@@ -959,6 +998,7 @@ func TestGetAssistantConversationInvalidID(t *testing.T) {
 	}
 }
 
+// TestCreateConversationBadRequest 验证`createConversationBadRequest`在特定边界条件下的行为，防止同类回归。
 func TestCreateConversationBadRequest(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		startConversationErr: assistant.ErrMessageRequired,
@@ -983,6 +1023,7 @@ func TestCreateConversationBadRequest(t *testing.T) {
 	}
 }
 
+// TestConfirmTaskSuggestionNotFound 验证`confirmTaskSuggestionNotFound`在特定边界条件下的行为，防止同类回归。
 func TestConfirmTaskSuggestionNotFound(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		confirmTaskErr: assistant.ErrTaskSuggestionNotFound,
@@ -997,6 +1038,7 @@ func TestConfirmTaskSuggestionNotFound(t *testing.T) {
 	}
 }
 
+// TestAppendAssistantMessageInvalidID 验证`appendAssistantMessageInvalidID`在特定边界条件下的行为，防止同类回归。
 func TestAppendAssistantMessageInvalidID(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{})
 
@@ -1021,6 +1063,7 @@ func TestAppendAssistantMessageInvalidID(t *testing.T) {
 	}
 }
 
+// TestAppendAssistantMessageStreamInvalidID 验证`appendAssistantMessageStreamInvalidID`在特定边界条件下的行为，防止同类回归。
 func TestAppendAssistantMessageStreamInvalidID(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{})
 
@@ -1045,6 +1088,7 @@ func TestAppendAssistantMessageStreamInvalidID(t *testing.T) {
 	}
 }
 
+// TestUploadAssistantFileInvalidID 验证`uploadAssistantFileInvalidID`在特定边界条件下的行为，防止同类回归。
 func TestUploadAssistantFileInvalidID(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{})
 
@@ -1067,6 +1111,7 @@ func TestUploadAssistantFileInvalidID(t *testing.T) {
 	}
 }
 
+// TestDeleteAssistantSessionInvalidID 验证`deleteAssistantSessionInvalidID`在特定边界条件下的行为，防止同类回归。
 func TestDeleteAssistantSessionInvalidID(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{})
 
@@ -1082,6 +1127,7 @@ func TestDeleteAssistantSessionInvalidID(t *testing.T) {
 	}
 }
 
+// TestConfirmTaskSuggestionInvalidID 验证`confirmTaskSuggestionInvalidID`在特定边界条件下的行为，防止同类回归。
 func TestConfirmTaskSuggestionInvalidID(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{})
 
@@ -1097,6 +1143,7 @@ func TestConfirmTaskSuggestionInvalidID(t *testing.T) {
 	}
 }
 
+// TestDeleteAssistantSessionInternalError 验证`deleteAssistantSessionInternalError`在特定边界条件下的行为，防止同类回归。
 func TestDeleteAssistantSessionInternalError(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		deleteSessionErr: errors.New("delete failed"),

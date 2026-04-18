@@ -132,6 +132,7 @@ func (r *JobRepo) CommitPreparedExecution(
 	}, nil
 }
 
+// finalizePreparedExecutionConflict 收敛 `Prepared执行Conflict` 的最终结果，统一尾部状态和错误处理。
 func finalizePreparedExecutionConflict(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -180,6 +181,7 @@ func finalizePreparedExecutionConflict(
 	}, nil
 }
 
+// lockResourceForExecutionTx 在事务内锁定 `执行事务的资源`，避免并发更新产生竞争。
 func lockResourceForExecutionTx(ctx context.Context, tx pgx.Tx, resourceID string) (*Resource, error) {
 	resource, err := scanResource(tx.QueryRow(ctx, `
 		SELECT id, title, source_type, source_ref, created_at, updated_at
@@ -198,6 +200,7 @@ func lockResourceForExecutionTx(ctx context.Context, tx pgx.Tx, resourceID strin
 	return &resource, nil
 }
 
+// getCurrentVersionForUpdateTx 在事务内读取资源当前版本并加锁，确保提交执行结果时看到一致的基线版本。
 func getCurrentVersionForUpdateTx(ctx context.Context, tx pgx.Tx, resourceID string) (*ResourceVersion, error) {
 	version, err := scanResourceVersion(tx.QueryRow(ctx, `
 		SELECT id, resource_id, version_number, content, source, created_at

@@ -29,6 +29,7 @@ var validTransitions = map[string]map[string]bool{
 	StatusExecuting:        {StatusCompleted: true, StatusFailed: true},
 }
 
+// Transition 定义任务状态迁移时需要记录的目标状态和事件语义，统一状态机分支的输出约定。
 func Transition(from string, to string) error {
 	targets, ok := validTransitions[from]
 	if !ok {

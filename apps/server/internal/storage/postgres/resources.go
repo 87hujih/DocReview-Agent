@@ -674,6 +674,7 @@ func collectResourceChunks(rows pgx.Rows) ([]ResourceChunk, error) {
 	return chunks, rows.Err()
 }
 
+// createChunkTx 在事务内写入单个 chunk 及其 grounded 字段，收口资源仓储的插入细节。
 func createChunkTx(ctx context.Context, tx pgx.Tx, chunk *ResourceChunk) error {
 	normalizeChunkForInsert(chunk)
 
@@ -781,10 +782,12 @@ func scanResourceChunk(row pgx.Row) (ResourceChunk, error) {
 	return chunk, nil
 }
 
+// normalizeLexicalQuery 归一化 `Lexical查询`，避免后续流程重复处理边界输入。
 func normalizeLexicalQuery(query string) string {
 	return strings.ToLower(strings.TrimSpace(query))
 }
 
+// normalizeChunkForInsert 在写入 chunk 前补齐 grounded 元数据默认值，保证显式 INSERT 也能满足线上非空列约束。
 func normalizeChunkForInsert(chunk *ResourceChunk) {
 	if chunk == nil {
 		return
@@ -796,6 +799,7 @@ func normalizeChunkForInsert(chunk *ResourceChunk) {
 	chunk.PageStart, chunk.PageEnd = defaultChunkPages(chunk.PageStart, chunk.PageEnd)
 }
 
+// defaultChunkSectionType 为缺失的 chunk section type 提供兜底值，避免 legacy/fallback chunk 在首次写库时违反约束。
 func defaultChunkSectionType(current *string, sectionTitle string) *string {
 	if trimmed := optionalTrimmedText(derefOptionalString(current)); trimmed != nil {
 		return trimmed
@@ -810,6 +814,7 @@ func defaultChunkSectionType(current *string, sectionTitle string) *string {
 	return &defaultType
 }
 
+// defaultChunkRole 为缺失的 chunk role 统一补默认语义，保持检索和写库链路看到一致的 grounded 角色。
 func defaultChunkRole(current *string) *string {
 	if trimmed := optionalTrimmedText(derefOptionalString(current)); trimmed != nil {
 		return trimmed
@@ -819,6 +824,7 @@ func defaultChunkRole(current *string) *string {
 	return &defaultRole
 }
 
+// defaultChunkWindowGroupID 为缺失的窗口分组 ID 生成稳定兜底值，避免显式写 NULL 触发数据库非空错误。
 func defaultChunkWindowGroupID(current *string, sectionID *string, sectionTitle string) *string {
 	if trimmed := optionalTrimmedText(derefOptionalString(current)); trimmed != nil {
 		return trimmed
@@ -834,6 +840,7 @@ func defaultChunkWindowGroupID(current *string, sectionID *string, sectionTitle 
 	return &empty
 }
 
+// defaultChunkPages 为缺失页码的 chunk 统一补齐开始页和结束页，保持 grounded 元数据契约完整。
 func defaultChunkPages(pageStart *int, pageEnd *int) (*int, *int) {
 	start := 0
 	end := 0
@@ -854,6 +861,7 @@ func defaultChunkPages(pageStart *int, pageEnd *int) (*int, *int) {
 	return &start, &end
 }
 
+// derefOptionalString 把可选字符串指针解引用成稳定文本值，减少调用方散落的 nil 判断。
 func derefOptionalString(value *string) string {
 	if value == nil {
 		return ""

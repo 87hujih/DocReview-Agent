@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// TestSessionContextSnapshotRepoCreateEmptyAndGetBySessionID 验证`sessionContextSnapshotRepoCreateEmptyAndGetBySessionID`在特定边界条件下的行为，防止同类回归。
 func TestSessionContextSnapshotRepoCreateEmptyAndGetBySessionID(t *testing.T) {
 	pool := newTestPool(t)
 	assistantRepo := NewAssistantRepo(pool)
@@ -41,6 +42,7 @@ func TestSessionContextSnapshotRepoCreateEmptyAndGetBySessionID(t *testing.T) {
 	assertEmptySessionContextSnapshot(t, loaded, session.ID)
 }
 
+// TestSessionContextSnapshotRepoUpsertActiveResourceAndPendingTaskSuggestion 验证`sessionContextSnapshotRepoUpsertActiveResourceAndPendingTaskSuggestion`在特定边界条件下的行为，防止同类回归。
 func TestSessionContextSnapshotRepoUpsertActiveResourceAndPendingTaskSuggestion(t *testing.T) {
 	pool := newTestPool(t)
 	assistantRepo := NewAssistantRepo(pool)
@@ -177,6 +179,7 @@ func TestSessionContextSnapshotRepoUpsertActiveResourceAndPendingTaskSuggestion(
 	}
 }
 
+// TestSessionContextSnapshotRepoUpsertLatestTaskAndClearPendingTaskSuggestion 验证`sessionContextSnapshotRepoUpsertLatestTaskAndClearPendingTaskSuggestion`在特定边界条件下的行为，防止同类回归。
 func TestSessionContextSnapshotRepoUpsertLatestTaskAndClearPendingTaskSuggestion(t *testing.T) {
 	pool := newTestPool(t)
 	assistantRepo := NewAssistantRepo(pool)
@@ -294,6 +297,7 @@ func TestSessionContextSnapshotRepoUpsertLatestTaskAndClearPendingTaskSuggestion
 	}
 }
 
+// TestSessionContextSnapshotRepoAdvanceRollingSummaryMovesForward 验证`sessionContextSnapshotRepoAdvanceRollingSummary`在写入或副作用路径下的行为，防止同类回归。
 func TestSessionContextSnapshotRepoAdvanceRollingSummaryMovesForward(t *testing.T) {
 	pool := newTestPool(t)
 	assistantRepo := NewAssistantRepo(pool)
@@ -339,6 +343,7 @@ func TestSessionContextSnapshotRepoAdvanceRollingSummaryMovesForward(t *testing.
 	}
 }
 
+// TestSessionContextSnapshotRepoAdvanceRollingSummaryRejectsStaleBase 验证`sessionContextSnapshotRepoAdvanceRollingSummary`在非法输入或失败路径下的行为，防止同类回归。
 func TestSessionContextSnapshotRepoAdvanceRollingSummaryRejectsStaleBase(t *testing.T) {
 	pool := newTestPool(t)
 	assistantRepo := NewAssistantRepo(pool)
@@ -384,6 +389,7 @@ func TestSessionContextSnapshotRepoAdvanceRollingSummaryRejectsStaleBase(t *test
 	}
 }
 
+// TestSessionContextSnapshotRepoPersistsOrdinalReferenceFrame 验证`sessionContextSnapshotRepo`在写入或副作用路径下的行为，防止同类回归。
 func TestSessionContextSnapshotRepoPersistsOrdinalReferenceFrame(t *testing.T) {
 	pool := newTestPool(t)
 	assistantRepo := NewAssistantRepo(pool)
@@ -461,6 +467,7 @@ func TestSessionContextSnapshotRepoPersistsOrdinalReferenceFrame(t *testing.T) {
 	}
 }
 
+// appendAssistantMessage 为测试用例处理 `append助手消息`，减少样板搭建和断言前准备步骤。
 func appendAssistantMessage(
 	t *testing.T,
 	ctx context.Context,
@@ -492,6 +499,7 @@ func appendAssistantMessage(
 	return messages[0]
 }
 
+// assertEmptySessionContextSnapshot 封装 `Empty会话上下文快照` 的断言逻辑，避免用例重复展开校验细节。
 func assertEmptySessionContextSnapshot(t *testing.T, snapshot *SessionContextSnapshotRecord, sessionID string) {
 	t.Helper()
 

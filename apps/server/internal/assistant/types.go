@@ -58,6 +58,7 @@ type StreamError struct {
 	cause   error
 }
 
+// Error 返回接收者封装后的错误文本，便于上层直接对外暴露。
 func (e *StreamError) Error() string {
 	if e == nil {
 		return ""
@@ -66,6 +67,7 @@ func (e *StreamError) Error() string {
 	return e.Message
 }
 
+// Unwrap 返回接收者内部持有的底层错误，支持上层使用 errors.Is 或 errors.As。
 func (e *StreamError) Unwrap() error {
 	if e == nil {
 		return nil

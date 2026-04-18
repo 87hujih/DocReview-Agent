@@ -420,6 +420,7 @@ func (s *Service) UploadFile(ctx context.Context, sessionID string, fileName str
 	}, nil
 }
 
+// persistUploadedFile 持久化 `Uploaded文件`，把写库细节收口在接收者内部。
 func (s *Service) persistUploadedFile(ctx context.Context, sessionID string, fileName string, content []byte) (*postgres.UploadedFile, error) {
 	if s.fileStore == nil && s.uploadedFiles == nil {
 		return nil, nil
@@ -563,6 +564,7 @@ func (s *Service) DeleteSession(ctx context.Context, sessionID string) (bool, er
 	return s.repo.DeleteSession(ctx, sessionID)
 }
 
+// buildReplyInputs 组装 `Reply输入`，统一接收者返回结果的结构形态。
 func (s *Service) buildReplyInputs(
 	ctx context.Context,
 	sessionID string,
@@ -634,6 +636,7 @@ func (s *Service) buildReplyInputs(
 	return inputs, replyContext, nil
 }
 
+// buildUploadMessages 组装 `上传消息`，统一接收者返回结果的结构形态。
 func (s *Service) buildUploadMessages(
 	ctx context.Context,
 	fileName string,
@@ -680,6 +683,7 @@ func (s *Service) buildUploadMessages(
 	return result.Resource, []postgres.AssistantMessageInput{fileInput}, nil, nil
 }
 
+// appendSystemMessage 向助手追加 `系统消息`，保持写入顺序和副作用收口在单点。
 func (s *Service) appendSystemMessage(ctx context.Context, sessionID string, content string) ([]postgres.AssistantMessage, error) {
 	input, err := buildMessageInput(RoleAssistant, KindSystem, SystemPayload{
 		Content: content,
@@ -692,6 +696,7 @@ func (s *Service) appendSystemMessage(ctx context.Context, sessionID string, con
 	return s.repo.AppendMessages(ctx, sessionID, []postgres.AssistantMessageInput{input})
 }
 
+// buildMessageInput 组装 `消息输入`，为后续流程准备可直接消费的输入。
 func buildMessageInput(role string, kind string, payload any) (postgres.AssistantMessageInput, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -705,10 +710,12 @@ func buildMessageInput(role string, kind string, payload any) (postgres.Assistan
 	}, nil
 }
 
+// buildUserTextInput 组装 `User文本输入`，为后续流程准备可直接消费的输入。
 func buildUserTextInput(content string) (postgres.AssistantMessageInput, error) {
 	return buildMessageInput(RoleUser, KindText, TextPayload{Content: content})
 }
 
+// buildAssistantReplyInputs 组装 `助手Reply输入`，为后续流程准备可直接消费的输入。
 func buildAssistantReplyInputs(
 	reply *ChatCompletionResult,
 	decision TaskSuggestionDecision,
@@ -741,11 +748,13 @@ func buildAssistantReplyInputs(
 	return append(inputs, suggestionInput), nil
 }
 
+// preparedTurnContext 归拢preparedTurn所需的上下文依赖，避免调用方手工拼装。
 type preparedTurnContext struct {
 	AdditionalInputs []postgres.AssistantMessageInput
 	History          []postgres.AssistantMessage
 }
 
+// prepareTurnContext 为 `Turn上下文` 准备后续流程所需上下文，收口前置整理逻辑。
 func (s *Service) prepareTurnContext(
 	ctx context.Context,
 	history []postgres.AssistantMessage,
@@ -797,12 +806,14 @@ func (s *Service) prepareTurnContext(
 	}, nil
 }
 
+// resourceContext 归拢资源所需的上下文依赖，避免调用方手工拼装。
 type resourceContext struct {
 	ID     string
 	Source string
 	Title  string
 }
 
+// latestResourceFromMessages 从 `消息` 派生 `latest资源`，避免调用方重复拼装适配层。
 func latestResourceFromMessages(messages []postgres.AssistantMessage) (*resourceContext, error) {
 	for index := len(messages) - 1; index >= 0; index-- {
 		message := messages[index]
@@ -828,6 +839,7 @@ func latestResourceFromMessages(messages []postgres.AssistantMessage) (*resource
 	return nil, nil
 }
 
+// buildTaskSuggestion 组装 `任务建议`，统一建议生成后的确认与展示字段。
 func buildTaskSuggestion(content string, resource *resourceContext) TaskSuggestionPayload {
 	suggestion := TaskSuggestionPayload{
 		ActionLabel: "确认创建任务",
@@ -848,6 +860,7 @@ func buildTaskSuggestion(content string, resource *resourceContext) TaskSuggesti
 	return suggestion
 }
 
+// buildSessionTitle 生成 `会话标题`，避免上层重复拼接展示文案。
 func buildSessionTitle(content string) string {
 	runes := []rune(strings.TrimSpace(content))
 	if len(runes) <= 24 {
@@ -857,6 +870,7 @@ func buildSessionTitle(content string) string {
 	return string(runes[:24]) + "..."
 }
 
+// decodeTaskSuggestion 解码 `任务建议` 载荷，避免上层直接处理原始 JSON。
 func decodeTaskSuggestion(payload []byte) (TaskSuggestionPayload, error) {
 	var value TaskSuggestionPayload
 	if err := json.Unmarshal(payload, &value); err != nil {
@@ -866,6 +880,7 @@ func decodeTaskSuggestion(payload []byte) (TaskSuggestionPayload, error) {
 	return value, nil
 }
 
+// decodeSessionFile 解码 `会话文件` 载荷，避免上层直接处理原始 JSON。
 func decodeSessionFile(payload []byte) (SessionFilePayload, error) {
 	var value SessionFilePayload
 	if err := json.Unmarshal(payload, &value); err != nil {
@@ -875,18 +890,22 @@ func decodeSessionFile(payload []byte) (SessionFilePayload, error) {
 	return value, nil
 }
 
+// stringPointer 返回字符串指针，简化构造可选文本字段时的样板代码。
 func stringPointer(value string) *string {
 	return &value
 }
 
+// buildTaskDetailURL 拼装 `任务详情URL` 链接，统一助手里的页面跳转规则。
 func buildTaskDetailURL(taskID string, sessionID string) string {
 	return buildSessionAwareURL("/tasks/"+taskID, sessionID)
 }
 
+// buildResourceDetailURL 拼装 `资源详情URL` 链接，统一助手里的页面跳转规则。
 func buildResourceDetailURL(resourceID string, sessionID string) string {
 	return buildSessionAwareURL("/resources/"+resourceID, sessionID)
 }
 
+// buildSessionAwareURL 拼装 `会话感知URL` 链接，统一助手里的页面跳转规则。
 func buildSessionAwareURL(path string, sessionID string) string {
 	values := url.Values{}
 	if strings.TrimSpace(sessionID) != "" {
@@ -900,6 +919,7 @@ func buildSessionAwareURL(path string, sessionID string) string {
 	return path
 }
 
+// streamAssistantReplyInput 归拢流式消息助手Reply所需的输入字段，避免调用方散落传参。
 type streamAssistantReplyInput struct {
 	content   string
 	emit      func(StreamEvent) error
@@ -907,6 +927,7 @@ type streamAssistantReplyInput struct {
 	sessionID string
 }
 
+// streamAssistantReply 启动 `助手Reply` 的流式处理，统一增量输出协议。
 func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistantReplyInput) error {
 	if s.responder == nil {
 		return errors.New("助手对话模型未配置")
@@ -1057,6 +1078,7 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 	return nil
 }
 
+// triggerSummaryRefresh 触发 `摘要Refresh`，避免上层直接管理异步副作用。
 func (s *Service) triggerSummaryRefresh(sessionID string) {
 	if s == nil || s.summarizer == nil || s.summaryRepo == nil || strings.TrimSpace(sessionID) == "" {
 		return
@@ -1076,6 +1098,7 @@ func (s *Service) triggerSummaryRefresh(sessionID string) {
 	})
 }
 
+// refreshRollingSummary 刷新 `滚动摘要`，让后续读取看到最新状态。
 func (s *Service) refreshRollingSummary(ctx context.Context, sessionID string) error {
 	snapshotRecord, err := s.summaryRepo.GetBySessionID(ctx, sessionID)
 	if err != nil {
@@ -1121,6 +1144,7 @@ func (s *Service) refreshRollingSummary(ctx context.Context, sessionID string) e
 	return err
 }
 
+// initSessionSnapshot 初始化 `会话快照`，统一首轮运行时的默认状态。
 func (s *Service) initSessionSnapshot(ctx context.Context, sessionID string) error {
 	if s.projector == nil {
 		return nil
@@ -1129,6 +1153,7 @@ func (s *Service) initSessionSnapshot(ctx context.Context, sessionID string) err
 	return s.projector.InitSession(ctx, sessionID)
 }
 
+// projectPersistedMessages 把 `Persisted消息` 投影回助手状态，保持后续读取口径一致。
 func (s *Service) projectPersistedMessages(ctx context.Context, sessionID string, messages []postgres.AssistantMessage) error {
 	if s.projector == nil {
 		return nil
@@ -1187,6 +1212,7 @@ func (s *Service) projectPersistedMessages(ctx context.Context, sessionID string
 	return nil
 }
 
+// mapAssistantStreamError 把 `助手流式消息Error` 转换成助手接口需要的结构，避免上层直接感知内部模型。
 func mapAssistantStreamError(err error) error {
 	var streamErr *StreamError
 
@@ -1204,6 +1230,7 @@ func mapAssistantStreamError(err error) error {
 	}
 }
 
+// loadReplyContext 加载 `Reply上下文`，为后续助手流程准备输入。
 func (s *Service) loadReplyContext(
 	ctx context.Context,
 	sessionID string,
@@ -1217,6 +1244,7 @@ func (s *Service) loadReplyContext(
 	return s.contextLoader.LoadForReply(ctx, sessionID, history, currentMessage)
 }
 
+// repairReplyContext 修复 `Reply上下文` 中缺失或不一致的部分，避免脏状态继续向后传播。
 func (s *Service) repairReplyContext(ctx context.Context, currentMessage string, replyContext *ReplyContext) (*ReplyContext, error) {
 	if replyContext == nil {
 		return nil, nil
@@ -1251,6 +1279,7 @@ func (s *Service) repairReplyContext(ctx context.Context, currentMessage string,
 	return replyContext, nil
 }
 
+// buildRepairRetrievalQuery 组装 `修复Retrieval查询`，把检索与过滤规则收口在单点。
 func buildRepairRetrievalQuery(_ string, replyContext *ReplyContext) string {
 	if replyContext == nil || replyContext.GroundedTarget == nil {
 		return ""
@@ -1271,6 +1300,7 @@ func buildRepairRetrievalQuery(_ string, replyContext *ReplyContext) string {
 	}
 }
 
+// projectReplyGrounding 把 `Replygrounding` 投影回助手状态，保持后续读取口径一致。
 func (s *Service) projectReplyGrounding(ctx context.Context, sessionID string, replyContext *ReplyContext) error {
 	if s == nil || s.projector == nil || strings.TrimSpace(sessionID) == "" || replyContext == nil {
 		return nil
@@ -1279,6 +1309,7 @@ func (s *Service) projectReplyGrounding(ctx context.Context, sessionID string, r
 	return s.projector.ProjectGroundingState(ctx, buildGroundingProjection(sessionID, replyContext))
 }
 
+// buildGroundingProjection 组装 `groundingProjection`，保持状态投影结果在不同调用点口径一致。
 func buildGroundingProjection(sessionID string, replyContext *ReplyContext) GroundingStateProjection {
 	projection := GroundingStateProjection{
 		SessionID:              strings.TrimSpace(sessionID),
@@ -1302,6 +1333,7 @@ func buildGroundingProjection(sessionID string, replyContext *ReplyContext) Grou
 	return projection
 }
 
+// buildCitationWindows 组装 `引用窗口`，尽量保留命中内容前后的局部上下文。
 func buildCitationWindows(citations []citation.Citation) []postgres.CitationWindow {
 	windows := make([]postgres.CitationWindow, 0, len(citations))
 	seen := make(map[string]struct{}, len(citations))
@@ -1331,6 +1363,7 @@ func buildCitationWindows(citations []citation.Citation) []postgres.CitationWind
 	return windows
 }
 
+// buildEnumeratedEntities 组装 `枚举Entities`，统一引用和检索结果里的实体提取口径。
 func buildEnumeratedEntities(replyContext *ReplyContext) []postgres.EnumeratedEntity {
 	if replyContext == nil {
 		return nil
@@ -1359,6 +1392,7 @@ func buildEnumeratedEntities(replyContext *ReplyContext) []postgres.EnumeratedEn
 	return entities
 }
 
+// buildOrdinalReferenceFrame 整理回答里出现的第一段、第二段这类序号引用线索，供后续检索按顺序定位 section。
 func buildOrdinalReferenceFrame(replyContext *ReplyContext) []postgres.OrdinalReference {
 	entities := buildEnumeratedEntities(replyContext)
 	frame := make([]postgres.OrdinalReference, 0, len(entities))
@@ -1374,6 +1408,7 @@ func buildOrdinalReferenceFrame(replyContext *ReplyContext) []postgres.OrdinalRe
 	return frame
 }
 
+// deriveEntityName 从已有上下文推导 `EntityName`，让后续链路只消费归一化结果。
 func deriveEntityName(replyContext *ReplyContext, item citation.Citation) string {
 	if replyContext != nil && replyContext.GroundedTarget != nil &&
 		strings.TrimSpace(replyContext.GroundedTarget.SectionID) == strings.TrimSpace(item.SectionID) &&
@@ -1384,6 +1419,7 @@ func deriveEntityName(replyContext *ReplyContext, item citation.Citation) string
 	return deriveCitationEntityName(item)
 }
 
+// deriveCitationEntityName 从已有上下文推导 `引用EntityName`，让后续链路只消费归一化结果。
 func deriveCitationEntityName(item citation.Citation) string {
 	if title := strings.TrimSpace(item.SectionTitle); title != "" {
 		return title
@@ -1392,6 +1428,7 @@ func deriveCitationEntityName(item citation.Citation) string {
 	return strings.TrimSpace(item.SectionID)
 }
 
+// snapshotReaderFromProjector 从 `投影器` 派生 `快照读取器`，避免调用方重复拼装适配层。
 func snapshotReaderFromProjector(projector sessionContextProjector) sessionContextSnapshotReader {
 	concrete, ok := projector.(*SessionContextProjector)
 	if !ok || concrete == nil {
@@ -1401,6 +1438,7 @@ func snapshotReaderFromProjector(projector sessionContextProjector) sessionConte
 	return concrete.repo
 }
 
+// selectSummaryTranscript 从候选内容里选择 `摘要转录`，把筛选策略收口到单点。
 func selectSummaryTranscript(messages []postgres.AssistantMessage) ([]postgres.AssistantMessage, int) {
 	if len(messages) == 0 {
 		return nil, 0

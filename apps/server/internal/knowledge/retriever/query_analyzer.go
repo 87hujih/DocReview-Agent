@@ -64,6 +64,7 @@ func (a QueryAnalyzer) Analyze(query string) QueryAnalysis {
 	return analysis
 }
 
+// extractPrimaryQuestion 从现有内容里提取 `PrimaryQuestion`，避免调用方重复解析同一份数据。
 func extractPrimaryQuestion(query string) string {
 	for _, line := range strings.Split(strings.TrimSpace(query), "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -75,6 +76,7 @@ func extractPrimaryQuestion(query string) string {
 	return strings.TrimSpace(query)
 }
 
+// isProjectScopedQuestion 判断 `项目ScopedQuestion` 是否满足当前流程的条件，避免同一谓词在多处分散实现。
 func isProjectScopedQuestion(query string) bool {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
@@ -90,11 +92,13 @@ func isProjectScopedQuestion(query string) bool {
 	return false
 }
 
+// isAggregateTechStackQuestion 判断 `Aggregate技术栈Question` 是否满足当前流程的条件，避免同一谓词在多处分散实现。
 func isAggregateTechStackQuestion(query string) bool {
 	return strings.Contains(query, "技术栈") ||
 		(strings.Contains(query, "用了哪些技术") && !strings.Contains(query, "项目"))
 }
 
+// isListSectionsQuestion 判断 `ListsectionQuestion` 是否满足当前流程的条件，避免同一谓词在多处分散实现。
 func isListSectionsQuestion(query string) bool {
 	if !isProjectScopedQuestion(query) {
 		return false
@@ -109,6 +113,7 @@ func isListSectionsQuestion(query string) bool {
 	return false
 }
 
+// extractQueryOrdinal 从现有内容里提取 `查询序号`，避免调用方重复解析同一份数据。
 func extractQueryOrdinal(query string) int {
 	switch {
 	case strings.Contains(query, "第一个"), strings.Contains(query, "第1个"):
@@ -122,6 +127,7 @@ func extractQueryOrdinal(query string) int {
 	}
 }
 
+// containsDetailQuestionMarker 判断当前集合里是否包含 `详情QuestionMarker`，把匹配规则收口在单点。
 func containsDetailQuestionMarker(query string) bool {
 	for _, marker := range []string{"做了什么", "负责什么", "讲讲", "介绍", "看下", "看看", "怎么做", "给出修改示例"} {
 		if strings.Contains(query, marker) {
@@ -132,6 +138,7 @@ func containsDetailQuestionMarker(query string) bool {
 	return false
 }
 
+// extractEntityName 从现有内容里提取 `EntityName`，避免调用方重复解析同一份数据。
 func extractEntityName(query string) string {
 	for _, marker := range []string{"做了什么", "负责什么", "讲讲", "介绍", "看下", "看看", "怎么做", "给出修改示例"} {
 		index := strings.Index(query, marker)

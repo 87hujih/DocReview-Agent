@@ -2,6 +2,7 @@ package retriever
 
 import "testing"
 
+// TestAnalyzeQuery 验证`analyzeQuery`在特定边界条件下的行为，防止同类回归。
 func TestAnalyzeQuery(t *testing.T) {
 	analyzer := QueryAnalyzer{}
 

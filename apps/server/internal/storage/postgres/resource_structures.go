@@ -287,6 +287,7 @@ func (r *ResourceStructureRepo) ListSectionsByVersionAndType(ctx context.Context
 	return collectResourceSections(rows)
 }
 
+// collectResourceSections 遍历结果集收集 `资源section`，把游标处理细节隔离在仓储层。
 func collectResourceSections(rows pgx.Rows) ([]ResourceSection, error) {
 	var sections []ResourceSection
 	for rows.Next() {
@@ -301,6 +302,7 @@ func collectResourceSections(rows pgx.Rows) ([]ResourceSection, error) {
 	return sections, rows.Err()
 }
 
+// scanResourceVersionStructure 把当前数据库行扫描成 `资源版本结构化结果`，统一查询结果到领域结构的映射。
 func scanResourceVersionStructure(row pgx.Row) (ResourceVersionStructure, error) {
 	var structure ResourceVersionStructure
 
@@ -322,6 +324,7 @@ func scanResourceVersionStructure(row pgx.Row) (ResourceVersionStructure, error)
 	return structure, nil
 }
 
+// scanResourceSection 把当前数据库行扫描成 `资源section`，统一查询结果到领域结构的映射。
 func scanResourceSection(row pgx.Row) (ResourceSection, error) {
 	var section ResourceSection
 
@@ -349,6 +352,7 @@ func scanResourceSection(row pgx.Row) (ResourceSection, error) {
 	return section, nil
 }
 
+// normalizeJSONArgument 在写库前为 JSON 参数补齐合法兜底内容，避免空切片或空字节直接变成非法 JSON。
 func normalizeJSONArgument(value []byte, fallback string) string {
 	trimmed := strings.TrimSpace(string(value))
 	if trimmed == "" || trimmed == "null" {
@@ -358,6 +362,7 @@ func normalizeJSONArgument(value []byte, fallback string) string {
 	return trimmed
 }
 
+// normalizeVersionStructureParamsForInsert 在写入结构化解析结果前统一归一化文本和 JSON 字段，避免显式 INSERT 绕过数据库默认值。
 func normalizeVersionStructureParamsForInsert(params CreateVersionStructureParams) CreateVersionStructureParams {
 	params.SourceFormat = strings.TrimSpace(params.SourceFormat)
 	params.ParserName = strings.TrimSpace(params.ParserName)
@@ -366,6 +371,7 @@ func normalizeVersionStructureParamsForInsert(params CreateVersionStructureParam
 	return params
 }
 
+// normalizeSectionInputForInsert 在批量写入 section 前补齐非空列需要的默认值，避免缺页码或空 section_type 直接写成 SQL NULL。
 func normalizeSectionInputForInsert(section ResourceSectionInput) ResourceSectionInput {
 	section.SectionKey = strings.TrimSpace(section.SectionKey)
 	section.SectionType = defaultSectionType(section.SectionType)
@@ -378,6 +384,7 @@ func normalizeSectionInputForInsert(section ResourceSectionInput) ResourceSectio
 	return section
 }
 
+// defaultSectionType 为缺失的 section 类型提供稳定兜底值，保持 `resource_sections.section_type` 满足非空约束。
 func defaultSectionType(sectionType string) string {
 	trimmed := strings.TrimSpace(sectionType)
 	if trimmed == "" {
@@ -387,6 +394,7 @@ func defaultSectionType(sectionType string) string {
 	return trimmed
 }
 
+// defaultSectionPages 为缺失页码的 section 补齐对称的开始页和结束页，统一数据库侧的 0/0 缺省契约。
 func defaultSectionPages(pageStart *int, pageEnd *int) (*int, *int) {
 	start := 0
 	end := 0
@@ -407,6 +415,7 @@ func defaultSectionPages(pageStart *int, pageEnd *int) (*int, *int) {
 	return &start, &end
 }
 
+// optionalTrimmedText 把可选文本统一裁剪后再决定是否落为 NULL，避免写库边界重复处理空白字符串。
 func optionalTrimmedText(value string) *string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {

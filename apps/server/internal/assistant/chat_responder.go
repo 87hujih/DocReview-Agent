@@ -74,6 +74,7 @@ type ChatCompletionResult struct {
 	TaskInstruction *string
 }
 
+// chatResponsePayload 承载聊天响应载荷相关状态，明确助手链路中的数据边界。
 type chatResponsePayload struct {
 	Reply           string  `json:"reply"`
 	TaskInstruction *string `json:"task_instruction"`
@@ -117,6 +118,7 @@ func NewChatResponder(
 	return newChatResponderWithClient(&openAIClientAdapter{client: client}, cfg), nil
 }
 
+// newChatResponderWithClient 创建带客户端的聊天Responder，并补齐助手链路需要的默认依赖和缺省行为。
 func newChatResponderWithClient(client assistantLLMClient, cfg llmclient.Config) *ChatResponder {
 	timeoutMS := cfg.TimeoutMS
 	if timeoutMS <= 0 {
@@ -175,6 +177,7 @@ func (r *ChatResponder) Stream(ctx context.Context, input ChatCompletionInput) (
 	}, nil
 }
 
+// generateWithRetry 生成 `Retry`，把模型调用和重试策略收口在接收者内部。
 func (r *ChatResponder) generateWithRetry(ctx context.Context, messages []*schema.Message) (*schema.Message, error) {
 	var response *schema.Message
 
@@ -197,6 +200,7 @@ func (r *ChatResponder) generateWithRetry(ctx context.Context, messages []*schem
 	return response, nil
 }
 
+// openStreamWithRetry 从助手打开目标内容，屏蔽底层路径组织细节。
 func (r *ChatResponder) openStreamWithRetry(ctx context.Context, messages []*schema.Message) (assistantLLMStream, error) {
 	var stream assistantLLMStream
 
@@ -215,6 +219,7 @@ func (r *ChatResponder) openStreamWithRetry(ctx context.Context, messages []*sch
 	return stream, nil
 }
 
+// buildChatMessages 组装 `聊天消息` 序列，统一角色顺序和上下文裁剪规则。
 func buildChatMessages(input ChatCompletionInput) []*schema.Message {
 	messages := []*schema.Message{
 		{Role: schema.System, Content: buildSystemPrompt(input)},
@@ -229,6 +234,7 @@ func buildChatMessages(input ChatCompletionInput) []*schema.Message {
 	return messages
 }
 
+// buildSystemPrompt 组装 `系统提示词`，统一模型输入文案和约束说明。
 func buildSystemPrompt(input ChatCompletionInput) string {
 	parts := []string{assistantSystemPrompt, buildAssistantResponseSchemaPrompt(input.TaskSuggestionDecision)}
 	if runtimeContext := buildRuntimeContext(input); runtimeContext != "" {
@@ -238,6 +244,7 @@ func buildSystemPrompt(input ChatCompletionInput) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// buildAssistantResponseSchemaPrompt 组装 `助手响应Schema提示词`，统一模型输入文案和约束说明。
 func buildAssistantResponseSchemaPrompt(decision *TaskSuggestionDecision) string {
 	if decision != nil && decision.ReadinessState == ReadinessStateReadyForTask {
 		return "只输出 JSON：\n{\"reply\":\"给用户的回复\",\"task_instruction\":\"仅当用户要求立即开始执行且材料已明确时才填写，可选\"}"
@@ -246,6 +253,7 @@ func buildAssistantResponseSchemaPrompt(decision *TaskSuggestionDecision) string
 	return "只输出 JSON：\n{\"reply\":\"给用户的回复\"}"
 }
 
+// buildRuntimeContext 组装 `运行时上下文`，为后续助手流程提供可直接消费的上下文。
 func buildRuntimeContext(input ChatCompletionInput) string {
 	var sections []string
 
@@ -306,6 +314,7 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 	return strings.Join(sections, "\n\n")
 }
 
+// buildSnapshotProjection 组装 `快照Projection`，保持状态投影结果在不同调用点口径一致。
 func buildSnapshotProjection(snapshot *SessionContextSnapshot) string {
 	if snapshot == nil {
 		return ""
@@ -369,6 +378,7 @@ func buildSnapshotProjection(snapshot *SessionContextSnapshot) string {
 	return strings.Join(lines, "\n")
 }
 
+// buildRollingSummaryProjection 组装 `滚动摘要Projection`，保持状态投影结果在不同调用点口径一致。
 func buildRollingSummaryProjection(snapshot *SessionContextSnapshot) string {
 	if snapshot == nil || snapshot.RollingSummary == nil {
 		return ""
@@ -382,6 +392,7 @@ func buildRollingSummaryProjection(snapshot *SessionContextSnapshot) string {
 	return "当前会话滚动摘要：\n" + summary
 }
 
+// buildHistoryMessages 组装 `历史消息` 序列，统一角色顺序和上下文裁剪规则。
 func buildHistoryMessages(history []postgres.AssistantMessage) []*schema.Message {
 	if len(history) == 0 {
 		return nil
@@ -422,6 +433,7 @@ func buildHistoryMessages(history []postgres.AssistantMessage) []*schema.Message
 	return messages
 }
 
+// toSchemaMessage 把 `Schema消息` 转换成助手接口需要的结构，避免上层直接感知内部模型。
 func toSchemaMessage(message postgres.AssistantMessage) *schema.Message {
 	switch message.Kind {
 	case KindText:
@@ -492,6 +504,7 @@ func toSchemaMessage(message postgres.AssistantMessage) *schema.Message {
 	}
 }
 
+// toSchemaRole 把 `Schema角色` 转换成助手接口需要的结构，避免上层直接感知内部模型。
 func toSchemaRole(role string) schema.RoleType {
 	if role == RoleUser {
 		return schema.User
@@ -500,6 +513,7 @@ func toSchemaRole(role string) schema.RoleType {
 	return schema.Assistant
 }
 
+// fallbackSectionTitle 为缺失标题的引用 section 生成可读兜底标题，避免前端出现空标题。
 func fallbackSectionTitle(title string) string {
 	trimmed := strings.TrimSpace(title)
 	if trimmed == "" {
@@ -509,6 +523,7 @@ func fallbackSectionTitle(title string) string {
 	return trimmed
 }
 
+// trimJSONCodeFence 去掉 JSON 结果外层的代码围栏，避免后续解码被 Markdown 包裹干扰。
 func trimJSONCodeFence(content string) string {
 	trimmed := strings.TrimSpace(content)
 	if !strings.HasPrefix(trimmed, "```") {
@@ -522,6 +537,7 @@ func trimJSONCodeFence(content string) string {
 	return strings.TrimSpace(trimmed)
 }
 
+// unmarshalTextPayload 解码 `文本载荷` 载荷，避免上层直接处理原始 JSON。
 func unmarshalTextPayload(payload []byte) (TextPayload, error) {
 	var value TextPayload
 	if err := json.Unmarshal(payload, &value); err != nil {
@@ -531,6 +547,7 @@ func unmarshalTextPayload(payload []byte) (TextPayload, error) {
 	return value, nil
 }
 
+// unmarshalTaskCreatedPayload 解码 `任务Created载荷` 载荷，避免上层直接处理原始 JSON。
 func unmarshalTaskCreatedPayload(payload []byte) (TaskCreatedPayload, error) {
 	var value TaskCreatedPayload
 	if err := json.Unmarshal(payload, &value); err != nil {
@@ -540,6 +557,7 @@ func unmarshalTaskCreatedPayload(payload []byte) (TaskCreatedPayload, error) {
 	return value, nil
 }
 
+// unmarshalSystemPayload 解码 `系统载荷` 载荷，避免上层直接处理原始 JSON。
 func unmarshalSystemPayload(payload []byte) (SystemPayload, error) {
 	var value SystemPayload
 	if err := json.Unmarshal(payload, &value); err != nil {
@@ -549,6 +567,7 @@ func unmarshalSystemPayload(payload []byte) (SystemPayload, error) {
 	return value, nil
 }
 
+// responseChunkStream 承载响应chunk流式消息相关状态，明确助手链路中的数据边界。
 type responseChunkStream struct {
 	done         bool
 	extractor    *replyJSONStreamExtractor
@@ -559,6 +578,7 @@ type responseChunkStream struct {
 	stream       assistantLLMStream
 }
 
+// Recv 从流式结果中读取下一条增量消息，保持消费协议封装在接收者内部。
 func (s *responseChunkStream) Recv() (string, error) {
 	for {
 		message, err := s.stream.Recv()
@@ -590,11 +610,13 @@ func (s *responseChunkStream) Recv() (string, error) {
 	}
 }
 
+// Close 关闭接收者持有的流或资源，释放后续读取不再需要的底层句柄。
 func (s *responseChunkStream) Close() error {
 	s.stream.Close()
 	return nil
 }
 
+// Result 返回当前累计结果，供调用方在流式处理结束后统一取用。
 func (s *responseChunkStream) Result() (*ChatCompletionResult, error) {
 	if s.resultLoaded {
 		return s.result, s.resultErr
@@ -633,6 +655,7 @@ func (s *responseChunkStream) Result() (*ChatCompletionResult, error) {
 	return s.result, nil
 }
 
+// replyJSONStreamExtractor 承载replyJSON流式消息Extractor相关状态，明确助手链路中的数据边界。
 type replyJSONStreamExtractor struct {
 	keyBuffer            strings.Builder
 	replyBuffer          strings.Builder
@@ -658,6 +681,7 @@ const (
 	replyJSONStreamStateDone
 )
 
+// Feed 向接收者写入新的增量片段，推进当前解析状态。
 func (e *replyJSONStreamExtractor) Feed(chunk string) (string, error) {
 	if e.state == replyJSONStreamStateDone {
 		return "", nil
@@ -793,15 +817,18 @@ func (e *replyJSONStreamExtractor) Feed(chunk string) (string, error) {
 	return output.String(), nil
 }
 
+// Text 返回接收者当前缓冲的纯文本结果，供上层直接消费。
 func (e *replyJSONStreamExtractor) Text() string {
 	return e.replyBuffer.String()
 }
 
+// writeReplyRune 把 `ReplyRune` 写入接收者管理的目标位置，统一输出边界。
 func (e *replyJSONStreamExtractor) writeReplyRune(output *strings.Builder, r rune) {
 	output.WriteRune(r)
 	e.replyBuffer.WriteRune(r)
 }
 
+// parseJSONUnicodeEscape 解析 `JSONUnicodeEscape`，把格式和参数错误收口到助手边界。
 func parseJSONUnicodeEscape(buffer string) (rune, error) {
 	value, err := strconv.ParseInt(buffer, 16, 32)
 	if err != nil {
@@ -811,14 +838,17 @@ func parseJSONUnicodeEscape(buffer string) (rune, error) {
 	return rune(value), nil
 }
 
+// isHighSurrogate 判断 rune 是否为 UTF-16 高位代理项，供流式 JSON 解码处理代理对。
 func isHighSurrogate(r rune) bool {
 	return r >= 0xD800 && r <= 0xDBFF
 }
 
+// isLowSurrogate 判断 rune 是否为 UTF-16 低位代理项，供流式 JSON 解码处理代理对。
 func isLowSurrogate(r rune) bool {
 	return r >= 0xDC00 && r <= 0xDFFF
 }
 
+// decodeJSONStringEscape 解码 `JSONStringEscape` 载荷，避免上层直接处理原始 JSON。
 func decodeJSONStringEscape(r rune) (rune, error) {
 	switch r {
 	case '"', '\\', '/':
@@ -838,6 +868,7 @@ func decodeJSONStringEscape(r rune) (rune, error) {
 	}
 }
 
+// isHexDigit 判断字节是否是十六进制字符，供 Unicode 转义解析复用。
 func isHexDigit(r rune) bool {
 	switch {
 	case r >= '0' && r <= '9':
@@ -851,6 +882,7 @@ func isHexDigit(r rune) bool {
 	}
 }
 
+// isJSONWhitespace 判断字节是否属于 JSON 允许的空白字符，供流式提取器跳过无效间隔。
 func isJSONWhitespace(r rune) bool {
 	switch r {
 	case ' ', '\n', '\r', '\t':
@@ -860,14 +892,17 @@ func isJSONWhitespace(r rune) bool {
 	}
 }
 
+// openAIClientAdapter 承载openAI客户端Adapter相关状态，明确助手链路中的数据边界。
 type openAIClientAdapter struct {
 	client *openaiacl.Client
 }
 
+// Generate 生成 `Generate`，把模型调用和重试策略收口在接收者内部。
 func (c *openAIClientAdapter) Generate(ctx context.Context, messages []*schema.Message) (*schema.Message, error) {
 	return c.client.Generate(ctx, messages)
 }
 
+// Stream 启动 `流式消息` 的流式处理，统一增量输出协议。
 func (c *openAIClientAdapter) Stream(ctx context.Context, messages []*schema.Message) (assistantLLMStream, error) {
 	stream, err := c.client.Stream(ctx, messages)
 	if err != nil {
@@ -877,14 +912,17 @@ func (c *openAIClientAdapter) Stream(ctx context.Context, messages []*schema.Mes
 	return &schemaMessageStream{stream: stream}, nil
 }
 
+// schemaMessageStream 承载schema消息流式消息相关状态，明确助手链路中的数据边界。
 type schemaMessageStream struct {
 	stream *schema.StreamReader[*schema.Message]
 }
 
+// Recv 从流式结果中读取下一条增量消息，保持消费协议封装在接收者内部。
 func (s *schemaMessageStream) Recv() (*schema.Message, error) {
 	return s.stream.Recv()
 }
 
+// Close 关闭接收者持有的流或资源，释放后续读取不再需要的底层句柄。
 func (s *schemaMessageStream) Close() {
 	s.stream.Close()
 }

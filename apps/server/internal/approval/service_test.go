@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestApproveCreatesJobAndUpdatesTask 验证`approve`在写入或副作用路径下的行为，防止同类回归。
 func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -127,6 +128,7 @@ func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 	}
 }
 
+// TestRejectUpdatesApprovalAndTask 验证`reject`在写入或副作用路径下的行为，防止同类回归。
 func TestRejectUpdatesApprovalAndTask(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -209,6 +211,7 @@ func TestRejectUpdatesApprovalAndTask(t *testing.T) {
 	}
 }
 
+// TestApproveProjectsExecutingTaskIntoContextSnapshot 验证`approve`在写入或副作用路径下的行为，防止同类回归。
 func TestApproveProjectsExecutingTaskIntoContextSnapshot(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -270,6 +273,7 @@ func TestApproveProjectsExecutingTaskIntoContextSnapshot(t *testing.T) {
 	}
 }
 
+// TestRejectProjectsFailedTaskIntoContextSnapshot 验证`reject`在写入或副作用路径下的行为，防止同类回归。
 func TestRejectProjectsFailedTaskIntoContextSnapshot(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -331,6 +335,7 @@ func TestRejectProjectsFailedTaskIntoContextSnapshot(t *testing.T) {
 	}
 }
 
+// TestTaskStatusNotifierApprovalServiceSyncsTerminalStatuses 验证`taskStatusNotifierApprovalService`在写入或副作用路径下的行为，防止同类回归。
 func TestTaskStatusNotifierApprovalServiceSyncsTerminalStatuses(t *testing.T) {
 	projector := &recordingApprovalProjector{}
 	notifier := &recordingApprovalNotifier{}
@@ -356,6 +361,7 @@ func TestTaskStatusNotifierApprovalServiceSyncsTerminalStatuses(t *testing.T) {
 	}
 }
 
+// TestApproveCopiesBaseVersionIDToJob 验证`approve`在写入或副作用路径下的行为，防止同类回归。
 func TestApproveCopiesBaseVersionIDToJob(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -409,6 +415,7 @@ func TestApproveCopiesBaseVersionIDToJob(t *testing.T) {
 	}
 }
 
+// TestApproveRejectsLegacyPendingApprovalWithoutBaseVersion 验证`approve`在非法输入或失败路径下的行为，防止同类回归。
 func TestApproveRejectsLegacyPendingApprovalWithoutBaseVersion(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -460,6 +467,7 @@ func TestApproveRejectsLegacyPendingApprovalWithoutBaseVersion(t *testing.T) {
 	}
 }
 
+// TestApproveAlreadyDecidedReturnsError 验证`approveAlreadyDecided`在返回值分支下的行为，防止同类回归。
 func TestApproveAlreadyDecidedReturnsError(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -506,6 +514,7 @@ func TestApproveAlreadyDecidedReturnsError(t *testing.T) {
 	}
 }
 
+// TestApproveConcurrentOnlyOneSucceeds 验证`approveConcurrentOnlyOne`在成功路径下的行为，防止同类回归。
 func TestApproveConcurrentOnlyOneSucceeds(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -594,6 +603,7 @@ func TestApproveConcurrentOnlyOneSucceeds(t *testing.T) {
 	}
 }
 
+// TestApproveAndRejectConcurrentOnlyOneSucceeds 验证`approveAndRejectConcurrentOnlyOne`在成功路径下的行为，防止同类回归。
 func TestApproveAndRejectConcurrentOnlyOneSucceeds(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -720,6 +730,7 @@ func TestApproveAndRejectConcurrentOnlyOneSucceeds(t *testing.T) {
 	}
 }
 
+// TestGetApprovalReturnsRecord 验证`getApproval`在返回值分支下的行为，防止同类回归。
 func TestGetApprovalReturnsRecord(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -761,6 +772,7 @@ func TestGetApprovalReturnsRecord(t *testing.T) {
 	}
 }
 
+// TestGetJobReturnsRecord 验证`getJob`在返回值分支下的行为，防止同类回归。
 func TestGetJobReturnsRecord(t *testing.T) {
 	pool := newApprovalTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -806,6 +818,7 @@ func TestGetJobReturnsRecord(t *testing.T) {
 	}
 }
 
+// newApprovalTestPool 创建测试用隔离数据库连接池，统一初始化与清理约束。
 func newApprovalTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -818,6 +831,7 @@ func newApprovalTestPool(t *testing.T) *pgxpool.Pool {
 	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "approval_service", postgres.NewPool, postgres.RunMigrations)
 }
 
+// clearApprovalBaseVersionID 为测试场景清理 `审批Base版本ID`，避免不同用例之间互相污染。
 func clearApprovalBaseVersionID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, approvalID string) {
 	t.Helper()
 
@@ -830,24 +844,29 @@ func clearApprovalBaseVersionID(t *testing.T, ctx context.Context, pool *pgxpool
 	}
 }
 
+// recordingApprovalProjector 作为审批投影器的记录型测试替身，用于断言调用副作用。
 type recordingApprovalProjector struct {
 	statuses []string
 }
 
+// ProjectTaskStatusChanged 实现测试替身需要的 `ProjectTaskStatusChanged` 接口方法，为用例分支提供可控返回。
 func (r *recordingApprovalProjector) ProjectTaskStatusChanged(_ context.Context, _ *string, _ string, status string) error {
 	r.statuses = append(r.statuses, status)
 	return nil
 }
 
+// recordingApprovalNotifier 作为审批Notifier的记录型测试替身，用于断言调用副作用。
 type recordingApprovalNotifier struct {
 	statuses []string
 }
 
+// Notify 实现测试替身需要的 `Notify` 接口方法，为用例分支提供可控返回。
 func (r *recordingApprovalNotifier) Notify(_ context.Context, _ *postgres.Task, status string) error {
 	r.statuses = append(r.statuses, status)
 	return nil
 }
 
+// approvalTestContext 构造测试上下文，统一附带当前用例需要的取消和超时能力。
 func approvalTestContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -856,10 +875,12 @@ func approvalTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// approvalUniqueSuffix 生成测试数据使用的唯一后缀，避免并发或重复运行时发生命名冲突。
 func approvalUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// seedApprovalAssistantTask 为测试场景补齐 `审批助手任务` 所需数据，减少重复造数。
 func seedApprovalAssistantTask(
 	t *testing.T,
 	ctx context.Context,

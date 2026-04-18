@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestRequestIDRoundTrip 验证`requestIDRoundTrip`在特定边界条件下的行为，防止同类回归。
 func TestRequestIDRoundTrip(t *testing.T) {
 	ctx := WithRequestID(context.Background(), "req-123")
 
@@ -13,6 +14,7 @@ func TestRequestIDRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTaskAndRunIDRoundTrip 验证`taskAndRunIDRoundTrip`在特定边界条件下的行为，防止同类回归。
 func TestTaskAndRunIDRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	ctx = WithTaskID(ctx, "task-123")

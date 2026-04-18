@@ -94,6 +94,7 @@ func (a *Agent) Review(ctx context.Context, resourceContent string, citations []
 	return summary, nil
 }
 
+// trimCodeFence 去掉模型输出外层的 Markdown 代码围栏，保留内部可解析正文。
 func trimCodeFence(content string) string {
 	trimmed := strings.TrimSpace(content)
 	if !strings.HasPrefix(trimmed, "```") {

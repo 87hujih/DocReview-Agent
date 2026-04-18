@@ -48,6 +48,7 @@ func NewRawIsolatedPool(
 	return newIsolatedPool(t, ctx, databaseURL, namespace, openPool, nil)
 }
 
+// newIsolatedPool 创建IsolatedPool，并补齐当前链路需要的默认依赖和缺省行为。
 func newIsolatedPool(
 	t testing.TB,
 	ctx context.Context,
@@ -132,6 +133,7 @@ func newIsolatedPool(
 	return pool
 }
 
+// newSchemaName 创建SchemaName，并补齐当前链路需要的默认依赖和缺省行为。
 func newSchemaName(namespace string) string {
 	sanitizedNamespace := sanitizeSchemaFragment(namespace)
 	if sanitizedNamespace == "" {
@@ -150,6 +152,7 @@ func newSchemaName(namespace string) string {
 	return "test_" + sanitizedNamespace + "_" + suffix
 }
 
+// sanitizeSchemaFragment 把测试 schema 名片段清洗成 PostgreSQL 可接受的安全标识符。
 func sanitizeSchemaFragment(namespace string) string {
 	var builder strings.Builder
 	for _, char := range strings.ToLower(namespace) {
@@ -169,6 +172,7 @@ func sanitizeSchemaFragment(namespace string) string {
 	return strings.Trim(builder.String(), "_")
 }
 
+// withSearchPath 返回一个选项函数，用于为当前注入 `搜索路径` 相关依赖。
 func withSearchPath(databaseURL string, searchPath ...string) (string, error) {
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
@@ -181,6 +185,7 @@ func withSearchPath(databaseURL string, searchPath ...string) (string, error) {
 	return parsed.String(), nil
 }
 
+// uniqueSearchPath 生成带唯一 schema 的 search_path，避免并发测试互相污染。
 func uniqueSearchPath(searchPath []string) []string {
 	result := make([]string, 0, len(searchPath))
 	seen := make(map[string]struct{}, len(searchPath))
@@ -199,6 +204,7 @@ func uniqueSearchPath(searchPath []string) []string {
 	return result
 }
 
+// ensureExtensionSchema 确保测试库中的扩展 schema 存在，便于隔离 schema 复用 pgcrypto 等扩展。
 func ensureExtensionSchema(
 	ctx context.Context,
 	adminPool *pgxpool.Pool,
@@ -229,11 +235,13 @@ func ensureExtensionSchema(
 	return defaultSchema, nil
 }
 
+// dropSchema 删除测试用 schema 及其对象，确保用例结束后清理干净。
 func dropSchema(ctx context.Context, adminPool *pgxpool.Pool, schemaName string) error {
 	_, err := adminPool.Exec(ctx, `DROP SCHEMA IF EXISTS `+quoteIdentifier(schemaName)+` CASCADE`)
 	return err
 }
 
+// quoteIdentifier 按 PostgreSQL 标识符规则转义名称，避免动态 SQL 因特殊字符破坏语法。
 func quoteIdentifier(identifier string) string {
 	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }

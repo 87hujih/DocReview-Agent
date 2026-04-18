@@ -76,6 +76,7 @@ func (n *AssistantTaskStatusNotifier) Notify(ctx context.Context, task *postgres
 	return err
 }
 
+// buildTaskStatusPayload 组装 `任务状态载荷`，统一事件和接口返回使用的载荷结构。
 func buildTaskStatusPayload(task *postgres.Task, sessionID string, status string) TaskStatusPayload {
 	payload := TaskStatusPayload{
 		DetailURL:     buildTaskDetailURL(task.ID, sessionID),

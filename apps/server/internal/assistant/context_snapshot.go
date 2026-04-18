@@ -160,6 +160,7 @@ func SessionContextSnapshotFromRecord(record *postgres.SessionContextSnapshotRec
 	return snapshot, nil
 }
 
+// cloneOptionalString 复制可选字符串指针，避免快照复制时共享底层引用。
 func cloneOptionalString(value *string) *string {
 	if value == nil {
 		return nil

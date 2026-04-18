@@ -83,6 +83,7 @@ func TestGetResourceByIDHandler(t *testing.T) {
 	}
 }
 
+// TestGetResourceTaskContextWithCurrentVersionReturnsEnabledCapabilities 验证`getResourceTaskContextWithCurrentVersion`在返回值分支下的行为，防止同类回归。
 func TestGetResourceTaskContextWithCurrentVersionReturnsEnabledCapabilities(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -154,6 +155,7 @@ func TestGetResourceTaskContextWithCurrentVersionReturnsEnabledCapabilities(t *t
 	}
 }
 
+// TestGetResourceTaskContextWithoutCurrentVersionReturnsBlockingCapabilities 验证`getResourceTaskContextWithoutCurrentVersion`在返回值分支下的行为，防止同类回归。
 func TestGetResourceTaskContextWithoutCurrentVersionReturnsBlockingCapabilities(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -214,6 +216,7 @@ func TestGetResourceNotFound(t *testing.T) {
 	}
 }
 
+// TestExportCurrentResourceVersionHandler 验证`exportCurrentResourceVersionHandler`在特定边界条件下的行为，防止同类回归。
 func TestExportCurrentResourceVersionHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -253,6 +256,7 @@ func TestExportCurrentResourceVersionHandler(t *testing.T) {
 	}
 }
 
+// TestExportCurrentResourceVersionHandlerWithoutCurrentVersion 验证`exportCurrentResourceVersionHandlerWithoutCurrentVersion`在特定边界条件下的行为，防止同类回归。
 func TestExportCurrentResourceVersionHandlerWithoutCurrentVersion(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -279,6 +283,7 @@ func TestExportCurrentResourceVersionHandlerWithoutCurrentVersion(t *testing.T) 
 	}
 }
 
+// TestSearchResourceMissingQuery 验证`searchResourceMissingQuery`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceMissingQuery(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -298,6 +303,7 @@ func TestSearchResourceMissingQuery(t *testing.T) {
 	}
 }
 
+// TestSearchResourceInvalidID 验证`searchResourceInvalidID`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceInvalidID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -315,6 +321,7 @@ func TestSearchResourceInvalidID(t *testing.T) {
 	}
 }
 
+// TestSearchResourceNotFound 验证`searchResourceNotFound`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -329,6 +336,7 @@ func TestSearchResourceNotFound(t *testing.T) {
 	}
 }
 
+// TestSearchResourceMissingCurrentVersion 验证`searchResourceMissingCurrentVersion`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceMissingCurrentVersion(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -355,6 +363,7 @@ func TestSearchResourceMissingCurrentVersion(t *testing.T) {
 	}
 }
 
+// TestSearchResourceSuccess 验证`searchResourceSuccess`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceSuccess(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -393,6 +402,7 @@ func TestSearchResourceSuccess(t *testing.T) {
 	}
 }
 
+// TestSearchResourceNoHits 验证`searchResourceNoHits`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceNoHits(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -422,6 +432,7 @@ func TestSearchResourceNoHits(t *testing.T) {
 	}
 }
 
+// TestNewSearchResourcesResponseEncodesNilCitationsAsEmptyArray 验证`newSearchResourcesResponse`在格式处理路径下的行为，防止同类回归。
 func TestNewSearchResourcesResponseEncodesNilCitationsAsEmptyArray(t *testing.T) {
 	payload, err := json.Marshal(newSearchResourcesResponse("考勤", nil))
 	if err != nil {
@@ -470,11 +481,13 @@ func uniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// fakeResourceSearchService 作为资源搜索服务的测试替身，用于在用例里提供可控的依赖行为。
 type fakeResourceSearchService struct {
 	citations []citation.Citation
 	err       error
 }
 
+// SearchByResource 实现测试替身需要的 `SearchByResource` 接口方法，为用例分支提供可控返回。
 func (f fakeResourceSearchService) SearchByResource(context.Context, string, string, int) ([]citation.Citation, error) {
 	return f.citations, f.err
 }

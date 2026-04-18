@@ -2,6 +2,7 @@ package models
 
 import "testing"
 
+// TestValidTransitions 验证`validTransitions`在特定边界条件下的行为，防止同类回归。
 func TestValidTransitions(t *testing.T) {
 	testCases := []struct {
 		name string
@@ -26,6 +27,7 @@ func TestValidTransitions(t *testing.T) {
 	}
 }
 
+// TestInvalidTransitions 验证`invalidTransitions`在特定边界条件下的行为，防止同类回归。
 func TestInvalidTransitions(t *testing.T) {
 	testCases := []struct {
 		name string

@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestWorkerProcessesJob 验证`workerProcessesJob`在特定边界条件下的行为，防止同类回归。
 func TestWorkerProcessesJob(t *testing.T) {
 	pool := newJobTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -152,6 +153,7 @@ func TestWorkerProcessesJob(t *testing.T) {
 	t.Fatal("timed out waiting for worker to process job")
 }
 
+// TestWorkerMarksTaskFailedWhenExecutionFails 验证`worker`在流程控制路径下的行为，防止同类回归。
 func TestWorkerMarksTaskFailedWhenExecutionFails(t *testing.T) {
 	pool := newJobTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -269,6 +271,7 @@ func TestWorkerMarksTaskFailedWhenExecutionFails(t *testing.T) {
 	t.Fatal("timed out waiting for worker to process failed job")
 }
 
+// TestWorkerProcessesJobProjectsCompletedSnapshot 验证`workerProcessesJob`在写入或副作用路径下的行为，防止同类回归。
 func TestWorkerProcessesJobProjectsCompletedSnapshot(t *testing.T) {
 	pool := newJobTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -370,6 +373,7 @@ func TestWorkerProcessesJobProjectsCompletedSnapshot(t *testing.T) {
 	t.Fatal("timed out waiting for worker to project completed snapshot")
 }
 
+// TestWorkerMarksTaskFailedProjectsFailedSnapshot 验证`worker`在流程控制路径下的行为，防止同类回归。
 func TestWorkerMarksTaskFailedProjectsFailedSnapshot(t *testing.T) {
 	pool := newJobTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -464,6 +468,7 @@ func TestWorkerMarksTaskFailedProjectsFailedSnapshot(t *testing.T) {
 	t.Fatal("timed out waiting for worker to project failed snapshot")
 }
 
+// TestTaskStatusNotifierWorkerSyncsTerminalStatuses 验证`taskStatusNotifierWorker`在写入或副作用路径下的行为，防止同类回归。
 func TestTaskStatusNotifierWorkerSyncsTerminalStatuses(t *testing.T) {
 	projector := &recordingJobProjector{}
 	notifier := &recordingJobNotifier{}
@@ -489,6 +494,7 @@ func TestTaskStatusNotifierWorkerSyncsTerminalStatuses(t *testing.T) {
 	}
 }
 
+// TestWorkerFailsLegacyJobWithoutBaseVersion 验证`workerFailsLegacyJobWithoutBaseVersion`在特定边界条件下的行为，防止同类回归。
 func TestWorkerFailsLegacyJobWithoutBaseVersion(t *testing.T) {
 	pool := newJobTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -582,6 +588,7 @@ func TestWorkerFailsLegacyJobWithoutBaseVersion(t *testing.T) {
 	t.Fatal("timed out waiting for worker to fail legacy job")
 }
 
+// newJobTestPool 创建测试用隔离数据库连接池，统一初始化与清理约束。
 func newJobTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -594,6 +601,7 @@ func newJobTestPool(t *testing.T) *pgxpool.Pool {
 	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "job_worker", postgres.NewPool, postgres.RunMigrations)
 }
 
+// cleanupJobResource 为测试场景清理 `作业资源`，避免不同用例之间互相污染。
 func cleanupJobResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
@@ -603,6 +611,7 @@ func cleanupJobResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	}
 }
 
+// jobTestContext 构造测试上下文，统一附带当前用例需要的取消和超时能力。
 func jobTestContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -611,10 +620,12 @@ func jobTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// jobUniqueSuffix 生成测试数据使用的唯一后缀，避免并发或重复运行时发生命名冲突。
 func jobUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// seedJobAssistantTask 为测试场景补齐 `作业助手任务` 所需数据，减少重复造数。
 func seedJobAssistantTask(
 	t *testing.T,
 	ctx context.Context,
@@ -667,8 +678,10 @@ func seedJobAssistantTask(
 	return session, task, messages[0].ID
 }
 
+// jobEmbedder 承载作业Embedder相关状态，明确后台作业链路中的数据边界。
 type jobEmbedder struct{}
 
+// Embed 实现测试辅助类型上的 `Embed` 方法，供用例注入当前场景需要的可控行为。
 func (jobEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	vectors := make([][]float32, 0, len(texts))
 	for index := range texts {
@@ -680,19 +693,23 @@ func (jobEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error)
 	return vectors, nil
 }
 
+// recordingJobProjector 作为作业投影器的记录型测试替身，用于断言调用副作用。
 type recordingJobProjector struct {
 	statuses []string
 }
 
+// ProjectTaskStatusChanged 实现测试替身需要的 `ProjectTaskStatusChanged` 接口方法，为用例分支提供可控返回。
 func (r *recordingJobProjector) ProjectTaskStatusChanged(_ context.Context, _ *string, _ string, status string) error {
 	r.statuses = append(r.statuses, status)
 	return nil
 }
 
+// recordingJobNotifier 作为作业Notifier的记录型测试替身，用于断言调用副作用。
 type recordingJobNotifier struct {
 	statuses []string
 }
 
+// Notify 实现测试替身需要的 `Notify` 接口方法，为用例分支提供可控返回。
 func (r *recordingJobNotifier) Notify(_ context.Context, _ *postgres.Task, status string) error {
 	r.statuses = append(r.statuses, status)
 	return nil

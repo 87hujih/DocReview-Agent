@@ -20,6 +20,7 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
+// TestShouldRunSearchIntegrationRequiresExplicitOptIn 验证`shouldRunSearchIntegration`在约束校验路径下的行为，防止同类回归。
 func TestShouldRunSearchIntegrationRequiresExplicitOptIn(t *testing.T) {
 	cfg := appconfig.Config{
 		DatabaseURL:       "postgres://postgres:postgres@127.0.0.1:55432/agent_project?sslmode=disable",
@@ -37,6 +38,7 @@ func TestShouldRunSearchIntegrationRequiresExplicitOptIn(t *testing.T) {
 	}
 }
 
+// TestShouldRunSearchIntegrationAllowsExplicitOptInWithLocalDB 验证`shouldRunSearchIntegration`在合法输入或兼容路径下的行为，防止同类回归。
 func TestShouldRunSearchIntegrationAllowsExplicitOptInWithLocalDB(t *testing.T) {
 	cfg := appconfig.Config{
 		DatabaseURL:       "postgres://postgres:postgres@127.0.0.1:55432/agent_project?sslmode=disable",
@@ -52,6 +54,7 @@ func TestShouldRunSearchIntegrationAllowsExplicitOptInWithLocalDB(t *testing.T) 
 	}
 }
 
+// TestShouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride 验证`shouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride`在特定边界条件下的行为，防止同类回归。
 func TestShouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride(t *testing.T) {
 	cfg := appconfig.Config{
 		DatabaseURL:       "postgres://postgres:postgres@10.0.0.8:5432/agent_project?sslmode=disable",
@@ -97,6 +100,7 @@ func TestBuildCitationsFromChunks(t *testing.T) {
 	}
 }
 
+// TestMergeUniqueChunks 验证`mergeUniqueChunks`在特定边界条件下的行为，防止同类回归。
 func TestMergeUniqueChunks(t *testing.T) {
 	semantic := []postgres.ResourceChunk{
 		{ID: "chunk-1", Content: "alpha"},
@@ -120,6 +124,7 @@ func TestMergeUniqueChunks(t *testing.T) {
 	}
 }
 
+// TestRerankResultsToChunks 验证`rerankResultsToChunks`在特定边界条件下的行为，防止同类回归。
 func TestRerankResultsToChunks(t *testing.T) {
 	chunks := []postgres.ResourceChunk{
 		{ID: "chunk-1", Content: "alpha"},
@@ -146,6 +151,7 @@ func TestRerankResultsToChunks(t *testing.T) {
 	}
 }
 
+// TestSearchByResourceUsesCurrentVersionOnly 验证`searchByResource`在依赖选择路径下的行为，防止同类回归。
 func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
 	repo := &fakeRetrieverRepo{
 		currentVersion: &postgres.ResourceVersion{
@@ -199,6 +205,7 @@ func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
 	}
 }
 
+// TestSearchByResourceUsesTargetResolutionForProjectSections 验证`searchByResource`在依赖选择路径下的行为，防止同类回归。
 func TestSearchByResourceUsesTargetResolutionForProjectSections(t *testing.T) {
 	repo := &fakeRetrieverRepo{
 		currentVersion: &postgres.ResourceVersion{
@@ -381,6 +388,7 @@ func TestSearchByResourceUsesTargetResolutionForProjectSections(t *testing.T) {
 	}
 }
 
+// TestSearchByResourceFallsBackToLegacyChunks 验证`searchByResource`在回退路径下的行为，防止同类回归。
 func TestSearchByResourceFallsBackToLegacyChunks(t *testing.T) {
 	repo := &fakeRetrieverRepo{
 		currentVersion: &postgres.ResourceVersion{
@@ -496,6 +504,7 @@ func TestSearchIntegration(t *testing.T) {
 	}
 }
 
+// shouldRunSearchIntegration 为测试场景处理 `shouldRun搜索Integration` 的辅助步骤，减少重复搭建逻辑。
 func shouldRunSearchIntegration(cfg appconfig.Config) (bool, string) {
 	if strings.TrimSpace(os.Getenv("KNOWLEDGE_RETRIEVER_INTEGRATION")) != "1" {
 		return false, "skipping: integration test requires KNOWLEDGE_RETRIEVER_INTEGRATION=1"
@@ -516,6 +525,7 @@ func shouldRunSearchIntegration(cfg appconfig.Config) (bool, string) {
 	return true, ""
 }
 
+// isLocalDatabaseHost 为测试场景处理 `isLocalDatabaseHost` 的辅助步骤，减少重复搭建逻辑。
 func isLocalDatabaseHost(databaseURL string) bool {
 	lowerURL := strings.ToLower(strings.TrimSpace(databaseURL))
 	switch {
@@ -528,6 +538,7 @@ func isLocalDatabaseHost(databaseURL string) bool {
 	}
 }
 
+// fakeRetrieverRepo 作为检索器仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeRetrieverRepo struct {
 	currentVersion        *postgres.ResourceVersion
 	sectionsByVersion     []postgres.ResourceSection
@@ -542,55 +553,66 @@ type fakeRetrieverRepo struct {
 	searchByResourceCalls int
 }
 
+// GetCurrentVersion 实现测试替身需要的 `GetCurrentVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) GetCurrentVersion(context.Context, string) (*postgres.ResourceVersion, error) {
 	r.currentVersionLookups++
 	return r.currentVersion, nil
 }
 
+// SearchChunks 实现测试替身需要的 `SearchChunks` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunks(context.Context, pgvector.Vector, int) ([]postgres.ResourceChunk, error) {
 	return nil, nil
 }
 
+// SearchChunksLexical 实现测试替身需要的 `SearchChunksLexical` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunksLexical(context.Context, string, int) ([]postgres.ResourceChunk, error) {
 	return nil, nil
 }
 
+// SearchChunksByResource 实现测试替身需要的 `SearchChunksByResource` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunksByResource(context.Context, pgvector.Vector, int, string) ([]postgres.ResourceChunk, error) {
 	r.searchByResourceCalls++
 	return nil, nil
 }
 
+// SearchChunksLexicalByResource 实现测试替身需要的 `SearchChunksLexicalByResource` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunksLexicalByResource(context.Context, string, int, string) ([]postgres.ResourceChunk, error) {
 	r.searchByResourceCalls++
 	return nil, nil
 }
 
+// SearchChunksByVersion 实现测试替身需要的 `SearchChunksByVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunksByVersion(_ context.Context, _ pgvector.Vector, _ int, versionID string) ([]postgres.ResourceChunk, error) {
 	r.searchByVersionCalls++
 	r.lastVersionID = versionID
 	return r.semanticByVersion, nil
 }
 
+// SearchChunksLexicalByVersion 实现测试替身需要的 `SearchChunksLexicalByVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunksLexicalByVersion(_ context.Context, _ string, _ int, versionID string) ([]postgres.ResourceChunk, error) {
 	r.searchByVersionCalls++
 	r.lastVersionID = versionID
 	return r.lexicalByVersion, nil
 }
 
+// ListSectionsByVersion 实现测试替身需要的 `ListSectionsByVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) ListSectionsByVersion(_ context.Context, versionID string) ([]postgres.ResourceSection, error) {
 	r.listSectionsCalls++
 	r.lastVersionID = versionID
 	return append([]postgres.ResourceSection(nil), r.sectionsByVersion...), nil
 }
 
+// ListChunksByVersion 实现测试替身需要的 `ListChunksByVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) ListChunksByVersion(_ context.Context, versionID string) ([]postgres.ResourceChunk, error) {
 	r.listChunksCalls++
 	r.lastVersionID = versionID
 	return append([]postgres.ResourceChunk(nil), r.chunksByVersion...), nil
 }
 
+// fakeRetrieverEmbedder 作为检索器Embedder的测试替身，用于在用例里提供可控的依赖行为。
 type fakeRetrieverEmbedder struct{}
 
+// Embed 实现测试替身需要的 `Embed` 接口方法，为用例分支提供可控返回。
 func (fakeRetrieverEmbedder) Embed(context.Context, []string) ([][]float32, error) {
 	values := make([]float32, 1024)
 	for index := range values {
@@ -600,14 +622,17 @@ func (fakeRetrieverEmbedder) Embed(context.Context, []string) ([][]float32, erro
 	return [][]float32{values}, nil
 }
 
+// fakeRetrieverReranker 作为检索器Reranker的测试替身，用于在用例里提供可控的依赖行为。
 type fakeRetrieverReranker struct {
 	results []reranker.Result
 }
 
+// Rerank 实现测试替身需要的 `Rerank` 接口方法，为用例分支提供可控返回。
 func (r fakeRetrieverReranker) Rerank(context.Context, string, []string, int) ([]reranker.Result, error) {
 	return r.results, nil
 }
 
+// optionalRetrieverString 为测试场景处理 `optional检索器String` 的辅助步骤，减少重复搭建逻辑。
 func optionalRetrieverString(value string) *string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -617,6 +642,7 @@ func optionalRetrieverString(value string) *string {
 	return &trimmed
 }
 
+// optionalRetrieverInt 为测试场景处理 `optional检索器Int` 的辅助步骤，减少重复搭建逻辑。
 func optionalRetrieverInt(value int) *int {
 	if value <= 0 {
 		return nil

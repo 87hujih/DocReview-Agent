@@ -85,6 +85,7 @@ func (r *UploadedFileRepo) UpdateResourceID(ctx context.Context, id string, reso
 	return err
 }
 
+// scanUploadedFile 把当前数据库行扫描成 `Uploaded文件`，统一查询结果到领域结构的映射。
 func scanUploadedFile(row pgx.Row) (UploadedFile, error) {
 	var file UploadedFile
 

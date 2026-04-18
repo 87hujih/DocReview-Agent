@@ -63,6 +63,7 @@ func (s *Service) Normalize(document parser.ParsedDocument) NormalizedDocument {
 	return NormalizedDocument{Sections: normalizeGenericSections(document.Blocks)}
 }
 
+// projectAccumulator 承载项目Accumulator相关状态，明确文档归一化链路中的数据边界。
 type projectAccumulator struct {
 	title     string
 	order     int
@@ -73,6 +74,7 @@ type projectAccumulator struct {
 	pageEnd   int
 }
 
+// normalizeProjectSections 归一化 `项目section`，避免后续流程重复处理边界输入。
 func normalizeProjectSections(blocks []parser.Block) []NormalizedSection {
 	var (
 		sections []NormalizedSection
@@ -160,6 +162,7 @@ func normalizeProjectSections(blocks []parser.Block) []NormalizedSection {
 	return sections
 }
 
+// normalizeGenericSections 归一化 `通用section`，避免后续流程重复处理边界输入。
 func normalizeGenericSections(blocks []parser.Block) []NormalizedSection {
 	sections := make([]NormalizedSection, 0)
 	var (
@@ -239,6 +242,7 @@ func normalizeGenericSections(blocks []parser.Block) []NormalizedSection {
 	}}
 }
 
+// isProjectTitle 判断 `项目标题` 是否满足当前流程的条件，避免同一谓词在多处分散实现。
 func isProjectTitle(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" || normalizeLabel(trimmed) != "" {
@@ -248,10 +252,12 @@ func isProjectTitle(text string) bool {
 	return projectDatePattern.MatchString(trimmed)
 }
 
+// stripProjectDateSuffix 去掉 `项目日期后缀` 中不需要的后缀或噪声，统一后续处理看到的文本。
 func stripProjectDateSuffix(title string) string {
 	return strings.TrimSpace(projectDatePattern.ReplaceAllString(title, ""))
 }
 
+// normalizeLabel 归一化 `Label`，避免后续流程重复处理边界输入。
 func normalizeLabel(text string) string {
 	switch strings.TrimSuffix(strings.TrimSpace(text), "：") {
 	case "项目", "项目描述":
@@ -263,6 +269,7 @@ func normalizeLabel(text string) string {
 	}
 }
 
+// parseTechStack 解析 `技术栈`，把格式和参数错误收口到文档归一化边界。
 func parseTechStack(text string) []string {
 	if strings.Contains(text, "：") || strings.Contains(text, ":") {
 		return nil
@@ -296,10 +303,12 @@ func parseTechStack(text string) []string {
 	return tokens
 }
 
+// buildAliases 组装 `Aliases`，统一名称去重和空值过滤规则。
 func buildAliases(title string, canonical string) []string {
 	return appendUniqueStrings(nil, strings.TrimSpace(title), strings.TrimSpace(canonical))
 }
 
+// appendUniqueStrings 追加 `UniqueStrings`，保持消息和副作用写入顺序一致。
 func appendUniqueStrings(existing []string, values ...string) []string {
 	result := append([]string(nil), existing...)
 	for _, value := range values {
@@ -323,6 +332,7 @@ func appendUniqueStrings(existing []string, values ...string) []string {
 	return result
 }
 
+// firstNonEmptyLine 返回文本里的首个非空行，供标题推断和摘要回退逻辑复用。
 func firstNonEmptyLine(content string) string {
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -334,6 +344,7 @@ func firstNonEmptyLine(content string) string {
 	return ""
 }
 
+// looksLikeTechToken 用轻量规则判断 token 是否像技术栈条目，避免把普通短语误判成技术名。
 func looksLikeTechToken(token string) bool {
 	for _, r := range token {
 		switch {

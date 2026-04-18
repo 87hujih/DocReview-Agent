@@ -11,27 +11,32 @@ import (
 
 // --- 假实现 ---
 
+// fakeExec 作为Exec的测试替身，用于在用例里提供可控的依赖行为。
 type fakeExec struct {
 	fn func(ctx context.Context, taskID string)
 }
 
+// Execute 实现测试替身需要的 `Execute` 接口方法，为用例分支提供可控返回。
 func (f *fakeExec) Execute(ctx context.Context, taskID string) {
 	if f.fn != nil {
 		f.fn(ctx, taskID)
 	}
 }
 
+// fakeFailRec 作为FailRec的测试替身，用于在用例里提供可控的依赖行为。
 type fakeFailRec struct {
 	mu      sync.Mutex
 	records []string
 }
 
+// Fail 实现测试替身需要的 `Fail` 接口方法，为用例分支提供可控返回。
 func (f *fakeFailRec) Fail(_ context.Context, taskID string, _ string) {
 	f.mu.Lock()
 	f.records = append(f.records, taskID)
 	f.mu.Unlock()
 }
 
+// count 实现测试替身需要的 `count` 接口方法，为用例分支提供可控返回。
 func (f *fakeFailRec) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -40,6 +45,7 @@ func (f *fakeFailRec) count() int {
 
 // --- 测试 ---
 
+// TestRunnerEnqueueQueueFull 验证`runnerEnqueueQueueFull`在特定边界条件下的行为，防止同类回归。
 func TestRunnerEnqueueQueueFull(t *testing.T) {
 	// 1 个 worker、队列容量 1；堵塞 worker 后队列满，第三次入队应返回 ErrQueueFull
 	gate := make(chan struct{})
@@ -77,6 +83,7 @@ func TestRunnerEnqueueQueueFull(t *testing.T) {
 	}
 }
 
+// TestRunnerConcurrentWorkerLimit 验证`runnerConcurrentWorkerLimit`在特定边界条件下的行为，防止同类回归。
 func TestRunnerConcurrentWorkerLimit(t *testing.T) {
 	// 2 个 worker；投递 2 个阻塞任务，验证并发数恰好为 2
 	const workerCount = 2
@@ -113,6 +120,7 @@ func TestRunnerConcurrentWorkerLimit(t *testing.T) {
 	runner.Stop()
 }
 
+// TestRunnerPanicRecovery 验证`runnerPanicRecovery`在特定边界条件下的行为，防止同类回归。
 func TestRunnerPanicRecovery(t *testing.T) {
 	// 第一个任务 panic；验证：failer 被调用 1 次、第二个任务仍正常执行
 	failer := &fakeFailRec{}
@@ -150,6 +158,7 @@ func TestRunnerPanicRecovery(t *testing.T) {
 	}
 }
 
+// TestRunnerStopRejectsEnqueue 验证`runnerStop`在非法输入或失败路径下的行为，防止同类回归。
 func TestRunnerStopRejectsEnqueue(t *testing.T) {
 	runner := newWorkflowRunner(1, 10, 0, &fakeExec{}, nil)
 	runner.Start()

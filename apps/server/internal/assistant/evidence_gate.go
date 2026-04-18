@@ -47,6 +47,7 @@ func EvaluateEvidenceQuality(input EvidenceEvaluationInput) (bool, string) {
 	return true, ""
 }
 
+// citationsContainSection 判断引用列表里是否已经出现 section 级定位，避免证据门控误把标题级引用当作正文证据。
 func citationsContainSection(citations []citation.Citation, sectionID string) bool {
 	trimmedSectionID := strings.TrimSpace(sectionID)
 	for _, item := range citations {
@@ -58,6 +59,7 @@ func citationsContainSection(citations []citation.Citation, sectionID string) bo
 	return false
 }
 
+// citationsContainGroundedSection 判断引用列表里是否包含 grounded section 证据，供证据门控区分高质量引用。
 func citationsContainGroundedSection(citations []citation.Citation) bool {
 	for _, item := range citations {
 		if strings.TrimSpace(item.SectionID) != "" {
@@ -68,6 +70,7 @@ func citationsContainGroundedSection(citations []citation.Citation) bool {
 	return false
 }
 
+// citationsAreHeadingOnly 判断引用是否全部停留在标题级命中，用于拦截缺少正文支撑的回答。
 func citationsAreHeadingOnly(citations []citation.Citation) bool {
 	for _, item := range citations {
 		if !isHeadingOnlyCitation(item) {
@@ -78,6 +81,7 @@ func citationsAreHeadingOnly(citations []citation.Citation) bool {
 	return true
 }
 
+// isHeadingOnlyCitation 判断单条引用是否只有标题命中而没有正文窗口。
 func isHeadingOnlyCitation(item citation.Citation) bool {
 	snippet := strings.TrimSpace(item.Snippet)
 	sectionTitle := strings.TrimSpace(item.SectionTitle)

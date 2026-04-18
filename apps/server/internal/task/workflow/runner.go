@@ -57,6 +57,7 @@ type orchestratorExec struct {
 	taskRepo *postgres.TaskRepo
 }
 
+// Execute 执行 `Execute`，统一流程推进和副作用控制。
 func (e *orchestratorExec) Execute(ctx context.Context, taskID string) {
 	task, err := e.taskRepo.GetByID(ctx, taskID)
 	if err != nil || task == nil {
@@ -70,6 +71,7 @@ type taskRepoFail struct {
 	repo *postgres.TaskRepo
 }
 
+// Fail 把 `Fail` 标记为失败，并补齐对应清理或通知逻辑。
 func (f *taskRepoFail) Fail(ctx context.Context, taskID string, msg string) {
 	_ = f.repo.UpdateStatus(ctx, taskID, "failed", &msg)
 }
@@ -121,6 +123,7 @@ func (r *WorkflowRunner) Enqueue(taskID string) error {
 	}
 }
 
+// runWorker 执行 `Worker`，统一流程推进和副作用控制。
 func (r *WorkflowRunner) runWorker() {
 	defer r.wg.Done()
 	for taskID := range r.queue {
@@ -128,6 +131,7 @@ func (r *WorkflowRunner) runWorker() {
 	}
 }
 
+// runTask 执行 `任务`，统一流程推进和副作用控制。
 func (r *WorkflowRunner) runTask(taskID string) {
 	defer func() {
 		if rec := recover(); rec != nil {

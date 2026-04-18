@@ -10,6 +10,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// TestAssistantTaskStatusNotifierDeduplicatesCompletedStatus 验证`assistantTaskStatusNotifier`在状态保持路径下的行为，防止同类回归。
 func TestAssistantTaskStatusNotifierDeduplicatesCompletedStatus(t *testing.T) {
 	sourceMessageID := "source-1"
 	lookupRepo := &fakeTaskStatusSourceMessageRepo{
@@ -53,6 +54,7 @@ func TestAssistantTaskStatusNotifierDeduplicatesCompletedStatus(t *testing.T) {
 	}
 }
 
+// TestAssistantTaskStatusNotifierTreatsCompletedAndFailedAsDifferentKeys 验证`assistantTaskStatusNotifier`在流程控制路径下的行为，防止同类回归。
 func TestAssistantTaskStatusNotifierTreatsCompletedAndFailedAsDifferentKeys(t *testing.T) {
 	sourceMessageID := "source-1"
 	lookupRepo := &fakeTaskStatusSourceMessageRepo{
@@ -97,6 +99,7 @@ func TestAssistantTaskStatusNotifierTreatsCompletedAndFailedAsDifferentKeys(t *t
 	}
 }
 
+// TestAssistantTaskStatusNotifierNoopsWithoutSourceMessageID 验证`assistantTaskStatusNotifier`在跳过或空操作路径下的行为，防止同类回归。
 func TestAssistantTaskStatusNotifierNoopsWithoutSourceMessageID(t *testing.T) {
 	lookupRepo := &fakeTaskStatusSourceMessageRepo{}
 	notificationRepo := newFakeTaskStatusNotificationRepo()
@@ -119,12 +122,14 @@ func TestAssistantTaskStatusNotifierNoopsWithoutSourceMessageID(t *testing.T) {
 	}
 }
 
+// fakeTaskStatusSourceMessageRepo 作为任务状态来源消息仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeTaskStatusSourceMessageRepo struct {
 	err      error
 	lookups  []string
 	messages map[string]postgres.AssistantMessage
 }
 
+// GetMessageByID 实现测试替身需要的 `GetMessageByID` 接口方法，为用例分支提供可控返回。
 func (r *fakeTaskStatusSourceMessageRepo) GetMessageByID(_ context.Context, id string) (*postgres.AssistantMessage, error) {
 	r.lookups = append(r.lookups, id)
 	if r.err != nil {
@@ -140,18 +145,21 @@ func (r *fakeTaskStatusSourceMessageRepo) GetMessageByID(_ context.Context, id s
 	return &cloned, nil
 }
 
+// fakeTaskStatusNotificationRepo 作为任务状态通知仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeTaskStatusNotificationRepo struct {
 	appends []postgres.AppendTaskStatusMessageParams
 	err     error
 	items   map[string]*postgres.AssistantMessage
 }
 
+// newFakeTaskStatusNotificationRepo 为测试场景处理 `newFake任务状态通知仓储` 的辅助步骤，减少重复搭建逻辑。
 func newFakeTaskStatusNotificationRepo() *fakeTaskStatusNotificationRepo {
 	return &fakeTaskStatusNotificationRepo{
 		items: make(map[string]*postgres.AssistantMessage),
 	}
 }
 
+// AppendTaskStatusMessage 实现测试替身需要的 `AppendTaskStatusMessage` 接口方法，为用例分支提供可控返回。
 func (r *fakeTaskStatusNotificationRepo) AppendTaskStatusMessage(
 	_ context.Context,
 	params postgres.AppendTaskStatusMessageParams,
@@ -179,6 +187,7 @@ func (r *fakeTaskStatusNotificationRepo) AppendTaskStatusMessage(
 	return message, true, nil
 }
 
+// decodeAssistantTaskStatusPayload 在测试里解码 `助手任务状态载荷`，便于直接断言结构化内容。
 func decodeAssistantTaskStatusPayload(t *testing.T, payload []byte) TaskStatusPayload {
 	t.Helper()
 

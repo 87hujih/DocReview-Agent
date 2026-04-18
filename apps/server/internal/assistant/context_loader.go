@@ -105,6 +105,7 @@ func (l *ContextLoader) LoadForReply(
 	return replyContext, nil
 }
 
+// loadSnapshot 加载 `快照`，为后续助手流程准备输入。
 func (l *ContextLoader) loadSnapshot(ctx context.Context, sessionID string) (*SessionContextSnapshot, error) {
 	if l == nil || l.snapshots == nil || strings.TrimSpace(sessionID) == "" {
 		return nil, nil
@@ -118,6 +119,7 @@ func (l *ContextLoader) loadSnapshot(ctx context.Context, sessionID string) (*Se
 	return SessionContextSnapshotFromRecord(record)
 }
 
+// loadRecentHistory 加载 `Recent历史`，为后续助手流程准备输入。
 func (l *ContextLoader) loadRecentHistory(
 	ctx context.Context,
 	sessionID string,
@@ -141,6 +143,7 @@ func (l *ContextLoader) loadRecentHistory(
 	return filterRecentTextMessages(history, afterSequenceNo), nil
 }
 
+// resolveActiveResource 解析 `Active资源`，确定当前处理应落到的目标对象。
 func (l *ContextLoader) resolveActiveResource(
 	snapshot *SessionContextSnapshot,
 	history []postgres.AssistantMessage,
@@ -152,6 +155,7 @@ func (l *ContextLoader) resolveActiveResource(
 	return latestResourceFromMessages(history)
 }
 
+// loadResourceCitations 加载 `资源引用`，为后续助手流程准备输入。
 func (l *ContextLoader) loadResourceCitations(
 	ctx context.Context,
 	resource *resourceContext,
@@ -169,6 +173,7 @@ func (l *ContextLoader) loadResourceCitations(
 	return l.retriever.SearchByResource(ctx, resource.ID, trimmedQuery, 4)
 }
 
+// resourceContextFromSnapshot 从会话快照提取当前激活资源的上下文信息，供回复阶段直接注入。
 func resourceContextFromSnapshot(snapshot *SessionContextSnapshot) *resourceContext {
 	if snapshot == nil || snapshot.ActiveResource == nil {
 		return nil
@@ -187,6 +192,7 @@ func resourceContextFromSnapshot(snapshot *SessionContextSnapshot) *resourceCont
 	}
 }
 
+// filterRecentTextMessages 过滤 `Recent文本消息`，把筛选规则收口在单点。
 func filterRecentTextMessages(messages []postgres.AssistantMessage, afterSequenceNo int) []postgres.AssistantMessage {
 	if len(messages) == 0 {
 		return nil
@@ -204,6 +210,7 @@ func filterRecentTextMessages(messages []postgres.AssistantMessage, afterSequenc
 	return filtered
 }
 
+// snapshotActiveResource 把当前激活资源投影成快照字段，统一会话上下文持久化格式。
 func snapshotActiveResource(snapshot *SessionContextSnapshot) *SnapshotActiveResource {
 	if snapshot == nil || snapshot.ActiveResource == nil {
 		return nil
@@ -213,6 +220,7 @@ func snapshotActiveResource(snapshot *SessionContextSnapshot) *SnapshotActiveRes
 	return &resource
 }
 
+// snapshotRollingSummary 把滚动摘要投影成快照字段，供后续轮次直接复用。
 func snapshotRollingSummary(snapshot *SessionContextSnapshot) *string {
 	if snapshot == nil || snapshot.RollingSummary == nil {
 		return nil
@@ -222,6 +230,7 @@ func snapshotRollingSummary(snapshot *SessionContextSnapshot) *string {
 	return &summary
 }
 
+// snapshotPendingTaskSuggestion 把待确认任务建议投影成快照字段，保持会话状态可恢复。
 func snapshotPendingTaskSuggestion(snapshot *SessionContextSnapshot) *SnapshotPendingTaskSuggestion {
 	if snapshot == nil || snapshot.PendingTaskSuggestion == nil {
 		return nil

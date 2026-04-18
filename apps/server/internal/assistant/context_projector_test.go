@@ -8,6 +8,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// TestSessionContextProjectorInitializesEmptySnapshot 验证`sessionContextProjector`在写入或副作用路径下的行为，防止同类回归。
 func TestSessionContextProjectorInitializesEmptySnapshot(t *testing.T) {
 	repo := newFakeSessionContextSnapshotProjectorRepo()
 	projector := NewSessionContextProjector(repo)
@@ -28,6 +29,7 @@ func TestSessionContextProjectorInitializesEmptySnapshot(t *testing.T) {
 	}
 }
 
+// TestSessionContextProjectorProjectsReadySessionFile 验证`sessionContextProjector`在写入或副作用路径下的行为，防止同类回归。
 func TestSessionContextProjectorProjectsReadySessionFile(t *testing.T) {
 	repo := newFakeSessionContextSnapshotProjectorRepo()
 	projector := NewSessionContextProjector(repo)
@@ -71,6 +73,7 @@ func TestSessionContextProjectorProjectsReadySessionFile(t *testing.T) {
 	}
 }
 
+// TestSessionContextProjectorProjectsTaskSuggestionAndTaskCreated 验证`sessionContextProjector`在写入或副作用路径下的行为，防止同类回归。
 func TestSessionContextProjectorProjectsTaskSuggestionAndTaskCreated(t *testing.T) {
 	repo := newFakeSessionContextSnapshotProjectorRepo()
 	projector := NewSessionContextProjector(repo)
@@ -120,6 +123,7 @@ func TestSessionContextProjectorProjectsTaskSuggestionAndTaskCreated(t *testing.
 	}
 }
 
+// TestSessionContextProjectorProjectsTaskStatusIdempotently 验证`sessionContextProjector`在写入或副作用路径下的行为，防止同类回归。
 func TestSessionContextProjectorProjectsTaskStatusIdempotently(t *testing.T) {
 	repo := newFakeSessionContextSnapshotProjectorRepo()
 	projector := NewSessionContextProjector(repo)
@@ -157,6 +161,7 @@ func TestSessionContextProjectorProjectsTaskStatusIdempotently(t *testing.T) {
 	}
 }
 
+// TestSessionContextProjectorProjectsGroundingState 验证`sessionContextProjector`在写入或副作用路径下的行为，防止同类回归。
 func TestSessionContextProjectorProjectsGroundingState(t *testing.T) {
 	repo := newFakeSessionContextSnapshotProjectorRepo()
 	projector := NewSessionContextProjector(repo)
@@ -193,17 +198,20 @@ func TestSessionContextProjectorProjectsGroundingState(t *testing.T) {
 	}
 }
 
+// fakeSessionContextSnapshotProjectorRepo 作为会话上下文快照投影器仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeSessionContextSnapshotProjectorRepo struct {
 	changeCount int
 	records     map[string]*postgres.SessionContextSnapshotRecord
 }
 
+// newFakeSessionContextSnapshotProjectorRepo 为测试场景处理 `newFake会话上下文快照投影器仓储` 的辅助步骤，减少重复搭建逻辑。
 func newFakeSessionContextSnapshotProjectorRepo() *fakeSessionContextSnapshotProjectorRepo {
 	return &fakeSessionContextSnapshotProjectorRepo{
 		records: make(map[string]*postgres.SessionContextSnapshotRecord),
 	}
 }
 
+// CreateEmpty 实现测试替身需要的 `CreateEmpty` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) CreateEmpty(_ context.Context, sessionID string) (*postgres.SessionContextSnapshotRecord, error) {
 	if existing, ok := r.records[sessionID]; ok {
 		return cloneSnapshotRecord(existing), nil
@@ -218,6 +226,7 @@ func (r *fakeSessionContextSnapshotProjectorRepo) CreateEmpty(_ context.Context,
 	return cloneSnapshotRecord(record), nil
 }
 
+// GetBySessionID 实现测试替身需要的 `GetBySessionID` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) GetBySessionID(_ context.Context, sessionID string) (*postgres.SessionContextSnapshotRecord, error) {
 	record, ok := r.records[sessionID]
 	if !ok {
@@ -227,6 +236,7 @@ func (r *fakeSessionContextSnapshotProjectorRepo) GetBySessionID(_ context.Conte
 	return cloneSnapshotRecord(record), nil
 }
 
+// UpsertActiveResource 实现测试替身需要的 `UpsertActiveResource` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) UpsertActiveResource(_ context.Context, params postgres.UpsertActiveResourceParams) error {
 	record := r.ensureRecord(params.SessionID)
 	if sameOptionalString(record.ActiveResourceID, params.ResourceID) &&
@@ -244,6 +254,7 @@ func (r *fakeSessionContextSnapshotProjectorRepo) UpsertActiveResource(_ context
 	return nil
 }
 
+// UpsertPendingTaskSuggestion 实现测试替身需要的 `UpsertPendingTaskSuggestion` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) UpsertPendingTaskSuggestion(_ context.Context, params postgres.UpsertPendingTaskSuggestionParams) error {
 	record := r.ensureRecord(params.SessionID)
 	if sameOptionalString(record.PendingTaskSuggestionMessageID, params.MessageID) &&
@@ -257,6 +268,7 @@ func (r *fakeSessionContextSnapshotProjectorRepo) UpsertPendingTaskSuggestion(_ 
 	return nil
 }
 
+// UpsertLatestTask 实现测试替身需要的 `UpsertLatestTask` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) UpsertLatestTask(_ context.Context, params postgres.UpsertLatestTaskParams) error {
 	record := r.ensureRecord(params.SessionID)
 	if sameOptionalString(record.LatestTaskID, params.TaskID) &&
@@ -272,6 +284,7 @@ func (r *fakeSessionContextSnapshotProjectorRepo) UpsertLatestTask(_ context.Con
 	return nil
 }
 
+// ClearPendingTaskSuggestion 实现测试替身需要的 `ClearPendingTaskSuggestion` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) ClearPendingTaskSuggestion(_ context.Context, sessionID string) error {
 	record := r.ensureRecord(sessionID)
 	if record.PendingTaskSuggestionMessageID == nil && record.PendingTaskInstruction == nil {
@@ -284,6 +297,7 @@ func (r *fakeSessionContextSnapshotProjectorRepo) ClearPendingTaskSuggestion(_ c
 	return nil
 }
 
+// UpdateLatestTaskStatusBySourceMessageID 实现测试替身需要的 `UpdateLatestTaskStatusBySourceMessageID` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) UpdateLatestTaskStatusBySourceMessageID(_ context.Context, sourceMessageID string, status string) error {
 	for _, record := range r.records {
 		if record.LatestTaskSourceMessageID == nil || *record.LatestTaskSourceMessageID != sourceMessageID {
@@ -301,6 +315,7 @@ func (r *fakeSessionContextSnapshotProjectorRepo) UpdateLatestTaskStatusBySource
 	return nil
 }
 
+// UpdateGroundingState 实现测试替身需要的 `UpdateGroundingState` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) UpdateGroundingState(_ context.Context, params postgres.UpdateGroundingStateParams) error {
 	record := r.ensureRecord(params.SessionID)
 	record.ActiveSectionID = cloneStringPointer(params.ActiveSectionID)
@@ -313,6 +328,7 @@ func (r *fakeSessionContextSnapshotProjectorRepo) UpdateGroundingState(_ context
 	return nil
 }
 
+// ensureRecord 实现测试替身需要的 `ensureRecord` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) ensureRecord(sessionID string) *postgres.SessionContextSnapshotRecord {
 	if existing, ok := r.records[sessionID]; ok {
 		return existing
@@ -326,6 +342,7 @@ func (r *fakeSessionContextSnapshotProjectorRepo) ensureRecord(sessionID string)
 	return record
 }
 
+// mustGet 实现测试替身需要的 `mustGet` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) mustGet(sessionID string) *postgres.SessionContextSnapshotRecord {
 	record, ok := r.records[sessionID]
 	if !ok {
@@ -335,6 +352,7 @@ func (r *fakeSessionContextSnapshotProjectorRepo) mustGet(sessionID string) *pos
 	return record
 }
 
+// cloneSnapshotRecord 复制 `快照记录`，避免测试断言时共享可变引用。
 func cloneSnapshotRecord(record *postgres.SessionContextSnapshotRecord) *postgres.SessionContextSnapshotRecord {
 	if record == nil {
 		return nil
@@ -369,6 +387,7 @@ func cloneSnapshotRecord(record *postgres.SessionContextSnapshotRecord) *postgre
 	return &cloned
 }
 
+// cloneStringPointer 复制 `StringPointer`，避免测试断言时共享可变引用。
 func cloneStringPointer(value *string) *string {
 	if value == nil {
 		return nil
@@ -378,6 +397,7 @@ func cloneStringPointer(value *string) *string {
 	return &cloned
 }
 
+// sameOptionalString 比较 `OptionalString` 是否一致，方便测试断言可选值语义。
 func sameOptionalString(current *string, next string) bool {
 	if current == nil {
 		return next == ""
@@ -386,6 +406,7 @@ func sameOptionalString(current *string, next string) bool {
 	return *current == next
 }
 
+// sameOptionalPointer 比较 `OptionalPointer` 是否一致，方便测试断言可选值语义。
 func sameOptionalPointer(current *string, next *string) bool {
 	if current == nil || next == nil {
 		return current == nil && next == nil
@@ -394,6 +415,7 @@ func sameOptionalPointer(current *string, next *string) bool {
 	return *current == *next
 }
 
+// mustMarshalGroundingJSON 在测试里强制构造 `MarshalgroundingJSON`，失败时立即终止当前用例。
 func mustMarshalGroundingJSON(value any) []byte {
 	body, err := json.Marshal(value)
 	if err != nil {

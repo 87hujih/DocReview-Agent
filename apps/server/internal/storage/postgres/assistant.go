@@ -249,6 +249,7 @@ func (r *AssistantRepo) DeleteSession(ctx context.Context, id string) (bool, err
 	return result.RowsAffected() > 0, nil
 }
 
+// insertAssistantMessages 批量写入助手消息记录，并保持会话内顺序字段连续。
 func insertAssistantMessages(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -276,6 +277,7 @@ func insertAssistantMessages(
 	return messages, lastMessageAt, nil
 }
 
+// appendAssistantMessagesTx 追加 `助手消息事务`，保持消息和副作用写入顺序一致。
 func appendAssistantMessagesTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -319,6 +321,7 @@ func appendAssistantMessagesTx(
 	return messages, nil
 }
 
+// updateAssistantSessionTimestamp 刷新助手会话的最近活动时间，确保列表排序反映最新交互。
 func updateAssistantSessionTimestamp(ctx context.Context, tx pgx.Tx, sessionID string, timestamp time.Time) (AssistantSession, error) {
 	return scanAssistantSession(tx.QueryRow(ctx, `
 		UPDATE assistant_sessions
@@ -329,6 +332,7 @@ func updateAssistantSessionTimestamp(ctx context.Context, tx pgx.Tx, sessionID s
 	`, sessionID, timestamp))
 }
 
+// scanAssistantSession 把当前数据库行扫描成 `助手会话`，统一查询结果到领域结构的映射。
 func scanAssistantSession(row pgx.Row) (AssistantSession, error) {
 	var session AssistantSession
 
@@ -346,6 +350,7 @@ func scanAssistantSession(row pgx.Row) (AssistantSession, error) {
 	return session, nil
 }
 
+// scanAssistantMessage 把当前数据库行扫描成 `助手消息`，统一查询结果到领域结构的映射。
 func scanAssistantMessage(row pgx.Row) (AssistantMessage, error) {
 	var message AssistantMessage
 

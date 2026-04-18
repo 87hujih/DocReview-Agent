@@ -164,6 +164,7 @@ func (r *AssistantTaskNotificationRepo) AppendTaskStatusMessage(
 	return &messages[0], true, nil
 }
 
+// claimAssistantTaskNotificationTx 在事务内认领待发送的助手任务通知，避免多 worker 重复投递。
 func claimAssistantTaskNotificationTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -201,6 +202,7 @@ func claimAssistantTaskNotificationTx(
 	return &locked, false, nil
 }
 
+// updateAssistantTaskNotificationMessageIDTx 在事务内回写助手任务通知对应的消息 ID，建立通知记录与消息的关联。
 func updateAssistantTaskNotificationMessageIDTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -216,6 +218,7 @@ func updateAssistantTaskNotificationMessageIDTx(
 	return err
 }
 
+// scanAssistantTaskNotification 把当前数据库行扫描成 `助手任务通知`，统一查询结果到领域结构的映射。
 func scanAssistantTaskNotification(row pgx.Row) (AssistantTaskNotification, error) {
 	var notification AssistantTaskNotification
 

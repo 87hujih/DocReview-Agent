@@ -112,6 +112,7 @@ func (a *Agent) Plan(ctx context.Context, instruction string, resourceTitle stri
 	return &result, nil
 }
 
+// trimCodeFence 去掉模型输出外层的 Markdown 代码围栏，保留内部可解析正文。
 func trimCodeFence(content string) string {
 	trimmed := strings.TrimSpace(content)
 	if !strings.HasPrefix(trimmed, "```") {
@@ -125,6 +126,7 @@ func trimCodeFence(content string) string {
 	return strings.TrimSpace(trimmed)
 }
 
+// normalizeStringSlice 归一化 `StringSlice`，避免后续流程重复处理边界输入。
 func normalizeStringSlice(values []string) []string {
 	normalized := make([]string, 0, len(values))
 	for _, value := range values {

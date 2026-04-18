@@ -361,6 +361,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 	o.projectTaskStatus(ctx, task, models.StatusAwaitingApproval)
 }
 
+// transitionTask 推进 `任务` 的状态迁移，收口状态机副作用。
 func (o *Orchestrator) transitionTask(ctx context.Context, task *postgres.Task, to string, errorMessage *string) error {
 	from := task.Status
 	if err := models.Transition(task.Status, to); err != nil {
@@ -387,6 +388,7 @@ func (o *Orchestrator) transitionTask(ctx context.Context, task *postgres.Task, 
 	return nil
 }
 
+// failTask 把 `任务` 标记为失败，并补齐对应清理或通知逻辑。
 func (o *Orchestrator) failTask(ctx context.Context, task *postgres.Task, step *postgres.TaskStep, cause error) {
 	cleanupCtx, cancel := failureContext(ctx)
 	defer cancel()
@@ -421,6 +423,7 @@ func (o *Orchestrator) failTask(ctx context.Context, task *postgres.Task, step *
 	}
 }
 
+// failureContext 归拢 `失败` 上下文，避免调用方重复准备依赖。
 func failureContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		return context.WithTimeout(context.Background(), failurePersistenceTimeout)
@@ -429,6 +432,7 @@ func failureContext(parent context.Context) (context.Context, context.CancelFunc
 	return context.WithTimeout(context.WithoutCancel(parent), failurePersistenceTimeout)
 }
 
+// projectTaskStatus 把 `任务状态` 投影回任务工作流状态，保持后续读取口径一致。
 func (o *Orchestrator) projectTaskStatus(ctx context.Context, task *postgres.Task, status string) {
 	if o.projector == nil || task == nil {
 		return
@@ -441,11 +445,13 @@ func (o *Orchestrator) projectTaskStatus(ctx context.Context, task *postgres.Tas
 	}
 }
 
+// syncTaskStatusSideEffects 同步 `任务状态SideEffects`，避免状态联动逻辑散落在多个调用方。
 func (o *Orchestrator) syncTaskStatusSideEffects(ctx context.Context, task *postgres.Task, status string) {
 	o.projectTaskStatus(ctx, task, status)
 	o.notifyTaskTerminalStatus(ctx, task, status)
 }
 
+// notifyTaskTerminalStatus 通知 `任务终态状态`，把消息发送时机和格式收口在接收者内部。
 func (o *Orchestrator) notifyTaskTerminalStatus(ctx context.Context, task *postgres.Task, status string) {
 	if o.notifier == nil || task == nil || !isTerminalTaskStatus(status) {
 		return
@@ -459,10 +465,12 @@ func (o *Orchestrator) notifyTaskTerminalStatus(ctx context.Context, task *postg
 	}
 }
 
+// isTerminalTaskStatus 判断任务状态是否已经进入终态，供通知和投影逻辑复用。
 func isTerminalTaskStatus(status string) bool {
 	return status == models.StatusCompleted || status == models.StatusFailed
 }
 
+// recordStepEvent 记录 `Step事件`，统一事件和审计信息的写入位置。
 func (o *Orchestrator) recordStepEvent(
 	ctx context.Context,
 	task *postgres.Task,
@@ -486,6 +494,7 @@ func (o *Orchestrator) recordStepEvent(
 	})
 }
 
+// recordArtifactCreated 记录 `产物Created`，统一事件和审计信息的写入位置。
 func (o *Orchestrator) recordArtifactCreated(
 	ctx context.Context,
 	task *postgres.Task,
@@ -510,6 +519,7 @@ func (o *Orchestrator) recordArtifactCreated(
 	})
 }
 
+// recordEvent 记录 `事件`，统一事件和审计信息的写入位置。
 func (o *Orchestrator) recordEvent(ctx context.Context, input taskevents.RecordInput) {
 	if o.eventService == nil {
 		return
@@ -520,6 +530,7 @@ func (o *Orchestrator) recordEvent(ctx context.Context, input taskevents.RecordI
 	}
 }
 
+// summarizeContent 提炼 `内容` 的摘要结果，避免上层重复压缩长文本。
 func summarizeContent(content string, maxRunes int) string {
 	runes := []rune(content)
 	if len(runes) <= maxRunes {
@@ -529,6 +540,7 @@ func summarizeContent(content string, maxRunes int) string {
 	return string(runes[:maxRunes])
 }
 
+// dedupeCitations 对 `引用` 去重，统一结果合并时的判重规则。
 func dedupeCitations(input []citation.Citation) []citation.Citation {
 	seen := make(map[string]struct{})
 	output := make([]citation.Citation, 0, len(input))
@@ -554,6 +566,7 @@ func dedupeCitations(input []citation.Citation) []citation.Citation {
 	return output
 }
 
+// validatePlanResult 校验 `Plan结果`，在进入主流程前提前拦截非法输入。
 func validatePlanResult(result *planner.PlanResult) error {
 	if result == nil {
 		return fmt.Errorf("规划代理返回了空结果")

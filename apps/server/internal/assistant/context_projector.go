@@ -178,6 +178,7 @@ func (p *SessionContextProjector) ProjectGroundingState(ctx context.Context, pro
 	})
 }
 
+// optionalStringPointer 仅在字符串非空时返回指针，避免把空文本误写成有值字段。
 func optionalStringPointer(value string) *string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {

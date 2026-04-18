@@ -117,6 +117,7 @@ func (s *Service) ListTasks(ctx context.Context) ([]postgres.Task, error) {
 	return s.taskRepo.List(ctx)
 }
 
+// recordEvent 记录 `事件`，统一事件和审计信息的写入位置。
 func (s *Service) recordEvent(ctx context.Context, input taskevents.RecordInput) {
 	if s.eventService == nil {
 		return
@@ -127,6 +128,7 @@ func (s *Service) recordEvent(ctx context.Context, input taskevents.RecordInput)
 	}
 }
 
+// validateCreateTaskInput 校验 `创建任务输入`，避免非法输入继续穿透后续流程。
 func (s *Service) validateCreateTaskInput(ctx context.Context, resourceID string, instruction string) (string, string, error) {
 	resourceID = strings.TrimSpace(resourceID)
 	instruction = strings.TrimSpace(instruction)
@@ -153,6 +155,7 @@ func (s *Service) validateCreateTaskInput(ctx context.Context, resourceID string
 	return resourceID, instruction, nil
 }
 
+// afterTaskCreated 在前置步骤完成后处理 `任务Created`，把补充副作用集中在同一处。
 func (s *Service) afterTaskCreated(ctx context.Context, task *postgres.Task) (*postgres.Task, error) {
 	s.recordEvent(ctx, taskevents.RecordInput{
 		TaskID:    task.ID,
@@ -175,6 +178,7 @@ func (s *Service) afterTaskCreated(ctx context.Context, task *postgres.Task) (*p
 	return task, nil
 }
 
+// failCreatedTask 把 `Created任务` 标记为失败，并补齐对应清理或通知逻辑。
 func (s *Service) failCreatedTask(ctx context.Context, task *postgres.Task, enqueueErr error) (*postgres.Task, error) {
 	errorMsg, reason := taskEnqueueFailureDetail(enqueueErr)
 	from := task.Status
@@ -216,6 +220,7 @@ func (s *Service) failCreatedTask(ctx context.Context, task *postgres.Task, enqu
 	return task, nil
 }
 
+// taskEnqueueFailureDetail 整理 `任务入队失败` 的细节描述，便于上层统一返回错误或状态说明。
 func taskEnqueueFailureDetail(err error) (string, string) {
 	switch {
 	case errors.Is(err, workflow.ErrQueueFull):

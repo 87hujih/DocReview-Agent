@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestStructuredDocumentRepoPersistsVersionStructureAndSections 验证`structuredDocumentRepo`在写入或副作用路径下的行为，防止同类回归。
 func TestStructuredDocumentRepoPersistsVersionStructureAndSections(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -109,6 +110,7 @@ func TestStructuredDocumentRepoPersistsVersionStructureAndSections(t *testing.T)
 	}
 }
 
+// TestStructuredDocumentRepoPersistsEmptyParserVersionAsNonNullText 验证`structuredDocumentRepo`在写入或副作用路径下的行为，防止同类回归。
 func TestStructuredDocumentRepoPersistsEmptyParserVersionAsNonNullText(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -158,6 +160,7 @@ func TestStructuredDocumentRepoPersistsEmptyParserVersionAsNonNullText(t *testin
 	}
 }
 
+// TestStructuredDocumentRepoReplaceSectionsDefaultsNonNullGroundedFields 验证`structuredDocumentRepoReplaceSectionsDefaultsNonNullGroundedFields`在特定边界条件下的行为，防止同类回归。
 func TestStructuredDocumentRepoReplaceSectionsDefaultsNonNullGroundedFields(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -214,6 +217,7 @@ func TestStructuredDocumentRepoReplaceSectionsDefaultsNonNullGroundedFields(t *t
 	}
 }
 
+// TestStructuredDocumentRepoReplaceVersionChunksPreservesGroundedMetadata 验证`structuredDocumentRepoReplaceVersionChunks`在状态保持路径下的行为，防止同类回归。
 func TestStructuredDocumentRepoReplaceVersionChunksPreservesGroundedMetadata(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -325,6 +329,7 @@ func TestStructuredDocumentRepoReplaceVersionChunksPreservesGroundedMetadata(t *
 	}
 }
 
+// mustMarshalJSON 在测试里强制构造 `MarshalJSON`，失败时立即终止当前用例。
 func mustMarshalJSON(t *testing.T, value any) []byte {
 	t.Helper()
 
@@ -336,6 +341,7 @@ func mustMarshalJSON(t *testing.T, value any) []byte {
 	return body
 }
 
+// jsonBodiesEqual 为测试场景处理 `JSONBodiesEqual` 的辅助步骤，减少重复搭建逻辑。
 func jsonBodiesEqual(expected []byte, actual []byte) bool {
 	var expectedValue any
 	if err := json.Unmarshal(expected, &expectedValue); err != nil {
@@ -359,10 +365,12 @@ func jsonBodiesEqual(expected []byte, actual []byte) bool {
 	return string(expectedNormalized) == string(actualNormalized)
 }
 
+// stringPointer 返回字符串指针，简化构造可选文本字段时的样板代码。
 func stringPointer(value string) *string {
 	return &value
 }
 
+// intPointer 返回整数指针，减少测试里构造可选页码字段时的重复样板。
 func intPointer(value int) *int {
 	return &value
 }

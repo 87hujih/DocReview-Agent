@@ -33,6 +33,7 @@ func (r ReferenceResolver) Resolve(query string, snapshot *SessionContextSnapsho
 	return nil
 }
 
+// resolveExplicitEntity 解析 `ExplicitEntity`，确定后续处理目标。
 func resolveExplicitEntity(query string, snapshot *SessionContextSnapshot) *ResolvedReference {
 	for _, entity := range snapshot.LastEnumeratedEntities {
 		if strings.TrimSpace(entity.EntityName) == "" {
@@ -65,6 +66,7 @@ func resolveExplicitEntity(query string, snapshot *SessionContextSnapshot) *Reso
 	return nil
 }
 
+// resolveOrdinalReference 解析 `序号引用`，确定后续处理目标。
 func resolveOrdinalReference(query string, snapshot *SessionContextSnapshot) *ResolvedReference {
 	ordinal := extractOrdinal(query)
 	if ordinal == 0 {
@@ -86,6 +88,7 @@ func resolveOrdinalReference(query string, snapshot *SessionContextSnapshot) *Re
 	return nil
 }
 
+// resolveAnaphora 解析 `Anaphora`，确定后续处理目标。
 func resolveAnaphora(query string, snapshot *SessionContextSnapshot) *ResolvedReference {
 	if snapshot.ActiveSection == nil {
 		return nil
@@ -107,6 +110,7 @@ func resolveAnaphora(query string, snapshot *SessionContextSnapshot) *ResolvedRe
 	}
 }
 
+// extractOrdinal 从现有内容里提取 `序号`，避免调用方重复解析同一份数据。
 func extractOrdinal(query string) int {
 	switch {
 	case strings.Contains(query, "第一个"), strings.Contains(query, "第1个"):
@@ -120,6 +124,7 @@ func extractOrdinal(query string) int {
 	}
 }
 
+// containsAnaphora 判断当前集合里是否包含 `Anaphora`，把匹配规则收口在单点。
 func containsAnaphora(query string) bool {
 	for _, token := range []string{"那个项目", "这个项目", "上面那个项目", "那个经历", "这个经历", "上面那个经历"} {
 		if strings.Contains(query, token) {

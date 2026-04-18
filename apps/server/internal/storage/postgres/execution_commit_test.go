@@ -13,6 +13,7 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
+// TestCommitPreparedExecutionWritesVersionChunksJobTaskAndEventsAtomically 验证`commitPreparedExecution`在写入或副作用路径下的行为，防止同类回归。
 func TestCommitPreparedExecutionWritesVersionChunksJobTaskAndEventsAtomically(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -132,6 +133,7 @@ func TestCommitPreparedExecutionWritesVersionChunksJobTaskAndEventsAtomically(t 
 	}
 }
 
+// TestCommitPreparedExecutionFailsClosedWhenCurrentVersionDrifts 验证`commitPreparedExecutionFailsClosedWhenCurrentVersionDrifts`在特定边界条件下的行为，防止同类回归。
 func TestCommitPreparedExecutionFailsClosedWhenCurrentVersionDrifts(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -233,6 +235,7 @@ func TestCommitPreparedExecutionFailsClosedWhenCurrentVersionDrifts(t *testing.T
 	}
 }
 
+// TestCommitPreparedExecutionRollsBackOnChunkInsertFailure 验证`commitPreparedExecution`在回滚路径下的行为，防止同类回归。
 func TestCommitPreparedExecutionRollsBackOnChunkInsertFailure(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -326,6 +329,7 @@ func TestCommitPreparedExecutionRollsBackOnChunkInsertFailure(t *testing.T) {
 	}
 }
 
+// TestCommitPreparedExecutionAllowsOnlyOneSuccessForSameResourceBaseVersion 验证`commitPreparedExecution`在合法输入或兼容路径下的行为，防止同类回归。
 func TestCommitPreparedExecutionAllowsOnlyOneSuccessForSameResourceBaseVersion(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -403,6 +407,7 @@ func TestCommitPreparedExecutionAllowsOnlyOneSuccessForSameResourceBaseVersion(t
 	}
 }
 
+// recordExecutionCommitEvents 为测试用例处理 `记录执行Commit事件`，减少样板搭建和断言前准备步骤。
 func recordExecutionCommitEvents(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -437,6 +442,7 @@ func recordExecutionCommitEvents(
 	return addTaskStatusChangedEvent(ctx, tx, eventRepo, task, job, fromTaskStatus)
 }
 
+// addTaskStatusChangedEvent 为测试用例处理 `add任务状态Changed事件`，减少样板搭建和断言前准备步骤。
 func addTaskStatusChangedEvent(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -462,6 +468,7 @@ func addTaskStatusChangedEvent(
 	return err
 }
 
+// mapTaskEventLevel 为测试用例处理 `map任务事件Level`，减少样板搭建和断言前准备步骤。
 func mapTaskEventLevel(jobStatus string) string {
 	if jobStatus == "failed" {
 		return "error"
@@ -469,6 +476,7 @@ func mapTaskEventLevel(jobStatus string) string {
 	return "info"
 }
 
+// derefString 为测试场景处理 `derefString` 的辅助步骤，减少重复搭建逻辑。
 func derefString(value *string) string {
 	if value == nil {
 		return ""
@@ -476,6 +484,7 @@ func derefString(value *string) string {
 	return *value
 }
 
+// seedRunningExecutionJob 为测试场景补齐 `Running执行作业` 所需数据，减少重复造数。
 func seedRunningExecutionJob(
 	t *testing.T,
 	pool *pgxpool.Pool,

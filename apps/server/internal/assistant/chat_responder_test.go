@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+// TestBuildChatMessagesMergesRuntimeContextIntoSingleSystemPrompt 验证`buildChatMessages`在流程控制路径下的行为，防止同类回归。
 func TestBuildChatMessagesMergesRuntimeContextIntoSingleSystemPrompt(t *testing.T) {
 	messages := buildChatMessages(ChatCompletionInput{
 		Citations: []citation.Citation{
@@ -60,6 +61,7 @@ func TestBuildChatMessagesMergesRuntimeContextIntoSingleSystemPrompt(t *testing.
 	}
 }
 
+// TestReplyParsesOptionalTaskInstruction 验证`reply`在约束校验路径下的行为，防止同类回归。
 func TestReplyParsesOptionalTaskInstruction(t *testing.T) {
 	responder := newChatResponderWithClient(fakeAssistantLLMClient{
 		generate: func(_ context.Context, _ []*schema.Message) (*schema.Message, error) {
@@ -80,6 +82,7 @@ func TestReplyParsesOptionalTaskInstruction(t *testing.T) {
 	}
 }
 
+// TestBuildChatMessagesPromptMentionsTaskInstructionIsOptionalOnlyWhenReady 验证`buildChatMessagesPromptMentionsTaskInstructionIsOptionalOnlyWhenReady`在特定边界条件下的行为，防止同类回归。
 func TestBuildChatMessagesPromptMentionsTaskInstructionIsOptionalOnlyWhenReady(t *testing.T) {
 	readyMessages := buildChatMessages(ChatCompletionInput{
 		Message: "请直接把这份简历改成产品经理版本",
@@ -104,6 +107,7 @@ func TestBuildChatMessagesPromptMentionsTaskInstructionIsOptionalOnlyWhenReady(t
 	}
 }
 
+// TestBuildChatMessagesIncludesSnapshotProjection 验证`buildChatMessages`在流程控制路径下的行为，防止同类回归。
 func TestBuildChatMessagesIncludesSnapshotProjection(t *testing.T) {
 	messages := buildChatMessages(ChatCompletionInput{
 		Snapshot: &SessionContextSnapshot{
@@ -187,6 +191,7 @@ func TestBuildChatMessagesIncludesSnapshotProjection(t *testing.T) {
 	}
 }
 
+// TestBuildChatMessagesIncludesRollingSummaryBeforeRecentTurns 验证`buildChatMessages`在流程控制路径下的行为，防止同类回归。
 func TestBuildChatMessagesIncludesRollingSummaryBeforeRecentTurns(t *testing.T) {
 	summary := "当前目标：继续优化第二章。\n关键结论：保留按天登记。\n待继续事项：比较两个改写方案。"
 	messages := buildChatMessages(ChatCompletionInput{
@@ -219,6 +224,7 @@ func TestBuildChatMessagesIncludesRollingSummaryBeforeRecentTurns(t *testing.T) 
 	}
 }
 
+// TestBuildChatMessagesIncludesGroundedTargetAndSectionAwareCitations 验证`buildChatMessages`在流程控制路径下的行为，防止同类回归。
 func TestBuildChatMessagesIncludesGroundedTargetAndSectionAwareCitations(t *testing.T) {
 	messages := buildChatMessages(ChatCompletionInput{
 		GroundedTarget: &ResolvedReference{
@@ -251,6 +257,7 @@ func TestBuildChatMessagesIncludesGroundedTargetAndSectionAwareCitations(t *test
 	}
 }
 
+// TestBuildHistoryMessagesDropsStructuredMessagesFromRecentWindow 验证`buildHistoryMessagesDropsStructuredMessagesFromRecentWindow`在特定边界条件下的行为，防止同类回归。
 func TestBuildHistoryMessagesDropsStructuredMessagesFromRecentWindow(t *testing.T) {
 	history := []postgres.AssistantMessage{
 		{
@@ -284,6 +291,7 @@ func TestBuildHistoryMessagesDropsStructuredMessagesFromRecentWindow(t *testing.
 	}
 }
 
+// TestBuildHistoryMessagesRespectsRecentTurnBudget 验证`buildHistoryMessages`在约束校验路径下的行为，防止同类回归。
 func TestBuildHistoryMessagesRespectsRecentTurnBudget(t *testing.T) {
 	countLimitedHistory := make([]postgres.AssistantMessage, 0, 9)
 	for index := 1; index <= 9; index++ {
@@ -316,6 +324,7 @@ func TestBuildHistoryMessagesRespectsRecentTurnBudget(t *testing.T) {
 	}
 }
 
+// TestReplyJSONStreamExtractorHandlesSurrogatePair 验证`replyJSONStreamExtractor`在格式处理路径下的行为，防止同类回归。
 func TestReplyJSONStreamExtractorHandlesSurrogatePair(t *testing.T) {
 	extractor := &replyJSONStreamExtractor{}
 
@@ -332,6 +341,7 @@ func TestReplyJSONStreamExtractorHandlesSurrogatePair(t *testing.T) {
 	}
 }
 
+// TestReplyJSONStreamExtractorHandlesSurrogatePairAcrossChunks 验证`replyJSONStreamExtractor`在格式处理路径下的行为，防止同类回归。
 func TestReplyJSONStreamExtractorHandlesSurrogatePairAcrossChunks(t *testing.T) {
 	extractor := &replyJSONStreamExtractor{}
 	chunks := []string{
@@ -358,6 +368,7 @@ func TestReplyJSONStreamExtractorHandlesSurrogatePairAcrossChunks(t *testing.T) 
 	}
 }
 
+// TestReplyJSONStreamExtractorRejectsInvalidSurrogatePair 验证`replyJSONStreamExtractor`在非法输入或失败路径下的行为，防止同类回归。
 func TestReplyJSONStreamExtractorRejectsInvalidSurrogatePair(t *testing.T) {
 	cases := []string{
 		`{"reply":"\uDE80"}`,
@@ -374,6 +385,7 @@ func TestReplyJSONStreamExtractorRejectsInvalidSurrogatePair(t *testing.T) {
 	}
 }
 
+// TestChatResponderReplyUsesConfiguredTimeoutAndRetries 验证`chatResponderReply`在依赖选择路径下的行为，防止同类回归。
 func TestChatResponderReplyUsesConfiguredTimeoutAndRetries(t *testing.T) {
 	var remaining []time.Duration
 	attempts := 0
@@ -421,6 +433,7 @@ func TestChatResponderReplyUsesConfiguredTimeoutAndRetries(t *testing.T) {
 	}
 }
 
+// TestChatResponderStreamRetriesOpenWithoutInjectingHardDeadline 验证`chatResponderStreamRetriesOpenWithoutInjectingHardDeadline`在特定边界条件下的行为，防止同类回归。
 func TestChatResponderStreamRetriesOpenWithoutInjectingHardDeadline(t *testing.T) {
 	attempts := 0
 	var sawDeadline []bool
@@ -475,6 +488,7 @@ func TestChatResponderStreamRetriesOpenWithoutInjectingHardDeadline(t *testing.T
 	}
 }
 
+// countAssistantTestMessagesByRole 为测试场景处理 `按角色定位的count助手Test消息` 的辅助步骤，减少重复搭建逻辑。
 func countAssistantTestMessagesByRole(messages []*schema.Message, role schema.RoleType) int {
 	count := 0
 	for _, message := range messages {
@@ -486,11 +500,13 @@ func countAssistantTestMessagesByRole(messages []*schema.Message, role schema.Ro
 	return count
 }
 
+// fakeAssistantLLMClient 作为助手LLM客户端的测试替身，用于在用例里提供可控的依赖行为。
 type fakeAssistantLLMClient struct {
 	generate func(ctx context.Context, messages []*schema.Message) (*schema.Message, error)
 	stream   func(ctx context.Context, messages []*schema.Message) (assistantLLMStream, error)
 }
 
+// Generate 实现测试替身需要的 `Generate` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantLLMClient) Generate(ctx context.Context, messages []*schema.Message) (*schema.Message, error) {
 	if f.generate == nil {
 		return nil, errors.New("generate not configured")
@@ -499,6 +515,7 @@ func (f fakeAssistantLLMClient) Generate(ctx context.Context, messages []*schema
 	return f.generate(ctx, messages)
 }
 
+// Stream 实现测试替身需要的 `Stream` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantLLMClient) Stream(ctx context.Context, messages []*schema.Message) (assistantLLMStream, error) {
 	if f.stream == nil {
 		return nil, errors.New("stream not configured")
@@ -507,11 +524,13 @@ func (f fakeAssistantLLMClient) Stream(ctx context.Context, messages []*schema.M
 	return f.stream(ctx, messages)
 }
 
+// fakeAssistantLLMStream 作为助手LLM流式消息的测试替身，用于在用例里提供可控的依赖行为。
 type fakeAssistantLLMStream struct {
 	index    int
 	messages []*schema.Message
 }
 
+// Recv 实现测试替身需要的 `Recv` 接口方法，为用例分支提供可控返回。
 func (f *fakeAssistantLLMStream) Recv() (*schema.Message, error) {
 	if f.index >= len(f.messages) {
 		return nil, io.EOF
@@ -522,4 +541,5 @@ func (f *fakeAssistantLLMStream) Recv() (*schema.Message, error) {
 	return message, nil
 }
 
+// Close 实现测试替身需要的 `Close` 接口方法，为用例分支提供可控返回。
 func (f *fakeAssistantLLMStream) Close() {}

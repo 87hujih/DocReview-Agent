@@ -21,17 +21,19 @@ const (
 type ReadinessState string
 
 const (
-	ReadinessStateNeedMaterial          ReadinessState = "need_material"
-	ReadinessStateReadyButNotExecuting  ReadinessState = "ready_but_not_executing"
-	ReadinessStateReadyForTask          ReadinessState = "ready_for_task"
+	ReadinessStateNeedMaterial         ReadinessState = "need_material"
+	ReadinessStateReadyButNotExecuting ReadinessState = "ready_but_not_executing"
+	ReadinessStateReadyForTask         ReadinessState = "ready_for_task"
 )
 
+// TaskSuggestionEvaluationInput 归拢任务建议Evaluation所需的输入字段，避免调用方散落传参。
 type TaskSuggestionEvaluationInput struct {
 	CurrentMessage       string
 	ActiveResource       *resourceContext
 	ModelTaskInstruction *string
 }
 
+// TaskSuggestionDecision 承载任务建议Decision相关状态，明确助手链路中的数据边界。
 type TaskSuggestionDecision struct {
 	MaterialState         MaterialState
 	IntentState           IntentState
@@ -40,6 +42,7 @@ type TaskSuggestionDecision struct {
 	ActiveResource        *resourceContext
 }
 
+// EvaluateTaskSuggestion 评估 `任务建议`，给出后续流程需要的判断结果。
 func EvaluateTaskSuggestion(input TaskSuggestionEvaluationInput) TaskSuggestionDecision {
 	decision := TaskSuggestionDecision{
 		MaterialState:  MaterialStateMissing,
@@ -73,6 +76,7 @@ func EvaluateTaskSuggestion(input TaskSuggestionEvaluationInput) TaskSuggestionD
 	return decision
 }
 
+// classifyIntentState 对 `意图状态` 做分类，统一后续分支选择依据。
 func classifyIntentState(message string) IntentState {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {
@@ -88,6 +92,7 @@ func classifyIntentState(message string) IntentState {
 	return IntentStateDiscussion
 }
 
+// isCapabilityQuery 判断 `Capability查询` 是否满足当前流程的条件，避免同一谓词在多处分散实现。
 func isCapabilityQuery(message string) bool {
 	if containsAny(message, []string{
 		"你能做什么",
@@ -104,6 +109,7 @@ func isCapabilityQuery(message string) bool {
 	return false
 }
 
+// isExecutionRequest 判断 `执行请求` 是否满足当前流程的条件，避免同一谓词在多处分散实现。
 func isExecutionRequest(message string) bool {
 	if containsAny(message, []string{
 		"如果要改",
@@ -152,6 +158,7 @@ func isExecutionRequest(message string) bool {
 	return !strings.ContainsAny(message, "？?")
 }
 
+// containsAny 判断当前集合里是否包含 `Any`，把匹配规则收口在单点。
 func containsAny(message string, keywords []string) bool {
 	for _, keyword := range keywords {
 		if strings.Contains(message, keyword) {
@@ -162,6 +169,7 @@ func containsAny(message string, keywords []string) bool {
 	return false
 }
 
+// stringValue 提取 `string` 的稳定值表示，统一空值处理。
 func stringValue(value *string) string {
 	if value == nil {
 		return ""

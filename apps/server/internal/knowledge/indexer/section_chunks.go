@@ -7,6 +7,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// buildSectionAwareChunkInputs 按 section 类型生成 grounded chunk 输入，保证项目目录和普通文档走各自的切块策略。
 func buildSectionAwareChunkInputs(sections []postgres.ResourceSection) []postgres.ResourceChunkInput {
 	inputs := make([]postgres.ResourceChunkInput, 0)
 	chunkIndex := 0
@@ -20,6 +21,7 @@ func buildSectionAwareChunkInputs(sections []postgres.ResourceSection) []postgre
 	return inputs
 }
 
+// buildChunksForSection 根据 section 类型选择项目专用或通用切块逻辑，返回当前 section 需要写库的 chunk。
 func buildChunksForSection(section postgres.ResourceSection, startIndex int) []postgres.ResourceChunkInput {
 	if strings.TrimSpace(section.SectionType) == "project" {
 		return buildProjectChunks(section, startIndex)
@@ -28,6 +30,7 @@ func buildChunksForSection(section postgres.ResourceSection, startIndex int) []p
 	return buildGenericSectionChunks(section, startIndex)
 }
 
+// buildProjectChunks 把项目结构 section 展开成按节点命名的 grounded chunk，保留路径和层级信息。
 func buildProjectChunks(section postgres.ResourceSection, startIndex int) []postgres.ResourceChunkInput {
 	windowGroupID := sectionWindowGroupID(section)
 	techStack := extractTechStack(section.MetadataJSON)
@@ -65,6 +68,7 @@ func buildProjectChunks(section postgres.ResourceSection, startIndex int) []post
 	return chunks
 }
 
+// buildGenericSectionChunks 把普通 section 切成连续文本 chunk，并沿用 grounded 元数据描述其来源范围。
 func buildGenericSectionChunks(section postgres.ResourceSection, startIndex int) []postgres.ResourceChunkInput {
 	windowGroupID := sectionWindowGroupID(section)
 	chunks := make([]postgres.ResourceChunkInput, 0, 2)
@@ -95,6 +99,7 @@ func buildGenericSectionChunks(section postgres.ResourceSection, startIndex int)
 	return chunks
 }
 
+// sectionWindowGroupID 为同一 section 生成稳定的窗口分组 ID，方便引用窗口按 section 归并。
 func sectionWindowGroupID(section postgres.ResourceSection) string {
 	if trimmed := strings.TrimSpace(section.SectionKey); trimmed != "" {
 		return trimmed
@@ -103,6 +108,7 @@ func sectionWindowGroupID(section postgres.ResourceSection) string {
 	return strings.TrimSpace(section.ID)
 }
 
+// extractTechStack 从现有内容里提取 `技术栈`，避免调用方重复解析同一份数据。
 func extractTechStack(metadataJSON []byte) []string {
 	if len(metadataJSON) == 0 {
 		return nil
@@ -138,6 +144,7 @@ func extractTechStack(metadataJSON []byte) []string {
 	return techStack
 }
 
+// buildChunkMetadata 生成写入 chunk 的 grounded 元数据 JSON，保留标题、页码、路径和原始 section 信息。
 func buildChunkMetadata(section postgres.ResourceSection) []byte {
 	metadata := map[string]any{
 		"section_key": section.SectionKey,
@@ -160,6 +167,7 @@ func buildChunkMetadata(section postgres.ResourceSection) []byte {
 	return body
 }
 
+// joinNonEmptyLines 按换行拼接非空文本片段，避免提示词和摘要内容混入多余空行。
 func joinNonEmptyLines(values ...string) string {
 	lines := make([]string, 0, len(values))
 	for _, value := range values {
@@ -172,6 +180,7 @@ func joinNonEmptyLines(values ...string) string {
 	return strings.Join(lines, "\n")
 }
 
+// optionalString 把空白字符串折叠为 nil，统一可选文本字段的缺省语义。
 func optionalString(value string) *string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -181,6 +190,7 @@ func optionalString(value string) *string {
 	return &trimmed
 }
 
+// optionalInt 把有效整数包装成可选值，统一构造 grounded 元数据时的空值表达。
 func optionalInt(value int) *int {
 	if value <= 0 {
 		return nil

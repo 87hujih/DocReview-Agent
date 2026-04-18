@@ -95,6 +95,7 @@ func TestChunkMarkdownEmpty(t *testing.T) {
 	}
 }
 
+// TestChunkMarkdownUsesWholeDocumentFallback 验证`chunkMarkdown`在依赖选择路径下的行为，防止同类回归。
 func TestChunkMarkdownUsesWholeDocumentFallback(t *testing.T) {
 	input := "这是没有二级标题的正文。"
 

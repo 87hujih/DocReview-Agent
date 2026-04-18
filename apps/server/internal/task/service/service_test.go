@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestCreateTaskRecordsCreatedEvent 验证`createTask`在写入或副作用路径下的行为，防止同类回归。
 func TestCreateTaskRecordsCreatedEvent(t *testing.T) {
 	pool := newTaskServiceTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -60,6 +61,7 @@ func TestCreateTaskRecordsCreatedEvent(t *testing.T) {
 	}
 }
 
+// TestCreateTaskMarksTaskFailedWhenRunnerQueueFull 验证`createTask`在流程控制路径下的行为，防止同类回归。
 func TestCreateTaskMarksTaskFailedWhenRunnerQueueFull(t *testing.T) {
 	pool := newTaskServiceTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -97,6 +99,7 @@ func TestCreateTaskMarksTaskFailedWhenRunnerQueueFull(t *testing.T) {
 	assertTaskFailureEvents(t, ctx, eventRepo, task.ID, []string{"task.created", "task.status_changed", "task.failed"})
 }
 
+// TestCreateTaskMarksTaskFailedWhenRunnerStopped 验证`createTask`在流程控制路径下的行为，防止同类回归。
 func TestCreateTaskMarksTaskFailedWhenRunnerStopped(t *testing.T) {
 	pool := newTaskServiceTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -132,6 +135,7 @@ func TestCreateTaskMarksTaskFailedWhenRunnerStopped(t *testing.T) {
 	assertTaskFailureEvents(t, ctx, eventRepo, task.ID, []string{"task.created", "task.status_changed", "task.failed"})
 }
 
+// TestCreateTaskFromAssistantSuggestionReturnsExistingTaskOnDuplicate 验证`createTaskFromAssistantSuggestion`在返回值分支下的行为，防止同类回归。
 func TestCreateTaskFromAssistantSuggestionReturnsExistingTaskOnDuplicate(t *testing.T) {
 	pool := newTaskServiceTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -207,6 +211,7 @@ func TestCreateTaskFromAssistantSuggestionReturnsExistingTaskOnDuplicate(t *test
 	}
 }
 
+// newTaskServiceTestPool 创建测试用隔离数据库连接池，统一初始化与清理约束。
 func newTaskServiceTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -219,6 +224,7 @@ func newTaskServiceTestPool(t *testing.T) *pgxpool.Pool {
 	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "task_service", postgres.NewPool, postgres.RunMigrations)
 }
 
+// cleanupTaskServiceResource 为测试场景清理 `任务服务资源`，避免不同用例之间互相污染。
 func cleanupTaskServiceResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
@@ -228,6 +234,7 @@ func cleanupTaskServiceResource(t *testing.T, pool *pgxpool.Pool, resourceID str
 	}
 }
 
+// cleanupTaskServiceAssistantSession 为测试场景清理 `任务服务助手会话`，避免不同用例之间互相污染。
 func cleanupTaskServiceAssistantSession(t *testing.T, pool *pgxpool.Pool, sessionID string) {
 	t.Helper()
 
@@ -237,6 +244,7 @@ func cleanupTaskServiceAssistantSession(t *testing.T, pool *pgxpool.Pool, sessio
 	}
 }
 
+// taskServiceTestContext 构造测试上下文，统一附带当前用例需要的取消和超时能力。
 func taskServiceTestContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -245,10 +253,12 @@ func taskServiceTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// taskServiceUniqueSuffix 生成测试数据使用的唯一后缀，避免并发或重复运行时发生命名冲突。
 func taskServiceUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// assertTaskCreateFailedResult 封装 `任务创建Failed结果` 的断言逻辑，避免用例重复展开校验细节。
 func assertTaskCreateFailedResult(t *testing.T, task *postgres.Task, expectedError string) {
 	t.Helper()
 
@@ -260,6 +270,7 @@ func assertTaskCreateFailedResult(t *testing.T, task *postgres.Task, expectedErr
 	}
 }
 
+// assertStoredTaskFailed 封装 `Stored任务Failed` 的断言逻辑，避免用例重复展开校验细节。
 func assertStoredTaskFailed(t *testing.T, ctx context.Context, taskRepo *postgres.TaskRepo, taskID string, expectedError string) {
 	t.Helper()
 
@@ -273,6 +284,7 @@ func assertStoredTaskFailed(t *testing.T, ctx context.Context, taskRepo *postgre
 	assertTaskCreateFailedResult(t, task, expectedError)
 }
 
+// assertTaskFailureEvents 封装 `任务失败事件` 的断言逻辑，避免用例重复展开校验细节。
 func assertTaskFailureEvents(
 	t *testing.T,
 	ctx context.Context,

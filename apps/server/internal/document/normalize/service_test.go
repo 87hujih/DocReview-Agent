@@ -6,6 +6,7 @@ import (
 	"agent_project/apps/server/internal/document/parser"
 )
 
+// TestNormalizeResumeBuildsOrderedProjectSections 验证`normalizeResumeBuildsOrderedProjectSections`在特定边界条件下的行为，防止同类回归。
 func TestNormalizeResumeBuildsOrderedProjectSections(t *testing.T) {
 	doc := parser.ParsedDocument{
 		SourceFormat: "pdf",
@@ -45,6 +46,7 @@ func TestNormalizeResumeBuildsOrderedProjectSections(t *testing.T) {
 	}
 }
 
+// TestNormalizeMarksHeadingOnlyProjectAsLowConfidence 验证`normalize`在流程控制路径下的行为，防止同类回归。
 func TestNormalizeMarksHeadingOnlyProjectAsLowConfidence(t *testing.T) {
 	doc := parser.ParsedDocument{
 		SourceFormat: "pdf",

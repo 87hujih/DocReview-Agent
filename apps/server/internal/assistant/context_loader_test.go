@@ -10,6 +10,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// TestContextLoaderUsesSnapshotBeforeHistoryFallback 验证`contextLoader`在依赖选择路径下的行为，防止同类回归。
 func TestContextLoaderUsesSnapshotBeforeHistoryFallback(t *testing.T) {
 	retriever := &fakeResourceCitationRetriever{
 		result: []citation.Citation{
@@ -63,6 +64,7 @@ func TestContextLoaderUsesSnapshotBeforeHistoryFallback(t *testing.T) {
 	}
 }
 
+// TestContextLoaderFallsBackToLatestResourceFromMessages 验证`contextLoader`在回退路径下的行为，防止同类回归。
 func TestContextLoaderFallsBackToLatestResourceFromMessages(t *testing.T) {
 	retriever := &fakeResourceCitationRetriever{
 		result: []citation.Citation{
@@ -108,6 +110,7 @@ func TestContextLoaderFallsBackToLatestResourceFromMessages(t *testing.T) {
 	}
 }
 
+// TestContextLoaderFallsBackWhenSnapshotActiveResourceIsIncomplete 验证`contextLoader`在回退路径下的行为，防止同类回归。
 func TestContextLoaderFallsBackWhenSnapshotActiveResourceIsIncomplete(t *testing.T) {
 	retriever := &fakeResourceCitationRetriever{
 		result: []citation.Citation{
@@ -159,6 +162,7 @@ func TestContextLoaderFallsBackWhenSnapshotActiveResourceIsIncomplete(t *testing
 	}
 }
 
+// TestContextLoaderLoadsRecentTextTurnsAfterSummaryBase 验证`contextLoader`在依赖选择路径下的行为，防止同类回归。
 func TestContextLoaderLoadsRecentTextTurnsAfterSummaryBase(t *testing.T) {
 	retriever := &fakeResourceCitationRetriever{}
 	messageReader := &fakeAssistantMessageWindowReader{
@@ -232,6 +236,7 @@ func TestContextLoaderLoadsRecentTextTurnsAfterSummaryBase(t *testing.T) {
 	}
 }
 
+// TestContextLoaderUsesSummaryAwareRetrievalQuery 验证`contextLoader`在依赖选择路径下的行为，防止同类回归。
 func TestContextLoaderUsesSummaryAwareRetrievalQuery(t *testing.T) {
 	retriever := &fakeResourceCitationRetriever{}
 	loader := NewContextLoader(&fakeSessionContextSnapshotReader{
@@ -263,6 +268,7 @@ func TestContextLoaderUsesSummaryAwareRetrievalQuery(t *testing.T) {
 	}
 }
 
+// TestContextLoaderFallsBackWhenSummaryMissing 验证`contextLoader`在回退路径下的行为，防止同类回归。
 func TestContextLoaderFallsBackWhenSummaryMissing(t *testing.T) {
 	retriever := &fakeResourceCitationRetriever{}
 	messageReader := &fakeAssistantMessageWindowReader{
@@ -322,6 +328,7 @@ func TestContextLoaderFallsBackWhenSummaryMissing(t *testing.T) {
 	}
 }
 
+// fakeSessionContextSnapshotReader 作为会话上下文快照读取器的测试替身，用于在用例里提供可控的依赖行为。
 type fakeSessionContextSnapshotReader struct {
 	record    *postgres.SessionContextSnapshotRecord
 	err       error
@@ -329,6 +336,7 @@ type fakeSessionContextSnapshotReader struct {
 	calls     int
 }
 
+// GetBySessionID 实现测试替身需要的 `GetBySessionID` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotReader) GetBySessionID(_ context.Context, sessionID string) (*postgres.SessionContextSnapshotRecord, error) {
 	r.calls++
 	r.sessionID = sessionID
@@ -343,6 +351,7 @@ func (r *fakeSessionContextSnapshotReader) GetBySessionID(_ context.Context, ses
 	return &cloned, nil
 }
 
+// fakeAssistantMessageWindowReader 作为助手消息窗口读取器的测试替身，用于在用例里提供可控的依赖行为。
 type fakeAssistantMessageWindowReader struct {
 	messages        []postgres.AssistantMessage
 	err             error
@@ -351,6 +360,7 @@ type fakeAssistantMessageWindowReader struct {
 	calls           int
 }
 
+// ListMessagesAfterSequence 实现测试替身需要的 `ListMessagesAfterSequence` 接口方法，为用例分支提供可控返回。
 func (r *fakeAssistantMessageWindowReader) ListMessagesAfterSequence(_ context.Context, sessionID string, afterSequenceNo int) ([]postgres.AssistantMessage, error) {
 	r.calls++
 	r.sessionID = sessionID

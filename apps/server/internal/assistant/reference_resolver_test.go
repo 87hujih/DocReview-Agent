@@ -7,6 +7,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// TestSessionContextSnapshotFromRecordIncludesGroundingState 验证`sessionContextSnapshotFromRecord`在流程控制路径下的行为，防止同类回归。
 func TestSessionContextSnapshotFromRecordIncludesGroundingState(t *testing.T) {
 	snapshot, err := SessionContextSnapshotFromRecord(&postgres.SessionContextSnapshotRecord{
 		SessionID:                  "session-1",
@@ -36,6 +37,7 @@ func TestSessionContextSnapshotFromRecordIncludesGroundingState(t *testing.T) {
 	}
 }
 
+// TestReferenceResolverResolvesFirstProjectFromOrdinalFrame 验证`referenceResolverResolvesFirstProjectFromOrdinalFrame`在特定边界条件下的行为，防止同类回归。
 func TestReferenceResolverResolvesFirstProjectFromOrdinalFrame(t *testing.T) {
 	resolver := ReferenceResolver{}
 	snapshot := &SessionContextSnapshot{
@@ -50,6 +52,7 @@ func TestReferenceResolverResolvesFirstProjectFromOrdinalFrame(t *testing.T) {
 	}
 }
 
+// TestReferenceResolverPrefersExplicitEntityName 验证`referenceResolverPrefersExplicitEntityName`在特定边界条件下的行为，防止同类回归。
 func TestReferenceResolverPrefersExplicitEntityName(t *testing.T) {
 	resolver := ReferenceResolver{}
 	snapshot := &SessionContextSnapshot{
@@ -68,6 +71,7 @@ func TestReferenceResolverPrefersExplicitEntityName(t *testing.T) {
 	}
 }
 
+// TestReferenceResolverFallsBackToActiveSectionForAnaphora 验证`referenceResolver`在回退路径下的行为，防止同类回归。
 func TestReferenceResolverFallsBackToActiveSectionForAnaphora(t *testing.T) {
 	resolver := ReferenceResolver{}
 	snapshot := &SessionContextSnapshot{
@@ -81,6 +85,7 @@ func TestReferenceResolverFallsBackToActiveSectionForAnaphora(t *testing.T) {
 	}
 }
 
+// TestContextLoaderLoadsGroundingState 验证`contextLoader`在依赖选择路径下的行为，防止同类回归。
 func TestContextLoaderLoadsGroundingState(t *testing.T) {
 	loader := NewContextLoader(&fakeSessionContextSnapshotReader{
 		record: &postgres.SessionContextSnapshotRecord{

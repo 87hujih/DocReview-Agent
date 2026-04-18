@@ -47,6 +47,7 @@ type monotonicTimestampClock struct {
 	last time.Time
 }
 
+// Next 推进结果集游标到下一项，并报告是否还有可消费的数据。
 func (c *monotonicTimestampClock) Next(now time.Time) time.Time {
 	normalized := now.UTC().Truncate(time.Microsecond)
 
@@ -88,6 +89,7 @@ func (r *TaskEventRepo) AddTx(ctx context.Context, tx pgx.Tx, params TaskEventCr
 	return &event, nil
 }
 
+// taskEventInsertArgs 组装写入 task_events 表所需的 SQL 参数，统一可空字段和 JSON 负载处理。
 func taskEventInsertArgs(params TaskEventCreateParams) []any {
 	payload := params.Payload
 	if len(payload) == 0 {
@@ -151,6 +153,7 @@ func (r *TaskEventRepo) ListByRunID(ctx context.Context, runID string) ([]TaskEv
 	return collectTaskEvents(rows)
 }
 
+// collectTaskEvents 遍历结果集收集 `任务事件`，把游标处理细节隔离在仓储层。
 func collectTaskEvents(rows pgx.Rows) ([]TaskEvent, error) {
 	events := make([]TaskEvent, 0)
 	for rows.Next() {
@@ -165,6 +168,7 @@ func collectTaskEvents(rows pgx.Rows) ([]TaskEvent, error) {
 	return events, rows.Err()
 }
 
+// scanTaskEvent 把当前数据库行扫描成 `任务事件`，统一查询结果到领域结构的映射。
 func scanTaskEvent(row pgx.Row) (TaskEvent, error) {
 	var event TaskEvent
 

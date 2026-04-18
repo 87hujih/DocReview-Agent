@@ -69,8 +69,8 @@ type taskContextCapabilitiesResponse struct {
 
 // getResourceTaskContextResponse 是任务创建页轻量上下文接口的响应体。
 type getResourceTaskContextResponse struct {
-	Resource       resourceSummary                  `json:"resource"`
-	CurrentVersion *resourceVersionSummaryResponse  `json:"current_version"`
+	Resource       resourceSummary                 `json:"resource"`
+	CurrentVersion *resourceVersionSummaryResponse `json:"current_version"`
 	Capabilities   taskContextCapabilitiesResponse `json:"capabilities"`
 }
 
@@ -310,6 +310,7 @@ func (h *ResourceHandler) Search(requestCtx context.Context, ctx *app.RequestCon
 	ctx.JSON(consts.StatusOK, newSearchResourcesResponse(query, citations))
 }
 
+// parseResourceIDParam 解析 `资源ID参数`，把格式和参数错误收口到HTTP 接口层边界。
 func parseResourceIDParam(ctx *app.RequestContext) (string, bool) {
 	resourceID := strings.TrimSpace(ctx.Param("id"))
 	if _, err := uuid.Parse(resourceID); err != nil {
@@ -320,6 +321,7 @@ func parseResourceIDParam(ctx *app.RequestContext) (string, bool) {
 	return resourceID, true
 }
 
+// newSearchResourcesResponse 构造资源搜索接口响应，并把 nil 引用切片规范成空数组以稳定前端 JSON 形态。
 func newSearchResourcesResponse(query string, citations []citation.Citation) searchResourcesResponse {
 	if citations == nil {
 		citations = []citation.Citation{}

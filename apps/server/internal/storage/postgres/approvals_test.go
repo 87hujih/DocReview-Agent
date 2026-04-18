@@ -82,6 +82,7 @@ func TestApprovalRepoCRUD(t *testing.T) {
 	}
 }
 
+// TestUpdateApprovalStatusTxReturningReturnsUpdatedApproval 验证`updateApprovalStatusTxReturning`在返回值分支下的行为，防止同类回归。
 func TestUpdateApprovalStatusTxReturningReturnsUpdatedApproval(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -290,6 +291,7 @@ func TestCreateForTaskAwaitingApprovalSuccess(t *testing.T) {
 	}
 }
 
+// TestCreateForTaskAwaitingApprovalStoresBaseVersionID 验证`createForTaskAwaitingApproval`在写入或副作用路径下的行为，防止同类回归。
 func TestCreateForTaskAwaitingApprovalStoresBaseVersionID(t *testing.T) {
 	pool := newTestPool(t)
 	repo := NewApprovalRepo(pool)
@@ -366,6 +368,7 @@ func TestCreateForTaskAwaitingApprovalNonDrafting(t *testing.T) {
 	}
 }
 
+// TestUpdateApprovalStatusTxReturningReturnsRejectReason 验证`updateApprovalStatusTxReturning`在返回值分支下的行为，防止同类回归。
 func TestUpdateApprovalStatusTxReturningReturnsRejectReason(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -434,6 +437,7 @@ func TestUpdateApprovalStatusTxReturningReturnsRejectReason(t *testing.T) {
 	}
 }
 
+// TestJobRepoCreateRejectsDuplicateApprovalID 验证`jobRepoCreate`在非法输入或失败路径下的行为，防止同类回归。
 func TestJobRepoCreateRejectsDuplicateApprovalID(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -469,6 +473,7 @@ func TestJobRepoCreateRejectsDuplicateApprovalID(t *testing.T) {
 	}
 }
 
+// TestJobRepoGetByApprovalIDReturnsJob 验证`jobRepoGetByApprovalID`在返回值分支下的行为，防止同类回归。
 func TestJobRepoGetByApprovalIDReturnsJob(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -517,6 +522,7 @@ func TestJobRepoGetByApprovalIDReturnsJob(t *testing.T) {
 	}
 }
 
+// TestJobRepoGetByApprovalIDReturnsNilWhenMissing 验证`jobRepoGetByApprovalID`在返回值分支下的行为，防止同类回归。
 func TestJobRepoGetByApprovalIDReturnsNilWhenMissing(t *testing.T) {
 	pool := newTestPool(t)
 	jobRepo := NewJobRepo(pool)
@@ -531,6 +537,7 @@ func TestJobRepoGetByApprovalIDReturnsNilWhenMissing(t *testing.T) {
 	}
 }
 
+// TestApprovalRepoCreateRejectsMissingBaseVersionID 验证`approvalRepoCreate`在非法输入或失败路径下的行为，防止同类回归。
 func TestApprovalRepoCreateRejectsMissingBaseVersionID(t *testing.T) {
 	pool := newTestPool(t)
 	repo := NewApprovalRepo(pool)
@@ -553,6 +560,7 @@ func TestApprovalRepoCreateRejectsMissingBaseVersionID(t *testing.T) {
 	}
 }
 
+// TestJobRepoCreateRejectsMissingBaseVersionID 验证`jobRepoCreate`在非法输入或失败路径下的行为，防止同类回归。
 func TestJobRepoCreateRejectsMissingBaseVersionID(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -584,6 +592,7 @@ func TestJobRepoCreateRejectsMissingBaseVersionID(t *testing.T) {
 	}
 }
 
+// TestJobRepoFinalizeSuccessWritesTaskStateAndEventsAtomically 验证`jobRepoFinalizeSuccess`在写入或副作用路径下的行为，防止同类回归。
 func TestJobRepoFinalizeSuccessWritesTaskStateAndEventsAtomically(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -692,6 +701,7 @@ func TestJobRepoFinalizeSuccessWritesTaskStateAndEventsAtomically(t *testing.T) 
 	}
 }
 
+// TestJobRepoFinalizeFailureWritesTaskStateAndEventsAtomically 验证`jobRepoFinalizeFailure`在写入或副作用路径下的行为，防止同类回归。
 func TestJobRepoFinalizeFailureWritesTaskStateAndEventsAtomically(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)

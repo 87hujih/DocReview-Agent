@@ -36,6 +36,7 @@ func NewLogger(service string, level string, format string, addSource bool, writ
 	)
 }
 
+// parseLevel 解析 `Level`，把格式和参数错误收口到当前边界。
 func parseLevel(value string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "debug":

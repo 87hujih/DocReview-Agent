@@ -239,6 +239,7 @@ func (s *Service) importFile(ctx context.Context, filePath string, fileName stri
 	return err
 }
 
+// ensureResourceIndexed 确保 `资源Indexed` 已准备就绪，必要时补齐缺失状态。
 func (s *Service) ensureResourceIndexed(ctx context.Context, resource postgres.Resource) error {
 	currentVersion, err := s.resourceRepo.GetCurrentVersion(ctx, resource.ID)
 	if err != nil {
@@ -264,6 +265,7 @@ func (s *Service) ensureResourceIndexed(ctx context.Context, resource postgres.R
 	})
 }
 
+// saveDocument 把内容保存到导入，让上层只关心领域输入而不关心底层存储方式。
 func (s *Service) saveDocument(
 	ctx context.Context,
 	title string,
@@ -317,6 +319,7 @@ func (s *Service) saveDocument(
 	return resource, version, nil
 }
 
+// persistStructuredDocument 持久化 `Structured文档`，把写库细节收口在接收者内部。
 func (s *Service) persistStructuredDocument(ctx context.Context, resourceID string, versionID string, parsedDocument *documentparser.ParsedDocument) ([]postgres.ResourceSection, error) {
 	if parsedDocument == nil || s.structureRepo == nil {
 		return nil, nil
@@ -354,6 +357,7 @@ func (s *Service) persistStructuredDocument(ctx context.Context, resourceID stri
 	return s.structureRepo.ReplaceSectionsForVersion(ctx, versionID, resourceID, sections)
 }
 
+// buildSectionInputs 组装 `section输入`，为后续流程准备可直接消费的输入。
 func buildSectionInputs(sections []documentnormalize.NormalizedSection) ([]postgres.ResourceSectionInput, error) {
 	inputs := make([]postgres.ResourceSectionInput, 0, len(sections))
 	for _, section := range sections {
@@ -400,6 +404,7 @@ func buildSectionInputs(sections []documentnormalize.NormalizedSection) ([]postg
 	return inputs, nil
 }
 
+// findImportTarget 查找 `ImportTarget`，把匹配规则收口到一个辅助函数。
 func findImportTarget(resources []postgres.Resource, title string, sourceRef string) (*postgres.Resource, bool) {
 	var legacyMatch *postgres.Resource
 	for index := range resources {
@@ -420,6 +425,7 @@ func findImportTarget(resources []postgres.Resource, title string, sourceRef str
 	return nil, false
 }
 
+// normalizeSourceRef 归一化 `来源Ref`，避免后续流程重复处理边界输入。
 func normalizeSourceRef(sourceRef *string) string {
 	if sourceRef == nil {
 		return ""
@@ -452,6 +458,7 @@ func extractTitle(filePath string, fileName string) (string, error) {
 	return strings.ReplaceAll(name, "-", " "), nil
 }
 
+// extractTitleFromContent 从 `内容` 派生 `extract标题`，避免调用方重复拼装适配层。
 func extractTitleFromContent(content string, fileName string) string {
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for lineNumber := 0; lineNumber < 5 && scanner.Scan(); lineNumber++ {
@@ -465,6 +472,7 @@ func extractTitleFromContent(content string, fileName string) string {
 	return strings.ReplaceAll(name, "-", " ")
 }
 
+// stringPointer 返回字符串指针，简化构造可选文本字段时的样板代码。
 func stringPointer(value string) *string {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -473,6 +481,7 @@ func stringPointer(value string) *string {
 	return &value
 }
 
+// intPointer 返回整数指针，减少测试里构造可选页码字段时的重复样板。
 func intPointer(value int) *int {
 	if value <= 0 {
 		return nil

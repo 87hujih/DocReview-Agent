@@ -51,6 +51,7 @@ type ParsedDocument struct {
 	QualityFlags QualityFlags
 }
 
+// buildTextDocument 组装 `文本文档`，统一解析结果在后续链路里的结构表达。
 func buildTextDocument(fileName string, content string) *ParsedDocument {
 	return &ParsedDocument{
 		SourceFormat: detectSourceFormat(fileName),
@@ -63,6 +64,7 @@ func buildTextDocument(fileName string, content string) *ParsedDocument {
 	}
 }
 
+// buildTikaDocument 组装 `Tika文档`，统一解析结果在后续链路里的结构表达。
 func buildTikaDocument(fileName string, content string) *ParsedDocument {
 	blocks := buildPlainTextBlocks(content)
 	flags := deriveTikaQualityFlags(fileName, content, blocks)
@@ -78,6 +80,7 @@ func buildTikaDocument(fileName string, content string) *ParsedDocument {
 	}
 }
 
+// buildTextBlocks 组装 `文本块`，便于后续归一化、切块或展示逻辑复用。
 func buildTextBlocks(fileName string, content string) []Block {
 	if detectSourceFormat(fileName) == "markdown" {
 		return buildMarkdownBlocks(content)
@@ -86,6 +89,7 @@ func buildTextBlocks(fileName string, content string) []Block {
 	return buildPlainTextBlocks(content)
 }
 
+// buildMarkdownBlocks 组装 `Markdown块`，便于后续归一化、切块或展示逻辑复用。
 func buildMarkdownBlocks(content string) []Block {
 	lines := strings.Split(normalizeNewlines(content), "\n")
 	blocks := make([]Block, 0, len(lines))
@@ -126,6 +130,7 @@ func buildMarkdownBlocks(content string) []Block {
 	return blocks
 }
 
+// buildPlainTextBlocks 组装 `纯文本文本块`，便于后续归一化、切块或展示逻辑复用。
 func buildPlainTextBlocks(content string) []Block {
 	lines := strings.Split(normalizeNewlines(content), "\n")
 	blocks := make([]Block, 0, len(lines))
@@ -145,6 +150,7 @@ func buildPlainTextBlocks(content string) []Block {
 	return blocks
 }
 
+// deriveTextQualityFlags 从已有上下文推导 `文本QualityFlags`，让后续链路只消费归一化结果。
 func deriveTextQualityFlags(content string) QualityFlags {
 	flags := make(QualityFlags, 0, 1)
 	if strings.TrimSpace(content) == "" {
@@ -154,6 +160,7 @@ func deriveTextQualityFlags(content string) QualityFlags {
 	return flags
 }
 
+// deriveTikaQualityFlags 从已有上下文推导 `TikaQualityFlags`，让后续链路只消费归一化结果。
 func deriveTikaQualityFlags(fileName string, content string, blocks []Block) QualityFlags {
 	flags := make(QualityFlags, 0, 3)
 	if strings.TrimSpace(content) == "" {
@@ -171,6 +178,7 @@ func deriveTikaQualityFlags(fileName string, content string, blocks []Block) Qua
 	return flags
 }
 
+// appendQualityFlag 追加 `QualityFlag`，保持消息和副作用写入顺序一致。
 func appendQualityFlag(flags QualityFlags, flag string) QualityFlags {
 	if flag == "" || flags.Has(flag) {
 		return flags
@@ -179,6 +187,7 @@ func appendQualityFlag(flags QualityFlags, flag string) QualityFlags {
 	return append(flags, flag)
 }
 
+// hasTooManyShortBlocks 判断 `TooManyShort块` 是否满足当前流程的条件，避免同一谓词在多处分散实现。
 func hasTooManyShortBlocks(blocks []Block) bool {
 	if len(blocks) < 4 {
 		return false
@@ -194,6 +203,7 @@ func hasTooManyShortBlocks(blocks []Block) bool {
 	return shortCount*100/len(blocks) >= 70
 }
 
+// markdownHeadingLevel 返回 `Markdown标题` 的层级值，供后续结构判断复用。
 func markdownHeadingLevel(line string) int {
 	level := 0
 	for _, ch := range line {
@@ -212,10 +222,12 @@ func markdownHeadingLevel(line string) int {
 	return level
 }
 
+// normalizeNewlines 归一化 `Newlines`，避免后续流程重复处理边界输入。
 func normalizeNewlines(content string) string {
 	return strings.ReplaceAll(content, "\r\n", "\n")
 }
 
+// detectSourceFormat 识别 `来源Format`，把格式或类型判断规则收口在单点。
 func detectSourceFormat(fileName string) string {
 	switch strings.ToLower(strings.TrimSpace(filepath.Ext(fileName))) {
 	case ".md":

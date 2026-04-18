@@ -12,6 +12,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// TestReindexVersionRebuildsMarkdownChunks 验证`reindexVersionRebuildsMarkdownChunks`在特定边界条件下的行为，防止同类回归。
 func TestReindexVersionRebuildsMarkdownChunks(t *testing.T) {
 	repo := &fakeIndexRepo{}
 	service := NewService(repo, fakeEmbedder{})
@@ -71,6 +72,7 @@ func TestReindexVersionRebuildsMarkdownChunks(t *testing.T) {
 	}
 }
 
+// TestReindexVersionUsesSingleChunkFallback 验证`reindexVersion`在依赖选择路径下的行为，防止同类回归。
 func TestReindexVersionUsesSingleChunkFallback(t *testing.T) {
 	repo := &fakeIndexRepo{}
 	service := NewService(repo, fakeEmbedder{})
@@ -110,6 +112,7 @@ func TestReindexVersionUsesSingleChunkFallback(t *testing.T) {
 	}
 }
 
+// TestBuildVersionChunksKeepsWholeDocumentFallback 验证`buildVersionChunks`在状态保持路径下的行为，防止同类回归。
 func TestBuildVersionChunksKeepsWholeDocumentFallback(t *testing.T) {
 	repo := &fakeIndexRepo{}
 	service := NewService(repo, fakeEmbedder{})
@@ -146,6 +149,7 @@ func TestBuildVersionChunksKeepsWholeDocumentFallback(t *testing.T) {
 	}
 }
 
+// TestBuildVersionChunksFromProjectSections 验证`buildVersionChunksFromProjectSections`在特定边界条件下的行为，防止同类回归。
 func TestBuildVersionChunksFromProjectSections(t *testing.T) {
 	repo := &fakeIndexRepo{}
 	service := NewService(repo, fakeEmbedder{})
@@ -203,6 +207,7 @@ func TestBuildVersionChunksFromProjectSections(t *testing.T) {
 	}
 }
 
+// TestBuildVersionChunksKeepsOrderInSection 验证`buildVersionChunks`在状态保持路径下的行为，防止同类回归。
 func TestBuildVersionChunksKeepsOrderInSection(t *testing.T) {
 	repo := &fakeIndexRepo{}
 	service := NewService(repo, fakeEmbedder{})
@@ -247,6 +252,7 @@ func TestBuildVersionChunksKeepsOrderInSection(t *testing.T) {
 	}
 }
 
+// TestReindexVersionClearsChunksForBlankContent 验证`reindexVersionClearsChunksForBlankContent`在特定边界条件下的行为，防止同类回归。
 func TestReindexVersionClearsChunksForBlankContent(t *testing.T) {
 	repo := &fakeIndexRepo{}
 	service := NewService(repo, fakeEmbedder{})
@@ -274,6 +280,7 @@ func TestReindexVersionClearsChunksForBlankContent(t *testing.T) {
 	}
 }
 
+// TestReindexVersionReturnsEmbedderError 验证`reindexVersion`在返回值分支下的行为，防止同类回归。
 func TestReindexVersionReturnsEmbedderError(t *testing.T) {
 	repo := &fakeIndexRepo{}
 	expectedErr := errors.New("embedding 失败")
@@ -301,6 +308,7 @@ func TestReindexVersionReturnsEmbedderError(t *testing.T) {
 	}
 }
 
+// fakeIndexRepo 作为索引仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeIndexRepo struct {
 	replaceCalls   int
 	lastVersionID  string
@@ -308,6 +316,7 @@ type fakeIndexRepo struct {
 	lastChunks     []postgres.ResourceChunkInput
 }
 
+// ReplaceVersionChunks 实现测试替身需要的 `ReplaceVersionChunks` 接口方法，为用例分支提供可控返回。
 func (r *fakeIndexRepo) ReplaceVersionChunks(_ context.Context, versionID string, resourceID string, chunks []postgres.ResourceChunkInput) error {
 	r.replaceCalls++
 	r.lastVersionID = versionID
@@ -316,10 +325,12 @@ func (r *fakeIndexRepo) ReplaceVersionChunks(_ context.Context, versionID string
 	return nil
 }
 
+// fakeEmbedder 作为Embedder的测试替身，用于在用例里提供可控的依赖行为。
 type fakeEmbedder struct {
 	err error
 }
 
+// Embed 实现测试替身需要的 `Embed` 接口方法，为用例分支提供可控返回。
 func (e fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	if e.err != nil {
 		return nil, e.err
@@ -337,6 +348,7 @@ func (e fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, err
 	return vectors, nil
 }
 
+// mustMarshalJSON 在测试里强制构造 `MarshalJSON`，失败时立即终止当前用例。
 func mustMarshalJSON(t *testing.T, value any) []byte {
 	t.Helper()
 
@@ -348,6 +360,7 @@ func mustMarshalJSON(t *testing.T, value any) []byte {
 	return body
 }
 
+// stringPointer 返回字符串指针，简化构造可选文本字段时的样板代码。
 func stringPointer(value string) *string {
 	return &value
 }

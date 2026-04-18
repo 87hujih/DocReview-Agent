@@ -196,6 +196,7 @@ func (e *Executor) Prepare(ctx context.Context, job *postgres.ExecutionJob) (*Pr
 	}, nil
 }
 
+// extractDiffPreview 从现有内容里提取 `差异预览`，避免调用方重复解析同一份数据。
 func extractDiffPreview(artifacts []postgres.TaskArtifact) (*editor.DiffPreview, error) {
 	for _, artifact := range artifacts {
 		if artifact.ArtifactType != "diff_preview" {
@@ -213,11 +214,13 @@ func extractDiffPreview(artifacts []postgres.TaskArtifact) (*editor.DiffPreview,
 	return nil, fmt.Errorf("未找到 diff 预览产物")
 }
 
+// applySectionReplacements 把模型返回的 section 修改应用到原始文档内容，输出替换后的完整文本。
 func applySectionReplacements(content string, sections []editor.DiffSection) string {
 	updated, _ := applySectionReplacementsDetailed(content, sections)
 	return updated
 }
 
+// applyPreparedRevisions 按已匹配好的修订列表批量改写文档内容，统一处理偏移修正。
 func applyPreparedRevisions(content string, diffs []editor.DiffSection) (string, error) {
 	if len(diffs) == 0 {
 		return content, nil
@@ -282,6 +285,7 @@ func applyPreparedRevisions(content string, diffs []editor.DiffSection) (string,
 	return strings.Join(result, "\n"), nil
 }
 
+// matchDiffSection 为单个差异片段定位它对应的 section 范围，便于后续按 section 回写。
 func matchDiffSection(parsed []sections.Section, diff editor.DiffSection) (sections.Section, error) {
 	candidates := make([]sections.Section, 0)
 	for _, section := range parsed {
@@ -312,10 +316,12 @@ func matchDiffSection(parsed []sections.Section, diff editor.DiffSection) (secti
 	return sections.Section{}, fmt.Errorf("文档中未找到 diff 预览对应章节：%s#%d", diff.SectionTitle, diff.SectionOccurrence)
 }
 
+// sectionKey 为 section 生成稳定比较键，便于比对和合并修订。
 func sectionKey(title string, occurrence int) string {
 	return title + "\n" + fmt.Sprintf("%d", occurrence)
 }
 
+// applySectionReplacementsDetailed 把 `sectionReplacementsDetailed` 应用到当前状态或内容上，集中处理变更合并逻辑。
 func applySectionReplacementsDetailed(content string, sections []editor.DiffSection) (string, map[string]struct{}) {
 	if len(sections) == 0 {
 		return content, map[string]struct{}{}
@@ -368,12 +374,14 @@ func applySectionReplacementsDetailed(content string, sections []editor.DiffSect
 	return strings.Join(result, "\n"), matchedTitles
 }
 
+// sectionBound 表示section的边界信息，供定位和裁剪逻辑复用。
 type sectionBound struct {
 	heading            int
 	end                int
 	trailingBlankLines int
 }
 
+// scanSectionBounds 把当前数据库行扫描成 `sectionBounds`，统一查询结果到领域结构的映射。
 func scanSectionBounds(lines []string) map[string]sectionBound {
 	bounds := make(map[string]sectionBound)
 
@@ -408,6 +416,7 @@ func scanSectionBounds(lines []string) map[string]sectionBound {
 	return bounds
 }
 
+// extractSectionTitle 从现有内容里提取 `section标题`，避免调用方重复解析同一份数据。
 func extractSectionTitle(line string) string {
 	if !strings.HasPrefix(line, "## ") {
 		return ""
@@ -416,6 +425,7 @@ func extractSectionTitle(line string) string {
 	return strings.TrimSpace(strings.TrimPrefix(line, "## "))
 }
 
+// normalizeRevisedLines 归一化 `Revised行`，避免后续流程重复处理边界输入。
 func normalizeRevisedLines(title string, revised string) []string {
 	normalized := strings.ReplaceAll(revised, "\r\n", "\n")
 	lines := strings.Split(normalized, "\n")
@@ -434,6 +444,7 @@ func normalizeRevisedLines(title string, revised string) []string {
 	return lines
 }
 
+// normalizeWholeDocumentRevisedLines 归一化 `整体文档Revised行`，避免后续流程重复处理边界输入。
 func normalizeWholeDocumentRevisedLines(revised string) []string {
 	normalized := strings.TrimSpace(strings.ReplaceAll(revised, "\r\n", "\n"))
 	if normalized == "" {
@@ -443,6 +454,7 @@ func normalizeWholeDocumentRevisedLines(revised string) []string {
 	return strings.Split(normalized, "\n")
 }
 
+// countTrailingBlankLines 统计 `TrailingBlank行`，把数量计算逻辑集中在单点。
 func countTrailingBlankLines(lines []string) int {
 	count := 0
 	for index := len(lines) - 1; index >= 0; index-- {

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestAssistantRepoSessionLifecycle 验证`assistantRepoSessionLifecycle`在特定边界条件下的行为，防止同类回归。
 func TestAssistantRepoSessionLifecycle(t *testing.T) {
 	pool := newAssistantTestPool(t)
 	repo := NewAssistantRepo(pool)
@@ -103,6 +104,7 @@ func TestAssistantRepoSessionLifecycle(t *testing.T) {
 	}
 }
 
+// TestAssistantRepoListMessagesAfterSequence 验证`assistantRepoListMessagesAfterSequence`在特定边界条件下的行为，防止同类回归。
 func TestAssistantRepoListMessagesAfterSequence(t *testing.T) {
 	pool := newAssistantTestPool(t)
 	repo := NewAssistantRepo(pool)
@@ -149,6 +151,7 @@ func TestAssistantRepoListMessagesAfterSequence(t *testing.T) {
 	}
 }
 
+// TestAssistantRepoListMessagesAfterSequenceReturnsAscendingWindow 验证`assistantRepoListMessagesAfterSequence`在返回值分支下的行为，防止同类回归。
 func TestAssistantRepoListMessagesAfterSequenceReturnsAscendingWindow(t *testing.T) {
 	pool := newAssistantTestPool(t)
 	repo := NewAssistantRepo(pool)
@@ -191,6 +194,7 @@ func TestAssistantRepoListMessagesAfterSequenceReturnsAscendingWindow(t *testing
 	}
 }
 
+// TestAssistantRepoDatabaseHostGateOnlyAllowsLoopback 验证`assistantRepoDatabaseHostGateOnly`在合法输入或兼容路径下的行为，防止同类回归。
 func TestAssistantRepoDatabaseHostGateOnlyAllowsLoopback(t *testing.T) {
 	allowed := []string{
 		"postgres://user:pass@127.0.0.1:5432/app",
@@ -216,6 +220,7 @@ func TestAssistantRepoDatabaseHostGateOnlyAllowsLoopback(t *testing.T) {
 	}
 }
 
+// newAssistantTestPool 创建测试用隔离数据库连接池，统一初始化与清理约束。
 func newAssistantTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -232,6 +237,7 @@ func newAssistantTestPool(t *testing.T) *pgxpool.Pool {
 	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "storage_postgres_assistant", NewPool, RunMigrations)
 }
 
+// assistantTestContext 构造测试上下文，统一附带当前用例需要的取消和超时能力。
 func assistantTestContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -240,6 +246,7 @@ func assistantTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// mustAssistantMessageInput 在测试里强制构造 `助手消息输入`，失败时立即终止当前用例。
 func mustAssistantMessageInput(t *testing.T, role string, kind string, payload string) AssistantMessageInput {
 	t.Helper()
 	return AssistantMessageInput{
@@ -249,6 +256,7 @@ func mustAssistantMessageInput(t *testing.T, role string, kind string, payload s
 	}
 }
 
+// isLocalDatabaseHost 为测试场景处理 `isLocalDatabaseHost` 的辅助步骤，减少重复搭建逻辑。
 func isLocalDatabaseHost(databaseURL string) bool {
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {

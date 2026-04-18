@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// TestTaskRepoCRUD 验证`taskRepoCRUD`在特定边界条件下的行为，防止同类回归。
 func TestTaskRepoCRUD(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -155,6 +156,7 @@ func TestTaskRepoCRUD(t *testing.T) {
 	}
 }
 
+// TestTaskRepoListOrdersByCreatedAtThenIDDescWhenTimestampsTie 验证`taskRepoList`在状态保持路径下的行为，防止同类回归。
 func TestTaskRepoListOrdersByCreatedAtThenIDDescWhenTimestampsTie(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -211,6 +213,7 @@ func TestTaskRepoListOrdersByCreatedAtThenIDDescWhenTimestampsTie(t *testing.T) 
 	}
 }
 
+// TestTaskRepoCreateFromAssistantSuggestionReturnsExistingTaskOnDuplicate 验证`taskRepoCreateFromAssistantSuggestion`在返回值分支下的行为，防止同类回归。
 func TestTaskRepoCreateFromAssistantSuggestionReturnsExistingTaskOnDuplicate(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -291,6 +294,7 @@ func TestTaskRepoCreateFromAssistantSuggestionReturnsExistingTaskOnDuplicate(t *
 	}
 }
 
+// TestTaskRepoGetStepsAndArtifactsOrderByCreatedAtThenIDAscWhenTimestampsTie 验证`taskRepoGetStepsAndArtifactsOrderByCreatedAtThenIDAscWhenTimestampsTie`在特定边界条件下的行为，防止同类回归。
 func TestTaskRepoGetStepsAndArtifactsOrderByCreatedAtThenIDAscWhenTimestampsTie(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -365,6 +369,7 @@ func TestTaskRepoGetStepsAndArtifactsOrderByCreatedAtThenIDAscWhenTimestampsTie(
 	}
 }
 
+// TestApprovalRepoCreate 验证`approvalRepoCreate`在特定边界条件下的行为，防止同类回归。
 func TestApprovalRepoCreate(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -413,6 +418,7 @@ func TestApprovalRepoCreate(t *testing.T) {
 	}
 }
 
+// TestApprovalRepoReadListAndUpdateStatus 验证`approvalRepoReadListAndUpdateStatus`在特定边界条件下的行为，防止同类回归。
 func TestApprovalRepoReadListAndUpdateStatus(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -554,6 +560,7 @@ func TestApprovalRepoReadListAndUpdateStatus(t *testing.T) {
 	}
 }
 
+// TestJobRepoCRUD 验证`jobRepoCRUD`在特定边界条件下的行为，防止同类回归。
 func TestJobRepoCRUD(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -693,12 +700,14 @@ func TestJobRepoCRUD(t *testing.T) {
 	}
 }
 
+// jsonEqual 为测试场景处理 `JSONEqual` 的辅助步骤，减少重复搭建逻辑。
 func jsonEqual(left []byte, right []byte) bool {
 	leftNormalized := normalizeJSON(left)
 	rightNormalized := normalizeJSON(right)
 	return bytes.Equal(leftNormalized, rightNormalized)
 }
 
+// normalizeJSON 在测试里归一化 `JSON`，避免比较时受格式差异干扰。
 func normalizeJSON(input []byte) []byte {
 	var value any
 	if err := json.Unmarshal(input, &value); err != nil {

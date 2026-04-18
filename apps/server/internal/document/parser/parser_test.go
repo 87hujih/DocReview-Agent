@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// TestTextParserReturnsStructuredDocument 验证`textParser`在返回值分支下的行为，防止同类回归。
 func TestTextParserReturnsStructuredDocument(t *testing.T) {
 	parser, err := New(Options{})
 	if err != nil {
@@ -47,6 +48,7 @@ func TestTextParserReturnsStructuredDocument(t *testing.T) {
 	}
 }
 
+// TestTextParserCapabilityOnlyAcceptsTextFiles 验证`textParserCapabilityOnly`在合法输入或兼容路径下的行为，防止同类回归。
 func TestTextParserCapabilityOnlyAcceptsTextFiles(t *testing.T) {
 	parser, err := New(Options{Mode: ModeText})
 	if err != nil {
@@ -66,6 +68,7 @@ func TestTextParserCapabilityOnlyAcceptsTextFiles(t *testing.T) {
 	}
 }
 
+// TestTikaParserCapabilityAcceptsDocumentFiles 验证`tikaParserCapability`在合法输入或兼容路径下的行为，防止同类回归。
 func TestTikaParserCapabilityAcceptsDocumentFiles(t *testing.T) {
 	parser, err := New(Options{
 		Mode:    ModeTika,
@@ -85,6 +88,7 @@ func TestTikaParserCapabilityAcceptsDocumentFiles(t *testing.T) {
 	}
 }
 
+// TestTikaParserReturnsStructuredDocument 验证`tikaParser`在返回值分支下的行为，防止同类回归。
 func TestTikaParserReturnsStructuredDocument(t *testing.T) {
 	var receivedPath string
 	var receivedBody []byte
@@ -146,6 +150,7 @@ func TestTikaParserReturnsStructuredDocument(t *testing.T) {
 	}
 }
 
+// TestTikaParserMarksQualityFlags 验证`tikaParser`在流程控制路径下的行为，防止同类回归。
 func TestTikaParserMarksQualityFlags(t *testing.T) {
 	t.Run("too many short blocks", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -215,6 +220,7 @@ func TestTikaParserMarksQualityFlags(t *testing.T) {
 	})
 }
 
+// TestParseRejectsUnknownExtensions 验证`parse`在非法输入或失败路径下的行为，防止同类回归。
 func TestParseRejectsUnknownExtensions(t *testing.T) {
 	parser, err := New(Options{})
 	if err != nil {
@@ -234,6 +240,7 @@ func TestParseRejectsUnknownExtensions(t *testing.T) {
 	}
 }
 
+// TestParseReturnsErrorWhenTikaFails 验证`parse`在返回值分支下的行为，防止同类回归。
 func TestParseReturnsErrorWhenTikaFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tika failed", http.StatusBadGateway)

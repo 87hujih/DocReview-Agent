@@ -190,6 +190,7 @@ func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
 	}
 }
 
+// TestLoadUsesHardcodedLLMDefault 验证`load`在依赖选择路径下的行为，防止同类回归。
 func TestLoadUsesHardcodedLLMDefault(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -225,6 +226,7 @@ func TestLoadUsesHardcodedLLMDefault(t *testing.T) {
 	}
 }
 
+// TestLoadUsesDocumentParserOverrides 验证`load`在依赖选择路径下的行为，防止同类回归。
 func TestLoadUsesDocumentParserOverrides(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -265,6 +267,7 @@ func TestLoadUsesDocumentParserOverrides(t *testing.T) {
 	}
 }
 
+// TestLoadStopsDotEnvSearchAtWorktreeRoot 验证`load`在流程控制路径下的行为，防止同类回归。
 func TestLoadStopsDotEnvSearchAtWorktreeRoot(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -313,6 +316,7 @@ func TestLoadStopsDotEnvSearchAtWorktreeRoot(t *testing.T) {
 	}
 }
 
+// TestLoadUsesLogDefaultsFromYAML 验证`load`在依赖选择路径下的行为，防止同类回归。
 func TestLoadUsesLogDefaultsFromYAML(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -357,6 +361,7 @@ func TestLoadUsesLogDefaultsFromYAML(t *testing.T) {
 	}
 }
 
+// TestLoadUsesEnvironmentOverridesForLogging 验证`load`在依赖选择路径下的行为，防止同类回归。
 func TestLoadUsesEnvironmentOverridesForLogging(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -432,6 +437,7 @@ func TestValidateForServerAcceptsValidConfig(t *testing.T) {
 	}
 }
 
+// TestValidateForServerRequiresRerankerModel 验证`validateForServer`在约束校验路径下的行为，防止同类回归。
 func TestValidateForServerRequiresRerankerModel(t *testing.T) {
 	cfg := Config{
 		ServerPort:     "8080",
@@ -450,6 +456,7 @@ func TestValidateForServerRequiresRerankerModel(t *testing.T) {
 	}
 }
 
+// TestValidateForServerRequiresSiliconFlowAPIKey 验证`validateForServer`在约束校验路径下的行为，防止同类回归。
 func TestValidateForServerRequiresSiliconFlowAPIKey(t *testing.T) {
 	cfg := Config{
 		ServerPort:         "8080",
@@ -472,6 +479,7 @@ func TestValidateForServerRequiresSiliconFlowAPIKey(t *testing.T) {
 	}
 }
 
+// TestValidateForServerRequiresLLMModel 验证`validateForServer`在约束校验路径下的行为，防止同类回归。
 func TestValidateForServerRequiresLLMModel(t *testing.T) {
 	cfg := Config{
 		ServerPort:         "8080",
@@ -494,6 +502,7 @@ func TestValidateForServerRequiresLLMModel(t *testing.T) {
 	}
 }
 
+// TestValidateForServerAllowsTextParserWithoutTika 验证`validateForServer`在合法输入或兼容路径下的行为，防止同类回归。
 func TestValidateForServerAllowsTextParserWithoutTika(t *testing.T) {
 	cfg := Config{
 		ServerPort:        "8080",
@@ -511,6 +520,7 @@ func TestValidateForServerAllowsTextParserWithoutTika(t *testing.T) {
 	}
 }
 
+// TestValidateForServerRequiresTikaURLWhenTikaParserEnabled 验证`validateForServer`在约束校验路径下的行为，防止同类回归。
 func TestValidateForServerRequiresTikaURLWhenTikaParserEnabled(t *testing.T) {
 	cfg := Config{
 		ServerPort:        "8080",
@@ -534,6 +544,7 @@ func TestValidateForServerRequiresTikaURLWhenTikaParserEnabled(t *testing.T) {
 	}
 }
 
+// TestValidateForServerRequiresPositiveTikaTimeout 验证`validateForServer`在约束校验路径下的行为，防止同类回归。
 func TestValidateForServerRequiresPositiveTikaTimeout(t *testing.T) {
 	cfg := Config{
 		ServerPort:        "8080",

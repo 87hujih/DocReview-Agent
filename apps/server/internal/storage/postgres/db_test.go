@@ -86,6 +86,7 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	}
 }
 
+// TestMigrationCreatesTaskQueryIndexes 验证`migration`在写入或副作用路径下的行为，防止同类回归。
 func TestMigrationCreatesTaskQueryIndexes(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -207,6 +208,7 @@ func TestRunMigrationsRepairsLegacyResourceSectionsTable(t *testing.T) {
 	}
 }
 
+// TestMigrationAlignsResourceChunkGroundedColumnsWithDefaults 验证`migrationAlignsResourceChunkGroundedColumnsWithDefaults`在特定边界条件下的行为，防止同类回归。
 func TestMigrationAlignsResourceChunkGroundedColumnsWithDefaults(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -279,6 +281,7 @@ func TestMigrationAlignsResourceChunkGroundedColumnsWithDefaults(t *testing.T) {
 	}
 }
 
+// TestMigrationAlignsResourceVersionStructureColumnsWithDefaults 验证`migrationAlignsResourceVersionStructureColumnsWithDefaults`在特定边界条件下的行为，防止同类回归。
 func TestMigrationAlignsResourceVersionStructureColumnsWithDefaults(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -347,6 +350,7 @@ func TestMigrationAlignsResourceVersionStructureColumnsWithDefaults(t *testing.T
 	}
 }
 
+// TestMigrationAddsAssistantSuggestionSourceColumn 验证`migration`在写入或副作用路径下的行为，防止同类回归。
 func TestMigrationAddsAssistantSuggestionSourceColumn(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -423,6 +427,7 @@ func TestMigrationAddsAssistantSuggestionSourceColumn(t *testing.T) {
 	}
 }
 
+// TestMigrationAddsExecutionChainBaseVersionColumns 验证`migration`在写入或副作用路径下的行为，防止同类回归。
 func TestMigrationAddsExecutionChainBaseVersionColumns(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -482,6 +487,7 @@ func TestMigrationAddsExecutionChainBaseVersionColumns(t *testing.T) {
 	}
 }
 
+// TestMigrationCreatesAssistantTaskNotificationsTable 验证`migration`在写入或副作用路径下的行为，防止同类回归。
 func TestMigrationCreatesAssistantTaskNotificationsTable(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -720,6 +726,7 @@ func TestResourceCRUD(t *testing.T) {
 	}
 }
 
+// TestResourceRepoGetVersionByID 验证`resourceRepoGetVersionByID`在特定边界条件下的行为，防止同类回归。
 func TestResourceRepoGetVersionByID(t *testing.T) {
 	pool := newTestPool(t)
 	repo := NewResourceRepo(pool)
@@ -750,6 +757,7 @@ func TestResourceRepoGetVersionByID(t *testing.T) {
 	}
 }
 
+// TestCreateDocumentGraphRollsBackOnChunkFailure 验证`createDocumentGraph`在回滚路径下的行为，防止同类回归。
 func TestCreateDocumentGraphRollsBackOnChunkFailure(t *testing.T) {
 	pool := newTestPool(t)
 	repo := NewResourceRepo(pool)
@@ -886,6 +894,7 @@ func TestTaskAndStepsCRUD(t *testing.T) {
 	}
 }
 
+// TestCountChunksByVersion 验证`countChunksByVersion`在特定边界条件下的行为，防止同类回归。
 func TestCountChunksByVersion(t *testing.T) {
 	pool := newTestPool(t)
 	repo := NewResourceRepo(pool)
@@ -952,6 +961,7 @@ func TestCountChunksByVersion(t *testing.T) {
 	}
 }
 
+// TestReplaceVersionChunksIsIdempotent 验证`replaceVersionChunksIsIdempotent`在特定边界条件下的行为，防止同类回归。
 func TestReplaceVersionChunksIsIdempotent(t *testing.T) {
 	pool := newTestPool(t)
 	repo := NewResourceRepo(pool)
@@ -1064,6 +1074,7 @@ func TestReplaceVersionChunksIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestSearchChunksByVersionExcludesOlderVersion 验证`searchChunksByVersionExcludesOlderVersion`在特定边界条件下的行为，防止同类回归。
 func TestSearchChunksByVersionExcludesOlderVersion(t *testing.T) {
 	pool := newTestPool(t)
 	repo := NewResourceRepo(pool)
@@ -1097,6 +1108,7 @@ func TestSearchChunksByVersionExcludesOlderVersion(t *testing.T) {
 	}
 }
 
+// TestSearchChunksLexicalByVersionExcludesOlderVersion 验证`searchChunksLexicalByVersionExcludesOlderVersion`在特定边界条件下的行为，防止同类回归。
 func TestSearchChunksLexicalByVersionExcludesOlderVersion(t *testing.T) {
 	pool := newTestPool(t)
 	repo := NewResourceRepo(pool)
@@ -1130,6 +1142,7 @@ func TestSearchChunksLexicalByVersionExcludesOlderVersion(t *testing.T) {
 	}
 }
 
+// TestCleanupResourceTreeIsIdempotent 验证`cleanupResourceTreeIsIdempotent`在特定边界条件下的行为，防止同类回归。
 func TestCleanupResourceTreeIsIdempotent(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -1294,6 +1307,7 @@ func cleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	}
 }
 
+// assertRowMissing 封装 `RowMissing` 的断言逻辑，避免用例重复展开校验细节。
 func assertRowMissing(t *testing.T, ctx context.Context, pool *pgxpool.Pool, query string, id string) {
 	t.Helper()
 
@@ -1320,6 +1334,7 @@ func uniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// seedResourceVersion 为测试场景补齐 `资源版本` 所需数据，减少重复造数。
 func seedResourceVersion(t *testing.T, repo *ResourceRepo, ctx context.Context, title string) (*Resource, *ResourceVersion) {
 	t.Helper()
 
@@ -1336,6 +1351,7 @@ func seedResourceVersion(t *testing.T, repo *ResourceRepo, ctx context.Context, 
 	return resource, version
 }
 
+// seedVersionChunk 为测试场景补齐 `版本chunk` 所需数据，减少重复造数。
 func seedVersionChunk(
 	t *testing.T,
 	repo *ResourceRepo,

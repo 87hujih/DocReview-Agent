@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// TestMonotonicTimestampClockNextBumpsDuplicateMicroseconds 验证`monotonicTimestampClockNextBumpsDuplicateMicroseconds`在特定边界条件下的行为，防止同类回归。
 func TestMonotonicTimestampClockNextBumpsDuplicateMicroseconds(t *testing.T) {
 	var clock monotonicTimestampClock
 	base := time.Date(2026, 4, 15, 12, 0, 0, 123456789, time.UTC)
@@ -24,6 +25,7 @@ func TestMonotonicTimestampClockNextBumpsDuplicateMicroseconds(t *testing.T) {
 	}
 }
 
+// TestMonotonicTimestampClockNextKeepsForwardTime 验证`monotonicTimestampClockNext`在状态保持路径下的行为，防止同类回归。
 func TestMonotonicTimestampClockNextKeepsForwardTime(t *testing.T) {
 	var clock monotonicTimestampClock
 	base := time.Date(2026, 4, 15, 12, 0, 0, 123456789, time.UTC)

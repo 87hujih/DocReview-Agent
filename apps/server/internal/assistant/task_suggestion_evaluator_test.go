@@ -2,6 +2,7 @@ package assistant
 
 import "testing"
 
+// TestEvaluateTaskSuggestionMarksCapabilityQuestionAsNeedMaterial 验证`evaluateTaskSuggestion`在流程控制路径下的行为，防止同类回归。
 func TestEvaluateTaskSuggestionMarksCapabilityQuestionAsNeedMaterial(t *testing.T) {
 	decision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
 		CurrentMessage: "你能做什么？什么时候适合创建任务？",
@@ -21,6 +22,7 @@ func TestEvaluateTaskSuggestionMarksCapabilityQuestionAsNeedMaterial(t *testing.
 	}
 }
 
+// TestEvaluateTaskSuggestionMarksOptimizationQuestionAsDiscussion 验证`evaluateTaskSuggestion`在流程控制路径下的行为，防止同类回归。
 func TestEvaluateTaskSuggestionMarksOptimizationQuestionAsDiscussion(t *testing.T) {
 	decision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
 		CurrentMessage: "在项目介绍表达方面有什么需要优化的吗？",
@@ -41,6 +43,7 @@ func TestEvaluateTaskSuggestionMarksOptimizationQuestionAsDiscussion(t *testing.
 	}
 }
 
+// TestEvaluateTaskSuggestionMarksExplicitRewriteRequestAsExecution 验证`evaluateTaskSuggestion`在流程控制路径下的行为，防止同类回归。
 func TestEvaluateTaskSuggestionMarksExplicitRewriteRequestAsExecution(t *testing.T) {
 	decision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
 		CurrentMessage: "请直接把这份简历改成产品经理版本",

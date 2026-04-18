@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// TestTaskEventRepoAddAndList 验证`taskEventRepoAddAndList`在特定边界条件下的行为，防止同类回归。
 func TestTaskEventRepoAddAndList(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -89,6 +90,7 @@ func TestTaskEventRepoAddAndList(t *testing.T) {
 	}
 }
 
+// TestTaskEventRepoAddTxCommitAndRollback 验证`taskEventRepoAddTxCommitAndRollback`在特定边界条件下的行为，防止同类回归。
 func TestTaskEventRepoAddTxCommitAndRollback(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)

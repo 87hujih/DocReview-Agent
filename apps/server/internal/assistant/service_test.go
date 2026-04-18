@@ -15,6 +15,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// TestStartConversationUsesResponderReply 验证`startConversation`在依赖选择路径下的行为，防止同类回归。
 func TestStartConversationUsesResponderReply(t *testing.T) {
 	repo := newFakeSessionRepo()
 	responder := &fakeChatResponder{
@@ -39,6 +40,7 @@ func TestStartConversationUsesResponderReply(t *testing.T) {
 	}
 }
 
+// TestStartConversationCreatesEmptyContextSnapshot 验证`startConversation`在写入或副作用路径下的行为，防止同类回归。
 func TestStartConversationCreatesEmptyContextSnapshot(t *testing.T) {
 	repo := newFakeSessionRepo()
 	projector := &fakeSessionContextProjector{}
@@ -64,6 +66,7 @@ func TestStartConversationCreatesEmptyContextSnapshot(t *testing.T) {
 	}
 }
 
+// TestStartConversationDoesNotSuggestTaskForCapabilityQuestion 验证`startConversationDoesNotSuggestTaskForCapabilityQuestion`在特定边界条件下的行为，防止同类回归。
 func TestStartConversationDoesNotSuggestTaskForCapabilityQuestion(t *testing.T) {
 	repo := newFakeSessionRepo()
 	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
@@ -82,6 +85,7 @@ func TestStartConversationDoesNotSuggestTaskForCapabilityQuestion(t *testing.T) 
 	}
 }
 
+// TestAppendMessageCreatesTaskSuggestionFromResponderInstructionWhenReadinessPasses 验证`appendMessage`在写入或副作用路径下的行为，防止同类回归。
 func TestAppendMessageCreatesTaskSuggestionFromResponderInstructionWhenReadinessPasses(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -129,6 +133,7 @@ func TestAppendMessageCreatesTaskSuggestionFromResponderInstructionWhenReadiness
 	}
 }
 
+// TestAppendMessagePassesLatestResourceContextAndCitationsToResponder 验证`appendMessage`在合法输入或兼容路径下的行为，防止同类回归。
 func TestAppendMessagePassesLatestResourceContextAndCitationsToResponder(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -188,6 +193,7 @@ func TestAppendMessagePassesLatestResourceContextAndCitationsToResponder(t *test
 	}
 }
 
+// TestAppendMessageStreamPassesSearchByResourceCitationsToResponder 验证`appendMessageStream`在合法输入或兼容路径下的行为，防止同类回归。
 func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -233,6 +239,7 @@ func TestAppendMessageStreamPassesSearchByResourceCitationsToResponder(t *testin
 	}
 }
 
+// TestAppendMessageUsesOrdinalGroundingBeforeAnsweringForFirstProject 验证`appendMessage`在依赖选择路径下的行为，防止同类回归。
 func TestAppendMessageUsesOrdinalGroundingBeforeAnsweringForFirstProject(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("项目问答")
@@ -323,6 +330,7 @@ func TestAppendMessageUsesOrdinalGroundingBeforeAnsweringForFirstProject(t *test
 	}
 }
 
+// TestAppendMessageTriggersAsyncSummaryRefreshAfterPersistingAssistantReply 验证`appendMessageTriggersAsyncSummaryRefreshAfterPersistingAssistantReply`在特定边界条件下的行为，防止同类回归。
 func TestAppendMessageTriggersAsyncSummaryRefreshAfterPersistingAssistantReply(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("长上下文会话")
@@ -382,6 +390,7 @@ func TestAppendMessageTriggersAsyncSummaryRefreshAfterPersistingAssistantReply(t
 	}
 }
 
+// TestAppendMessageStreamSummaryRefreshFailureDoesNotFailMainTurn 验证`appendMessageStreamSummaryRefreshFailureDoesNotFailMainTurn`在特定边界条件下的行为，防止同类回归。
 func TestAppendMessageStreamSummaryRefreshFailureDoesNotFailMainTurn(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("流式长上下文会话")
@@ -433,6 +442,7 @@ func TestAppendMessageStreamSummaryRefreshFailureDoesNotFailMainTurn(t *testing.
 	}
 }
 
+// TestSummaryRefreshSkipsWhenUnsummarizedTextIsBelowThreshold 验证`summaryRefresh`在跳过或空操作路径下的行为，防止同类回归。
 func TestSummaryRefreshSkipsWhenUnsummarizedTextIsBelowThreshold(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("短会话")
@@ -470,6 +480,7 @@ func TestSummaryRefreshSkipsWhenUnsummarizedTextIsBelowThreshold(t *testing.T) {
 	}
 }
 
+// TestAppendMessageDoesNotCallRetrieverWithoutReadyResource 验证`appendMessageDoesNotCallRetrieverWithoutReadyResource`在特定边界条件下的行为，防止同类回归。
 func TestAppendMessageDoesNotCallRetrieverWithoutReadyResource(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("空白会话")
@@ -485,6 +496,7 @@ func TestAppendMessageDoesNotCallRetrieverWithoutReadyResource(t *testing.T) {
 	}
 }
 
+// TestAppendMessageInlineMaterialUsesInlineTextSourceType 验证`appendMessageInlineMaterial`在依赖选择路径下的行为，防止同类回归。
 func TestAppendMessageInlineMaterialUsesInlineTextSourceType(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("简历对话")
@@ -532,6 +544,7 @@ func TestAppendMessageInlineMaterialUsesInlineTextSourceType(t *testing.T) {
 	}
 }
 
+// TestStartConversationPersistsInlineMaterialBeforeAssistantReply 验证`startConversation`在写入或副作用路径下的行为，防止同类回归。
 func TestStartConversationPersistsInlineMaterialBeforeAssistantReply(t *testing.T) {
 	repo := newFakeSessionRepo()
 	importer := &fakeDocumentImporter{
@@ -569,6 +582,7 @@ func TestStartConversationPersistsInlineMaterialBeforeAssistantReply(t *testing.
 	}
 }
 
+// TestAppendMessageInlineMaterialCreatesSessionFileMessageBeforeReply 验证`appendMessageInlineMaterial`在写入或副作用路径下的行为，防止同类回归。
 func TestAppendMessageInlineMaterialCreatesSessionFileMessageBeforeReply(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("简历对话")
@@ -602,6 +616,7 @@ func TestAppendMessageInlineMaterialCreatesSessionFileMessageBeforeReply(t *test
 	}
 }
 
+// TestAppendMessageInlineMaterialAndExecutionCreatesTaskSuggestionInSameTurn 验证`appendMessageInlineMaterialAndExecution`在写入或副作用路径下的行为，防止同类回归。
 func TestAppendMessageInlineMaterialAndExecutionCreatesTaskSuggestionInSameTurn(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("简历对话")
@@ -654,6 +669,7 @@ func TestAppendMessageInlineMaterialAndExecutionCreatesTaskSuggestionInSameTurn(
 	}
 }
 
+// TestAppendMessageInlineMaterialWithoutExecutionDoesNotCreateTaskSuggestion 验证`appendMessageInlineMaterialWithoutExecutionDoesNotCreateTaskSuggestion`在特定边界条件下的行为，防止同类回归。
 func TestAppendMessageInlineMaterialWithoutExecutionDoesNotCreateTaskSuggestion(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("简历对话")
@@ -684,6 +700,7 @@ func TestAppendMessageInlineMaterialWithoutExecutionDoesNotCreateTaskSuggestion(
 	}
 }
 
+// TestAppendMessageInlineMaterialProjectsActiveResourceIntoSnapshot 验证`appendMessageInlineMaterial`在写入或副作用路径下的行为，防止同类回归。
 func TestAppendMessageInlineMaterialProjectsActiveResourceIntoSnapshot(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("简历对话")
@@ -729,6 +746,7 @@ func TestAppendMessageInlineMaterialProjectsActiveResourceIntoSnapshot(t *testin
 	}
 }
 
+// TestStartConversationDoesNotCreateTaskSuggestionWithoutMaterial 验证`startConversationDoesNotCreateTaskSuggestionWithoutMaterial`在特定边界条件下的行为，防止同类回归。
 func TestStartConversationDoesNotCreateTaskSuggestionWithoutMaterial(t *testing.T) {
 	repo := newFakeSessionRepo()
 	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
@@ -759,6 +777,7 @@ func TestStartConversationDoesNotCreateTaskSuggestionWithoutMaterial(t *testing.
 	}
 }
 
+// TestAppendMessageDoesNotCreateTaskSuggestionForDiscussionQuestion 验证`appendMessageDoesNotCreateTaskSuggestionForDiscussionQuestion`在特定边界条件下的行为，防止同类回归。
 func TestAppendMessageDoesNotCreateTaskSuggestionForDiscussionQuestion(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -794,6 +813,7 @@ func TestAppendMessageDoesNotCreateTaskSuggestionForDiscussionQuestion(t *testin
 	}
 }
 
+// TestAppendMessageIgnoresModelTaskInstructionWhenReadinessGateFails 验证`appendMessageIgnoresModelTaskInstructionWhenReadinessGateFails`在特定边界条件下的行为，防止同类回归。
 func TestAppendMessageIgnoresModelTaskInstructionWhenReadinessGateFails(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("空白会话")
@@ -815,6 +835,7 @@ func TestAppendMessageIgnoresModelTaskInstructionWhenReadinessGateFails(t *testi
 	}
 }
 
+// TestAppendMessageCreatesTaskSuggestionForExecutionRequestWithReadyResource 验证`appendMessage`在写入或副作用路径下的行为，防止同类回归。
 func TestAppendMessageCreatesTaskSuggestionForExecutionRequestWithReadyResource(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -860,6 +881,7 @@ func TestAppendMessageCreatesTaskSuggestionForExecutionRequestWithReadyResource(
 	}
 }
 
+// TestAppendMessageProjectsPendingTaskSuggestionIntoSnapshot 验证`appendMessage`在写入或副作用路径下的行为，防止同类回归。
 func TestAppendMessageProjectsPendingTaskSuggestionIntoSnapshot(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -913,6 +935,7 @@ func TestAppendMessageProjectsPendingTaskSuggestionIntoSnapshot(t *testing.T) {
 	}
 }
 
+// TestStartConversationStreamPersistsUserFirstAndAssistantAfterCompletion 验证`startConversationStream`在写入或副作用路径下的行为，防止同类回归。
 func TestStartConversationStreamPersistsUserFirstAndAssistantAfterCompletion(t *testing.T) {
 	repo := newFakeSessionRepo()
 	responder := &fakeChatResponder{
@@ -971,6 +994,7 @@ func TestStartConversationStreamPersistsUserFirstAndAssistantAfterCompletion(t *
 	}
 }
 
+// TestStartConversationStreamEmitsSessionFileBeforeAssistantReplyWhenInlineMaterialDetected 验证`startConversationStream`在写入或副作用路径下的行为，防止同类回归。
 func TestStartConversationStreamEmitsSessionFileBeforeAssistantReplyWhenInlineMaterialDetected(t *testing.T) {
 	repo := newFakeSessionRepo()
 	importer := &fakeDocumentImporter{
@@ -1023,6 +1047,7 @@ func TestStartConversationStreamEmitsSessionFileBeforeAssistantReplyWhenInlineMa
 	}
 }
 
+// TestAppendMessageStreamEmitsSessionFileBeforeAssistantReplyWhenInlineMaterialDetected 验证`appendMessageStream`在写入或副作用路径下的行为，防止同类回归。
 func TestAppendMessageStreamEmitsSessionFileBeforeAssistantReplyWhenInlineMaterialDetected(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("简历对话")
@@ -1075,6 +1100,7 @@ func TestAppendMessageStreamEmitsSessionFileBeforeAssistantReplyWhenInlineMateri
 	}
 }
 
+// TestAppendMessageStreamDoesNotPersistAssistantOnCancellation 验证`appendMessageStreamDoesNotPersistAssistantOnCancellation`在特定边界条件下的行为，防止同类回归。
 func TestAppendMessageStreamDoesNotPersistAssistantOnCancellation(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -1117,6 +1143,7 @@ func TestAppendMessageStreamDoesNotPersistAssistantOnCancellation(t *testing.T) 
 	}
 }
 
+// TestStartConversationStreamReturnsEmptyReplyError 验证`startConversationStream`在返回值分支下的行为，防止同类回归。
 func TestStartConversationStreamReturnsEmptyReplyError(t *testing.T) {
 	repo := newFakeSessionRepo()
 	responder := &fakeChatResponder{
@@ -1150,6 +1177,7 @@ func TestStartConversationStreamReturnsEmptyReplyError(t *testing.T) {
 	}
 }
 
+// TestUploadFilePersistsSessionFileMessage 验证`uploadFile`在写入或副作用路径下的行为，防止同类回归。
 func TestUploadFilePersistsSessionFileMessage(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("空白会话")
@@ -1187,6 +1215,7 @@ func TestUploadFilePersistsSessionFileMessage(t *testing.T) {
 	}
 }
 
+// TestUploadFileProjectsActiveResourceIntoSnapshot 验证`uploadFile`在写入或副作用路径下的行为，防止同类回归。
 func TestUploadFileProjectsActiveResourceIntoSnapshot(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("空白会话")
@@ -1235,6 +1264,7 @@ func TestUploadFileProjectsActiveResourceIntoSnapshot(t *testing.T) {
 	}
 }
 
+// TestUploadFileStoresOriginalFileAndPersistsFileID 验证`uploadFile`在写入或副作用路径下的行为，防止同类回归。
 func TestUploadFileStoresOriginalFileAndPersistsFileID(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("原文件保存")
@@ -1300,6 +1330,7 @@ func TestUploadFileStoresOriginalFileAndPersistsFileID(t *testing.T) {
 	}
 }
 
+// TestConfirmTaskSuggestionCreatesTaskCreatedMessage 验证`confirmTaskSuggestion`在写入或副作用路径下的行为，防止同类回归。
 func TestConfirmTaskSuggestionCreatesTaskCreatedMessage(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -1355,6 +1386,7 @@ func TestConfirmTaskSuggestionCreatesTaskCreatedMessage(t *testing.T) {
 	}
 }
 
+// TestConfirmTaskSuggestionTaskCreatedDetailURLIncludesSessionQuery 验证`confirmTaskSuggestionTaskCreatedDetailURL`在流程控制路径下的行为，防止同类回归。
 func TestConfirmTaskSuggestionTaskCreatedDetailURLIncludesSessionQuery(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("student-manual")
@@ -1403,6 +1435,7 @@ func TestConfirmTaskSuggestionTaskCreatedDetailURLIncludesSessionQuery(t *testin
 	}
 }
 
+// TestConfirmTaskSuggestionProjectsLatestTaskIntoSnapshot 验证`confirmTaskSuggestion`在写入或副作用路径下的行为，防止同类回归。
 func TestConfirmTaskSuggestionProjectsLatestTaskIntoSnapshot(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -1465,6 +1498,7 @@ func TestConfirmTaskSuggestionProjectsLatestTaskIntoSnapshot(t *testing.T) {
 	}
 }
 
+// TestConfirmTaskSuggestionAppendsFailureSystemMessageWhenTaskCreationFails 验证`confirmTaskSuggestionAppendsFailureSystemMessageWhenTaskCreationFails`在特定边界条件下的行为，防止同类回归。
 func TestConfirmTaskSuggestionAppendsFailureSystemMessageWhenTaskCreationFails(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -1514,6 +1548,7 @@ func TestConfirmTaskSuggestionAppendsFailureSystemMessageWhenTaskCreationFails(t
 	}
 }
 
+// TestConfirmTaskSuggestionReturnsExistingTaskWithoutAppendingDuplicateTaskCreatedMessage 验证`confirmTaskSuggestion`在返回值分支下的行为，防止同类回归。
 func TestConfirmTaskSuggestionReturnsExistingTaskWithoutAppendingDuplicateTaskCreatedMessage(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -1585,11 +1620,13 @@ func TestConfirmTaskSuggestionReturnsExistingTaskWithoutAppendingDuplicateTaskCr
 	}
 }
 
+// fakeSessionRepo 作为会话仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeSessionRepo struct {
 	sessions map[string]postgres.AssistantSession
 	messages map[string][]postgres.AssistantMessage
 }
 
+// newFakeSessionRepo 为测试场景处理 `newFake会话仓储` 的辅助步骤，减少重复搭建逻辑。
 func newFakeSessionRepo() *fakeSessionRepo {
 	return &fakeSessionRepo{
 		sessions: make(map[string]postgres.AssistantSession),
@@ -1597,6 +1634,7 @@ func newFakeSessionRepo() *fakeSessionRepo {
 	}
 }
 
+// ListSessions 实现测试替身需要的 `ListSessions` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) ListSessions(context.Context) ([]postgres.AssistantSession, error) {
 	items := make([]postgres.AssistantSession, 0, len(r.sessions))
 	for _, session := range r.sessions {
@@ -1606,6 +1644,7 @@ func (r *fakeSessionRepo) ListSessions(context.Context) ([]postgres.AssistantSes
 	return items, nil
 }
 
+// GetSessionByID 实现测试替身需要的 `GetSessionByID` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) GetSessionByID(_ context.Context, id string) (*postgres.AssistantSession, error) {
 	session, ok := r.sessions[id]
 	if !ok {
@@ -1615,6 +1654,7 @@ func (r *fakeSessionRepo) GetSessionByID(_ context.Context, id string) (*postgre
 	return &session, nil
 }
 
+// ListMessages 实现测试替身需要的 `ListMessages` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) ListMessages(_ context.Context, sessionID string) ([]postgres.AssistantMessage, error) {
 	items := r.messages[sessionID]
 	cloned := make([]postgres.AssistantMessage, len(items))
@@ -1622,6 +1662,7 @@ func (r *fakeSessionRepo) ListMessages(_ context.Context, sessionID string) ([]p
 	return cloned, nil
 }
 
+// ListMessagesAfterSequence 实现测试替身需要的 `ListMessagesAfterSequence` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) ListMessagesAfterSequence(_ context.Context, sessionID string, afterSequenceNo int) ([]postgres.AssistantMessage, error) {
 	items := r.messages[sessionID]
 	filtered := make([]postgres.AssistantMessage, 0, len(items))
@@ -1638,6 +1679,7 @@ func (r *fakeSessionRepo) ListMessagesAfterSequence(_ context.Context, sessionID
 	return cloned, nil
 }
 
+// GetMessageByID 实现测试替身需要的 `GetMessageByID` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) GetMessageByID(_ context.Context, id string) (*postgres.AssistantMessage, error) {
 	for _, items := range r.messages {
 		for _, message := range items {
@@ -1651,6 +1693,7 @@ func (r *fakeSessionRepo) GetMessageByID(_ context.Context, id string) (*postgre
 	return nil, nil
 }
 
+// CreateSessionWithMessages 实现测试替身需要的 `CreateSessionWithMessages` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) CreateSessionWithMessages(_ context.Context, title string, inputs []postgres.AssistantMessageInput) (*postgres.AssistantSession, []postgres.AssistantMessage, error) {
 	sessionID := "session-created"
 	now := time.Now()
@@ -1681,6 +1724,7 @@ func (r *fakeSessionRepo) CreateSessionWithMessages(_ context.Context, title str
 	return &session, messages, nil
 }
 
+// AppendMessages 实现测试替身需要的 `AppendMessages` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) AppendMessages(_ context.Context, sessionID string, inputs []postgres.AssistantMessageInput) ([]postgres.AssistantMessage, error) {
 	base := len(r.messages[sessionID])
 	now := time.Now()
@@ -1708,6 +1752,7 @@ func (r *fakeSessionRepo) AppendMessages(_ context.Context, sessionID string, in
 	return messages, nil
 }
 
+// DeleteSession 实现测试替身需要的 `DeleteSession` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) DeleteSession(_ context.Context, id string) (bool, error) {
 	if _, ok := r.sessions[id]; !ok {
 		return false, nil
@@ -1718,6 +1763,7 @@ func (r *fakeSessionRepo) DeleteSession(_ context.Context, id string) (bool, err
 	return true, nil
 }
 
+// seedSession 实现测试替身需要的 `seedSession` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) seedSession(title string) postgres.AssistantSession {
 	now := time.Now()
 	session := postgres.AssistantSession{
@@ -1731,11 +1777,13 @@ func (r *fakeSessionRepo) seedSession(title string) postgres.AssistantSession {
 	return session
 }
 
+// seedMessage 实现测试替身需要的 `seedMessage` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) seedMessage(sessionID string, message postgres.AssistantMessage) postgres.AssistantMessage {
 	r.messages[sessionID] = append(r.messages[sessionID], message)
 	return message
 }
 
+// seedTextConversationHistory 为测试场景补齐 `文本会话历史` 所需数据，减少重复造数。
 func seedTextConversationHistory(t *testing.T, repo *fakeSessionRepo, sessionID string, count int) {
 	t.Helper()
 
@@ -1757,12 +1805,14 @@ func seedTextConversationHistory(t *testing.T, repo *fakeSessionRepo, sessionID 
 	}
 }
 
+// fakeDocumentImporter 作为文档Importer的测试替身，用于在用例里提供可控的依赖行为。
 type fakeDocumentImporter struct {
-	result *ImportDocumentResult
-	err    error
+	result    *ImportDocumentResult
+	err       error
 	lastInput *ImportDocumentInput
 }
 
+// ImportDocument 实现测试替身需要的 `ImportDocument` 接口方法，为用例分支提供可控返回。
 func (i *fakeDocumentImporter) ImportDocument(_ context.Context, input ImportDocumentInput) (*ImportDocumentResult, error) {
 	cloned := input
 	cloned.Content = append([]byte(nil), input.Content...)
@@ -1774,12 +1824,14 @@ func (i *fakeDocumentImporter) ImportDocument(_ context.Context, input ImportDoc
 	return i.result, nil
 }
 
+// fakeFileStore 作为文件Store的测试替身，用于在用例里提供可控的依赖行为。
 type fakeFileStore struct {
 	result       *filestore.StoredFile
 	err          error
 	savedContent []byte
 }
 
+// Save 实现测试替身需要的 `Save` 接口方法，为用例分支提供可控返回。
 func (s *fakeFileStore) Save(_ context.Context, _ string, content []byte) (*filestore.StoredFile, error) {
 	s.savedContent = append([]byte(nil), content...)
 	if s.err != nil {
@@ -1789,6 +1841,7 @@ func (s *fakeFileStore) Save(_ context.Context, _ string, content []byte) (*file
 	return s.result, nil
 }
 
+// fakeUploadedFileRepo 作为Uploaded文件仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeUploadedFileRepo struct {
 	createInput       *postgres.UploadedFileCreateParams
 	result            *postgres.UploadedFile
@@ -1796,6 +1849,7 @@ type fakeUploadedFileRepo struct {
 	updatedResourceID string
 }
 
+// Create 实现测试替身需要的 `Create` 接口方法，为用例分支提供可控返回。
 func (r *fakeUploadedFileRepo) Create(_ context.Context, input postgres.UploadedFileCreateParams) (*postgres.UploadedFile, error) {
 	r.createInput = &input
 	if r.result != nil {
@@ -1805,12 +1859,14 @@ func (r *fakeUploadedFileRepo) Create(_ context.Context, input postgres.Uploaded
 	return &postgres.UploadedFile{ID: "file-default"}, nil
 }
 
+// UpdateResourceID 实现测试替身需要的 `UpdateResourceID` 接口方法，为用例分支提供可控返回。
 func (r *fakeUploadedFileRepo) UpdateResourceID(_ context.Context, fileID string, resourceID string) error {
 	r.updatedFileID = fileID
 	r.updatedResourceID = resourceID
 	return nil
 }
 
+// fakeTaskCreator 作为任务Creator的测试替身，用于在用例里提供可控的依赖行为。
 type fakeTaskCreator struct {
 	result *postgres.Task
 	err    error
@@ -1818,6 +1874,7 @@ type fakeTaskCreator struct {
 	seen   map[string]bool
 }
 
+// CreateTaskFromAssistantSuggestion 实现测试替身需要的 `CreateTaskFromAssistantSuggestion` 接口方法，为用例分支提供可控返回。
 func (c *fakeTaskCreator) CreateTaskFromAssistantSuggestion(
 	_ context.Context,
 	_ string,
@@ -1839,6 +1896,7 @@ func (c *fakeTaskCreator) CreateTaskFromAssistantSuggestion(
 	return c.result, true, nil
 }
 
+// fakeChatResponder 作为聊天Responder的测试替身，用于在用例里提供可控的依赖行为。
 type fakeChatResponder struct {
 	lastInput *ChatCompletionInput
 	result    *ChatCompletionResult
@@ -1846,6 +1904,7 @@ type fakeChatResponder struct {
 	stream    *fakeChatStream
 }
 
+// Reply 实现测试替身需要的 `Reply` 接口方法，为用例分支提供可控返回。
 func (r *fakeChatResponder) Reply(_ context.Context, input ChatCompletionInput) (*ChatCompletionResult, error) {
 	copied := input
 	copied.History = append([]postgres.AssistantMessage(nil), input.History...)
@@ -1864,6 +1923,7 @@ func (r *fakeChatResponder) Reply(_ context.Context, input ChatCompletionInput) 
 	return r.result, nil
 }
 
+// Stream 实现测试替身需要的 `Stream` 接口方法，为用例分支提供可控返回。
 func (r *fakeChatResponder) Stream(_ context.Context, input ChatCompletionInput) (chatStream, error) {
 	copied := input
 	copied.History = append([]postgres.AssistantMessage(nil), input.History...)
@@ -1880,12 +1940,14 @@ func (r *fakeChatResponder) Stream(_ context.Context, input ChatCompletionInput)
 	return r.stream, nil
 }
 
+// fakeChatStream 作为聊天流式消息的测试替身，用于在用例里提供可控的依赖行为。
 type fakeChatStream struct {
 	chunks []string
 	errs   []error
 	index  int
 }
 
+// Recv 实现测试替身需要的 `Recv` 接口方法，为用例分支提供可控返回。
 func (s *fakeChatStream) Recv() (string, error) {
 	if s.index < len(s.chunks) {
 		chunk := s.chunks[s.index]
@@ -1906,10 +1968,12 @@ func (s *fakeChatStream) Recv() (string, error) {
 	return "", io.EOF
 }
 
+// Close 实现测试替身需要的 `Close` 接口方法，为用例分支提供可控返回。
 func (s *fakeChatStream) Close() error {
 	return nil
 }
 
+// fakeResourceCitationRetriever 作为资源引用检索器的测试替身，用于在用例里提供可控的依赖行为。
 type fakeResourceCitationRetriever struct {
 	result []citation.Citation
 	search func(context.Context, string, string, int) ([]citation.Citation, error)
@@ -1922,6 +1986,7 @@ type fakeResourceCitationRetriever struct {
 	queries    []string
 }
 
+// SearchByResource 实现测试替身需要的 `SearchByResource` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceCitationRetriever) SearchByResource(_ context.Context, resourceID string, query string, limit int) ([]citation.Citation, error) {
 	r.calls++
 	r.resourceID = resourceID
@@ -1938,14 +2003,16 @@ func (r *fakeResourceCitationRetriever) SearchByResource(_ context.Context, reso
 	return r.result, nil
 }
 
+// fakeConversationSummarizer 作为会话Summarizer的测试替身，用于在用例里提供可控的依赖行为。
 type fakeConversationSummarizer struct {
-	result       *SummaryResult
-	err          error
-	calls        int
-	lastInput    SummaryInput
-	onSummarize  func(input SummaryInput)
+	result      *SummaryResult
+	err         error
+	calls       int
+	lastInput   SummaryInput
+	onSummarize func(input SummaryInput)
 }
 
+// Summarize 实现测试替身需要的 `Summarize` 接口方法，为用例分支提供可控返回。
 func (s *fakeConversationSummarizer) Summarize(_ context.Context, input SummaryInput) (*SummaryResult, error) {
 	s.calls++
 	s.lastInput = input
@@ -1963,14 +2030,16 @@ func (s *fakeConversationSummarizer) Summarize(_ context.Context, input SummaryI
 	return &cloned, nil
 }
 
+// fakeSummarySnapshotRepo 作为摘要快照仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeSummarySnapshotRepo struct {
-	record                  *postgres.SessionContextSnapshotRecord
-	err                     error
-	advanceCalls            int
-	lastSummary             *string
-	lastNextBaseSequenceNo  int
+	record                 *postgres.SessionContextSnapshotRecord
+	err                    error
+	advanceCalls           int
+	lastSummary            *string
+	lastNextBaseSequenceNo int
 }
 
+// GetBySessionID 实现测试替身需要的 `GetBySessionID` 接口方法，为用例分支提供可控返回。
 func (r *fakeSummarySnapshotRepo) GetBySessionID(_ context.Context, sessionID string) (*postgres.SessionContextSnapshotRecord, error) {
 	if r.err != nil {
 		return nil, r.err
@@ -1992,6 +2061,7 @@ func (r *fakeSummarySnapshotRepo) GetBySessionID(_ context.Context, sessionID st
 	return &cloned, nil
 }
 
+// AdvanceRollingSummary 实现测试替身需要的 `AdvanceRollingSummary` 接口方法，为用例分支提供可控返回。
 func (r *fakeSummarySnapshotRepo) AdvanceRollingSummary(_ context.Context, sessionID string, summary *string, nextBaseSequenceNo int) (bool, error) {
 	if r.err != nil {
 		return false, r.err
@@ -2011,6 +2081,7 @@ func (r *fakeSummarySnapshotRepo) AdvanceRollingSummary(_ context.Context, sessi
 	return true, nil
 }
 
+// fakeSessionContextProjector 作为会话上下文投影器的测试替身，用于在用例里提供可控的依赖行为。
 type fakeSessionContextProjector struct {
 	err error
 
@@ -2021,6 +2092,7 @@ type fakeSessionContextProjector struct {
 	groundingCalls      []GroundingStateProjection
 }
 
+// InitSession 实现测试替身需要的 `InitSession` 接口方法，为用例分支提供可控返回。
 func (p *fakeSessionContextProjector) InitSession(_ context.Context, sessionID string) error {
 	if p.err != nil {
 		return p.err
@@ -2030,6 +2102,7 @@ func (p *fakeSessionContextProjector) InitSession(_ context.Context, sessionID s
 	return nil
 }
 
+// ProjectSessionFileReady 实现测试替身需要的 `ProjectSessionFileReady` 接口方法，为用例分支提供可控返回。
 func (p *fakeSessionContextProjector) ProjectSessionFileReady(_ context.Context, projection SessionFileReadyProjection) error {
 	if p.err != nil {
 		return p.err
@@ -2039,6 +2112,7 @@ func (p *fakeSessionContextProjector) ProjectSessionFileReady(_ context.Context,
 	return nil
 }
 
+// ProjectTaskSuggestionCreated 实现测试替身需要的 `ProjectTaskSuggestionCreated` 接口方法，为用例分支提供可控返回。
 func (p *fakeSessionContextProjector) ProjectTaskSuggestionCreated(_ context.Context, projection TaskSuggestionProjection) error {
 	if p.err != nil {
 		return p.err
@@ -2048,6 +2122,7 @@ func (p *fakeSessionContextProjector) ProjectTaskSuggestionCreated(_ context.Con
 	return nil
 }
 
+// ProjectTaskCreated 实现测试替身需要的 `ProjectTaskCreated` 接口方法，为用例分支提供可控返回。
 func (p *fakeSessionContextProjector) ProjectTaskCreated(_ context.Context, projection TaskCreatedProjection) error {
 	if p.err != nil {
 		return p.err
@@ -2057,6 +2132,7 @@ func (p *fakeSessionContextProjector) ProjectTaskCreated(_ context.Context, proj
 	return nil
 }
 
+// ProjectGroundingState 实现测试替身需要的 `ProjectGroundingState` 接口方法，为用例分支提供可控返回。
 func (p *fakeSessionContextProjector) ProjectGroundingState(_ context.Context, projection GroundingStateProjection) error {
 	if p.err != nil {
 		return p.err
@@ -2066,6 +2142,7 @@ func (p *fakeSessionContextProjector) ProjectGroundingState(_ context.Context, p
 	return nil
 }
 
+// decodeTaskSuggestionPayload 在测试里解码 `任务建议载荷`，便于直接断言结构化内容。
 func decodeTaskSuggestionPayload(t *testing.T, payload []byte) TaskSuggestionPayload {
 	t.Helper()
 
@@ -2077,6 +2154,7 @@ func decodeTaskSuggestionPayload(t *testing.T, payload []byte) TaskSuggestionPay
 	return value
 }
 
+// decodeSessionFilePayload 在测试里解码 `会话文件载荷`，便于直接断言结构化内容。
 func decodeSessionFilePayload(t *testing.T, payload []byte) SessionFilePayload {
 	t.Helper()
 
@@ -2088,6 +2166,7 @@ func decodeSessionFilePayload(t *testing.T, payload []byte) SessionFilePayload {
 	return value
 }
 
+// decodeTaskCreatedPayload 在测试里解码 `任务Created载荷`，便于直接断言结构化内容。
 func decodeTaskCreatedPayload(t *testing.T, payload []byte) TaskCreatedPayload {
 	t.Helper()
 
@@ -2099,6 +2178,7 @@ func decodeTaskCreatedPayload(t *testing.T, payload []byte) TaskCreatedPayload {
 	return value
 }
 
+// decodeTextPayload 在测试里解码 `文本载荷`，便于直接断言结构化内容。
 func decodeTextPayload(t *testing.T, payload []byte) TextPayload {
 	t.Helper()
 
@@ -2110,6 +2190,7 @@ func decodeTextPayload(t *testing.T, payload []byte) TextPayload {
 	return value
 }
 
+// mustJSON 在测试里强制构造 `JSON`，失败时立即终止当前用例。
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
 

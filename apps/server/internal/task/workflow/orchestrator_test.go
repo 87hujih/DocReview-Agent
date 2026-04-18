@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestOrchestratorRecordsCoreTaskEvents 验证`orchestrator`在写入或副作用路径下的行为，防止同类回归。
 func TestOrchestratorRecordsCoreTaskEvents(t *testing.T) {
 	pool := newWorkflowTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -80,6 +81,7 @@ func TestOrchestratorRecordsCoreTaskEvents(t *testing.T) {
 	}
 }
 
+// TestOrchestratorMarksTaskFailedWhenExecutionContextExpires 验证`orchestrator`在流程控制路径下的行为，防止同类回归。
 func TestOrchestratorMarksTaskFailedWhenExecutionContextExpires(t *testing.T) {
 	pool := newWorkflowTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -169,6 +171,7 @@ func TestOrchestratorMarksTaskFailedWhenExecutionContextExpires(t *testing.T) {
 	}
 }
 
+// TestOrchestratorProjectsSnapshotStatusTransitions 验证`orchestrator`在写入或副作用路径下的行为，防止同类回归。
 func TestOrchestratorProjectsSnapshotStatusTransitions(t *testing.T) {
 	t.Run("awaiting approval", func(t *testing.T) {
 		pool := newWorkflowTestPool(t)
@@ -339,6 +342,7 @@ func TestOrchestratorProjectsSnapshotStatusTransitions(t *testing.T) {
 	})
 }
 
+// TestTaskStatusNotifierOrchestratorSyncsTerminalStatuses 验证`taskStatusNotifierOrchestrator`在写入或副作用路径下的行为，防止同类回归。
 func TestTaskStatusNotifierOrchestratorSyncsTerminalStatuses(t *testing.T) {
 	task := &postgres.Task{ID: "task-terminal-1"}
 	projector := &recordingWorkflowProjector{}
@@ -376,8 +380,10 @@ func TestTaskStatusNotifierOrchestratorSyncsTerminalStatuses(t *testing.T) {
 	}
 }
 
+// fakePlannerAgent 作为PlannerAgent的测试替身，用于在用例里提供可控的依赖行为。
 type fakePlannerAgent struct{}
 
+// Plan 实现测试替身需要的 `Plan` 接口方法，为用例分支提供可控返回。
 func (fakePlannerAgent) Plan(context.Context, string, string, string) (*planner.PlanResult, error) {
 	return &planner.PlanResult{
 		Intent:        "审阅考勤条款",
@@ -386,29 +392,37 @@ func (fakePlannerAgent) Plan(context.Context, string, string, string) (*planner.
 	}, nil
 }
 
+// blockingPlannerAgent 作为PlannerAgent的阻塞型测试替身，用于覆盖并发与超时路径。
 type blockingPlannerAgent struct{}
 
+// Plan 实现测试替身需要的 `Plan` 接口方法，为用例分支提供可控返回。
 func (blockingPlannerAgent) Plan(ctx context.Context, _ string, _ string, _ string) (*planner.PlanResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 
+// failingPlannerAgent 作为PlannerAgent的失败型测试替身，用于覆盖错误分支。
 type failingPlannerAgent struct {
 	err error
 }
 
+// Plan 实现测试替身需要的 `Plan` 接口方法，为用例分支提供可控返回。
 func (a failingPlannerAgent) Plan(context.Context, string, string, string) (*planner.PlanResult, error) {
 	return nil, a.err
 }
 
+// fakeReviewerAgent 作为ReviewerAgent的测试替身，用于在用例里提供可控的依赖行为。
 type fakeReviewerAgent struct{}
 
+// Review 实现测试替身需要的 `Review` 接口方法，为用例分支提供可控返回。
 func (fakeReviewerAgent) Review(context.Context, string, []citation.Citation, string) (string, error) {
 	return "考勤条款需要补充边界。", nil
 }
 
+// fakeEditorAgent 作为EditorAgent的测试替身，用于在用例里提供可控的依赖行为。
 type fakeEditorAgent struct{}
 
+// Edit 实现测试替身需要的 `Edit` 接口方法，为用例分支提供可控返回。
 func (fakeEditorAgent) Edit(context.Context, string, string, []citation.Citation) (*editor.DiffPreview, error) {
 	return &editor.DiffPreview{
 		Sections: []editor.DiffSection{
@@ -424,14 +438,18 @@ func (fakeEditorAgent) Edit(context.Context, string, string, []citation.Citation
 	}, nil
 }
 
+// fakeNoChangeEditorAgent 作为NoChangeEditorAgent的测试替身，用于在用例里提供可控的依赖行为。
 type fakeNoChangeEditorAgent struct{}
 
+// Edit 实现测试替身需要的 `Edit` 接口方法，为用例分支提供可控返回。
 func (fakeNoChangeEditorAgent) Edit(context.Context, string, string, []citation.Citation) (*editor.DiffPreview, error) {
 	return &editor.DiffPreview{NoChange: true}, nil
 }
 
+// fakeRetrieverService 作为检索器服务的测试替身，用于在用例里提供可控的依赖行为。
 type fakeRetrieverService struct{}
 
+// SearchByResource 实现测试替身需要的 `SearchByResource` 接口方法，为用例分支提供可控返回。
 func (fakeRetrieverService) SearchByResource(context.Context, string, string, int) ([]citation.Citation, error) {
 	return []citation.Citation{
 		{
@@ -443,24 +461,29 @@ func (fakeRetrieverService) SearchByResource(context.Context, string, string, in
 	}, nil
 }
 
+// recordingWorkflowProjector 作为工作流投影器的记录型测试替身，用于断言调用副作用。
 type recordingWorkflowProjector struct {
 	statuses []string
 }
 
+// ProjectTaskStatusChanged 实现测试替身需要的 `ProjectTaskStatusChanged` 接口方法，为用例分支提供可控返回。
 func (r *recordingWorkflowProjector) ProjectTaskStatusChanged(_ context.Context, _ *string, _ string, status string) error {
 	r.statuses = append(r.statuses, status)
 	return nil
 }
 
+// recordingWorkflowNotifier 作为工作流Notifier的记录型测试替身，用于断言调用副作用。
 type recordingWorkflowNotifier struct {
 	statuses []string
 }
 
+// Notify 实现测试替身需要的 `Notify` 接口方法，为用例分支提供可控返回。
 func (r *recordingWorkflowNotifier) Notify(_ context.Context, _ *postgres.Task, status string) error {
 	r.statuses = append(r.statuses, status)
 	return nil
 }
 
+// newWorkflowTestPool 创建测试用隔离数据库连接池，统一初始化与清理约束。
 func newWorkflowTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -473,6 +496,7 @@ func newWorkflowTestPool(t *testing.T) *pgxpool.Pool {
 	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "task_workflow", postgres.NewPool, postgres.RunMigrations)
 }
 
+// workflowCleanupResource 为测试场景处理 `工作流Cleanup资源` 的辅助步骤，减少重复搭建逻辑。
 func workflowCleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
@@ -495,6 +519,7 @@ func workflowCleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string
 	}
 }
 
+// workflowTestContext 构造测试上下文，统一附带当前用例需要的取消和超时能力。
 func workflowTestContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -503,10 +528,12 @@ func workflowTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// workflowUniqueSuffix 生成测试数据使用的唯一后缀，避免并发或重复运行时发生命名冲突。
 func workflowUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// seedWorkflowAssistantTask 为测试场景补齐 `工作流助手任务` 所需数据，减少重复造数。
 func seedWorkflowAssistantTask(
 	t *testing.T,
 	ctx context.Context,
@@ -561,12 +588,14 @@ func seedWorkflowAssistantTask(
 
 // --- validateDiffPreview 单元测试（2.4）---
 
+// TestValidateDiffPreviewRejectsNil 验证`validateDiffPreview`在非法输入或失败路径下的行为，防止同类回归。
 func TestValidateDiffPreviewRejectsNil(t *testing.T) {
 	if err := validateDiffPreview(nil, nil); err == nil {
 		t.Fatal("预览为 nil 时期望返回错误")
 	}
 }
 
+// TestValidateDiffPreviewRejectsEmptySections 验证`validateDiffPreview`在非法输入或失败路径下的行为，防止同类回归。
 func TestValidateDiffPreviewRejectsEmptySections(t *testing.T) {
 	preview := &editor.DiffPreview{Sections: nil}
 	if err := validateDiffPreview(preview, nil); err == nil {
@@ -574,6 +603,7 @@ func TestValidateDiffPreviewRejectsEmptySections(t *testing.T) {
 	}
 }
 
+// TestValidateDiffPreviewRejectsEmptySectionTitle 验证`validateDiffPreview`在非法输入或失败路径下的行为，防止同类回归。
 func TestValidateDiffPreviewRejectsEmptySectionTitle(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
@@ -584,6 +614,7 @@ func TestValidateDiffPreviewRejectsEmptySectionTitle(t *testing.T) {
 	}
 }
 
+// TestValidateDiffPreviewRejectsEmptyOriginal 验证`validateDiffPreview`在非法输入或失败路径下的行为，防止同类回归。
 func TestValidateDiffPreviewRejectsEmptyOriginal(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
@@ -594,6 +625,7 @@ func TestValidateDiffPreviewRejectsEmptyOriginal(t *testing.T) {
 	}
 }
 
+// TestValidateDiffPreviewRejectsIdenticalOriginalRevised 验证`validateDiffPreview`在非法输入或失败路径下的行为，防止同类回归。
 func TestValidateDiffPreviewRejectsIdenticalOriginalRevised(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
@@ -604,6 +636,7 @@ func TestValidateDiffPreviewRejectsIdenticalOriginalRevised(t *testing.T) {
 	}
 }
 
+// TestValidateDiffPreviewRejectsSectionsOverLimit 验证`validateDiffPreview`在非法输入或失败路径下的行为，防止同类回归。
 func TestValidateDiffPreviewRejectsSectionsOverLimit(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	sections := make([]editor.DiffSection, 51)
@@ -616,6 +649,7 @@ func TestValidateDiffPreviewRejectsSectionsOverLimit(t *testing.T) {
 	}
 }
 
+// TestValidateDiffPreviewRejectsFieldOverRuneLimit 验证`validateDiffPreview`在非法输入或失败路径下的行为，防止同类回归。
 func TestValidateDiffPreviewRejectsFieldOverRuneLimit(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	longStr := strings.Repeat("x", 10001)
@@ -627,6 +661,7 @@ func TestValidateDiffPreviewRejectsFieldOverRuneLimit(t *testing.T) {
 	}
 }
 
+// TestValidateDiffPreviewPassesNoChange 验证`validateDiffPreview`在合法输入或兼容路径下的行为，防止同类回归。
 func TestValidateDiffPreviewPassesNoChange(t *testing.T) {
 	preview := &editor.DiffPreview{NoChange: true}
 	if err := validateDiffPreview(preview, nil); err != nil {
@@ -634,6 +669,7 @@ func TestValidateDiffPreviewPassesNoChange(t *testing.T) {
 	}
 }
 
+// TestValidateDiffPreviewRejectsMissingSectionOccurrence 验证`validateDiffPreview`在非法输入或失败路径下的行为，防止同类回归。
 func TestValidateDiffPreviewRejectsMissingSectionOccurrence(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
@@ -644,6 +680,7 @@ func TestValidateDiffPreviewRejectsMissingSectionOccurrence(t *testing.T) {
 	}
 }
 
+// TestValidateDiffPreviewPassesValid 验证`validateDiffPreview`在合法输入或兼容路径下的行为，防止同类回归。
 func TestValidateDiffPreviewPassesValid(t *testing.T) {
 	citations := []citation.Citation{{CitationID: "cite_1"}}
 	preview := &editor.DiffPreview{Sections: []editor.DiffSection{
@@ -656,12 +693,14 @@ func TestValidateDiffPreviewPassesValid(t *testing.T) {
 
 // --- 状态机转换测试（2.5）---
 
+// TestDraftingToCompletedAllowed 验证`draftingToCompletedAllowed`在特定边界条件下的行为，防止同类回归。
 func TestDraftingToCompletedAllowed(t *testing.T) {
 	if err := models.Transition(models.StatusDrafting, models.StatusCompleted); err != nil {
 		t.Fatalf("无需修改分支应允许 drafting -> completed：%v", err)
 	}
 }
 
+// TestDraftingToCompletedNotReachableFromAwaitingApproval 验证`draftingToCompletedNotReachableFromAwaitingApproval`在特定边界条件下的行为，防止同类回归。
 func TestDraftingToCompletedNotReachableFromAwaitingApproval(t *testing.T) {
 	if err := models.Transition(models.StatusAwaitingApproval, models.StatusCompleted); err == nil {
 		t.Fatal("awaiting_approval 不应直接转换为 completed")

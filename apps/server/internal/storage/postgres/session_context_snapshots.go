@@ -354,6 +354,7 @@ func (r *SessionContextSnapshotRepo) UpdateGroundingState(ctx context.Context, p
 	return err
 }
 
+// scanSessionContextSnapshot 把当前数据库行扫描成 `会话上下文快照`，统一查询结果到领域结构的映射。
 func scanSessionContextSnapshot(row pgx.Row) (SessionContextSnapshotRecord, error) {
 	var record SessionContextSnapshotRecord
 
@@ -387,6 +388,7 @@ func scanSessionContextSnapshot(row pgx.Row) (SessionContextSnapshotRecord, erro
 	return record, nil
 }
 
+// marshalSnapshotJSON 编码 `快照JSON`，统一对外或落库时的序列化格式。
 func marshalSnapshotJSON(value any, emptyFallback []byte) ([]byte, error) {
 	body, err := json.Marshal(value)
 	if err != nil {
@@ -399,6 +401,7 @@ func marshalSnapshotJSON(value any, emptyFallback []byte) ([]byte, error) {
 	return body, nil
 }
 
+// trimOptionalString 裁剪可选字符串并在为空时返回 nil，统一写库边界。
 func trimOptionalString(value *string) *string {
 	if value == nil {
 		return nil

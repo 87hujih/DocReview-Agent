@@ -84,6 +84,7 @@ func (w *Worker) Start(ctx context.Context, n int) {
 	}
 }
 
+// processPendingJobs 处理 `待处理Jobs`，把主流程中的分支和副作用收口在接收者内部。
 func (w *Worker) processPendingJobs(ctx context.Context) {
 	for {
 		job, err := w.jobRepo.ClaimNext(ctx)
@@ -103,6 +104,7 @@ func (w *Worker) processPendingJobs(ctx context.Context) {
 	}
 }
 
+// processJob 处理 `作业`，把主流程中的分支和副作用收口在接收者内部。
 func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 	prepared, err := w.executor.Prepare(ctx, job)
 	if err != nil {
@@ -134,6 +136,7 @@ func (w *Worker) processJob(ctx context.Context, job *postgres.ExecutionJob) {
 	w.syncTaskStatusSideEffectsByTaskID(ctx, job.TaskID, "completed")
 }
 
+// finalizeJobSuccess 收敛 `作业成功` 的最终状态，统一尾部写入和错误处理。
 func (w *Worker) finalizeJobSuccess(ctx context.Context, job *postgres.ExecutionJob, newVersionID string) error {
 	return w.jobRepo.FinalizeSuccess(ctx, job.ID, newVersionID, func(
 		ctx context.Context,
@@ -172,6 +175,7 @@ func (w *Worker) finalizeJobSuccess(ctx context.Context, job *postgres.Execution
 	})
 }
 
+// commitPreparedJob 提交 `Prepared作业`，把事务边界和落库顺序收口在单点。
 func (w *Worker) commitPreparedJob(
 	ctx context.Context,
 	job *postgres.ExecutionJob,
@@ -250,6 +254,7 @@ func (w *Worker) commitPreparedJob(
 	})
 }
 
+// finalizeJobFailure 收敛 `作业失败` 的最终状态，统一尾部写入和错误处理。
 func (w *Worker) finalizeJobFailure(ctx context.Context, job *postgres.ExecutionJob, errorMessage string, jobMessage string) error {
 	return w.jobRepo.FinalizeFailure(ctx, job.ID, errorMessage, func(
 		ctx context.Context,
@@ -289,6 +294,7 @@ func (w *Worker) finalizeJobFailure(ctx context.Context, job *postgres.Execution
 	})
 }
 
+// recordEventTx 记录 `事件事务`，统一事件和审计信息的写入位置。
 func (w *Worker) recordEventTx(ctx context.Context, tx pgx.Tx, input taskevents.RecordInput) error {
 	if w.eventSvc == nil {
 		return nil
@@ -298,6 +304,7 @@ func (w *Worker) recordEventTx(ctx context.Context, tx pgx.Tx, input taskevents.
 	return err
 }
 
+// recordJobEvent 记录 `作业事件`，统一事件和审计信息的写入位置。
 func (w *Worker) recordJobEvent(
 	ctx context.Context,
 	job *postgres.ExecutionJob,
@@ -324,10 +331,12 @@ func (w *Worker) recordJobEvent(
 	}
 }
 
+// stringPointer 返回字符串指针，简化构造可选文本字段时的样板代码。
 func stringPointer(value string) *string {
 	return &value
 }
 
+// dereferenceString 把字符串指针解引用为稳定文本，减少通知链路里的 nil 判断。
 func dereferenceString(value *string) string {
 	if value == nil {
 		return ""
@@ -336,6 +345,7 @@ func dereferenceString(value *string) string {
 	return *value
 }
 
+// syncTaskStatusSideEffectsByTaskID 同步 `按任务ID定位的任务状态SideEffects`，避免状态联动逻辑散落在多个调用方。
 func (w *Worker) syncTaskStatusSideEffectsByTaskID(ctx context.Context, taskID string, status string) {
 	if w.projector == nil && w.notifier == nil {
 		return
@@ -358,11 +368,13 @@ func (w *Worker) syncTaskStatusSideEffectsByTaskID(ctx context.Context, taskID s
 	w.syncTaskStatusSideEffects(projectionCtx, task, status)
 }
 
+// syncTaskStatusSideEffects 同步 `任务状态SideEffects`，避免状态联动逻辑散落在多个调用方。
 func (w *Worker) syncTaskStatusSideEffects(ctx context.Context, task *postgres.Task, status string) {
 	w.projectTaskStatus(ctx, task, status)
 	w.notifyTaskTerminalStatus(ctx, task, status)
 }
 
+// projectTaskStatus 把 `任务状态` 投影回后台作业状态，保持后续读取口径一致。
 func (w *Worker) projectTaskStatus(ctx context.Context, task *postgres.Task, status string) {
 	if w.projector == nil || task == nil {
 		return
@@ -373,6 +385,7 @@ func (w *Worker) projectTaskStatus(ctx context.Context, task *postgres.Task, sta
 	}
 }
 
+// notifyTaskTerminalStatus 通知 `任务终态状态`，把消息发送时机和格式收口在接收者内部。
 func (w *Worker) notifyTaskTerminalStatus(ctx context.Context, task *postgres.Task, status string) {
 	if w.notifier == nil || task == nil || !isTerminalTaskStatus(status) {
 		return
@@ -383,10 +396,12 @@ func (w *Worker) notifyTaskTerminalStatus(ctx context.Context, task *postgres.Ta
 	}
 }
 
+// isTerminalTaskStatus 判断任务状态是否已经进入终态，供通知和投影逻辑复用。
 func isTerminalTaskStatus(status string) bool {
 	return status == "completed" || status == "failed"
 }
 
+// projectionContext 归拢状态投影所需的任务、步骤和产物读取能力，避免不同调用方各自拼装依赖。
 func projectionContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		return context.WithTimeout(context.Background(), snapshotProjectionTimeout)

@@ -55,6 +55,7 @@ func (b *RetrievalQueryBuilder) Build(input RetrievalQueryInput) string {
 	return strings.Join(lines, "\n")
 }
 
+// shouldExpandRetrievalQuery 判断 `ExpandRetrieval查询` 是否值得进入扩展分支，避免策略条件散落。
 func shouldExpandRetrievalQuery(query string) bool {
 	compact := strings.Join(strings.Fields(strings.TrimSpace(query)), "")
 	if compact == "" {
@@ -73,6 +74,7 @@ func shouldExpandRetrievalQuery(query string) bool {
 	return false
 }
 
+// optionalStringValue 把 `StringValue` 归一化为可选值表示，统一 nil 和空值边界。
 func optionalStringValue(value *string) string {
 	if value == nil {
 		return ""

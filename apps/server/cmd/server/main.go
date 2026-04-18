@@ -211,6 +211,7 @@ func main() {
 	}
 }
 
+// projectPath 从 section 元数据里提取项目路径，供项目结构切块时复用。
 func projectPath(relative string) string {
 	if filepath.IsAbs(relative) {
 		return relative
@@ -224,6 +225,7 @@ func projectPath(relative string) string {
 	return filepath.Join(root, relative)
 }
 
+// findProjectRoot 在项目 section 树里定位顶层目录节点，作为生成项目级 chunk 的锚点。
 func findProjectRoot() string {
 	currentDir, err := os.Getwd()
 	if err != nil {

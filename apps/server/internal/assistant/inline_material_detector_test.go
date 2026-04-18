@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestDetectInlineMaterialRecognizesStructuredResumeText 验证`detectInlineMaterialRecognizesStructuredResumeText`在特定边界条件下的行为，防止同类回归。
 func TestDetectInlineMaterialRecognizesStructuredResumeText(t *testing.T) {
 	candidate := DetectInlineMaterial(strings.TrimSpace(`
 项目经历
@@ -26,6 +27,7 @@ func TestDetectInlineMaterialRecognizesStructuredResumeText(t *testing.T) {
 	}
 }
 
+// TestDetectInlineMaterialDoesNotTreatShortQuestionAsMaterial 验证`detectInlineMaterialDoesNotTreatShortQuestionAsMaterial`在特定边界条件下的行为，防止同类回归。
 func TestDetectInlineMaterialDoesNotTreatShortQuestionAsMaterial(t *testing.T) {
 	candidate := DetectInlineMaterial("这份简历哪里还需要优化？")
 	if candidate.HasMaterial {
@@ -33,6 +35,7 @@ func TestDetectInlineMaterialDoesNotTreatShortQuestionAsMaterial(t *testing.T) {
 	}
 }
 
+// TestDetectInlineMaterialSplitsTrailingExecutionSentenceFromBody 验证`detectInlineMaterialSplitsTrailingExecutionSentenceFromBody`在特定边界条件下的行为，防止同类回归。
 func TestDetectInlineMaterialSplitsTrailingExecutionSentenceFromBody(t *testing.T) {
 	candidate := DetectInlineMaterial(strings.TrimSpace(`
 项目经历

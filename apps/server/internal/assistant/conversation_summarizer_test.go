@@ -11,6 +11,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+// TestConversationSummarizerSkipsEmptyTranscript 验证`conversationSummarizer`在跳过或空操作路径下的行为，防止同类回归。
 func TestConversationSummarizerSkipsEmptyTranscript(t *testing.T) {
 	calls := 0
 	summarizer := newConversationSummarizerWithClient(fakeAssistantLLMClient{
@@ -32,6 +33,7 @@ func TestConversationSummarizerSkipsEmptyTranscript(t *testing.T) {
 	}
 }
 
+// TestConversationSummarizerBuildsSummaryFromOldSummaryAndTranscript 验证`conversationSummarizerBuildsSummaryFromOldSummaryAndTranscript`在特定边界条件下的行为，防止同类回归。
 func TestConversationSummarizerBuildsSummaryFromOldSummaryAndTranscript(t *testing.T) {
 	var captured []*schema.Message
 	summarizer := newConversationSummarizerWithClient(fakeAssistantLLMClient{
@@ -87,6 +89,7 @@ func TestConversationSummarizerBuildsSummaryFromOldSummaryAndTranscript(t *testi
 	}
 }
 
+// TestConversationSummarizerPreservesStableSnapshotContextWithoutDuplicatingIt 验证`conversationSummarizer`在状态保持路径下的行为，防止同类回归。
 func TestConversationSummarizerPreservesStableSnapshotContextWithoutDuplicatingIt(t *testing.T) {
 	var captured []*schema.Message
 	summarizer := newConversationSummarizerWithClient(fakeAssistantLLMClient{

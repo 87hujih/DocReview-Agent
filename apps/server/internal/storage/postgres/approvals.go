@@ -241,6 +241,7 @@ func (r *JobRepo) GetByApprovalID(ctx context.Context, approvalID string) (*Exec
 	return &job, nil
 }
 
+// getExecutionJobByIDForUpdateTx 在事务内按 ID 读取执行作业并加锁，供审批流更新时避免并发竞争。
 func getExecutionJobByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (*ExecutionJob, error) {
 	job, err := scanExecutionJob(tx.QueryRow(ctx, `
 		SELECT id, task_id, approval_id, base_version_id, status, error_message, new_version_id, started_at, completed_at, created_at
@@ -340,6 +341,7 @@ func (r *JobRepo) FinalizeFailure(
 	return r.finalize(ctx, jobID, "failed", &errorMessage, nil, models.StatusFailed, hook)
 }
 
+// scanApproval 把当前数据库行扫描成 `审批`，统一查询结果到领域结构的映射。
 func scanApproval(row pgx.Row) (Approval, error) {
 	var approval Approval
 
@@ -359,6 +361,7 @@ func scanApproval(row pgx.Row) (Approval, error) {
 	return approval, nil
 }
 
+// scanExecutionJob 把当前数据库行扫描成 `执行作业`，统一查询结果到领域结构的映射。
 func scanExecutionJob(row pgx.Row) (ExecutionJob, error) {
 	var job ExecutionJob
 
@@ -461,6 +464,7 @@ func CreateJobTx(ctx context.Context, tx pgx.Tx, taskID string, approvalID strin
 	return &job, nil
 }
 
+// finalize 收敛 `finalize` 的最终状态，统一尾部写入和错误处理。
 func (r *JobRepo) finalize(
 	ctx context.Context,
 	jobID string,

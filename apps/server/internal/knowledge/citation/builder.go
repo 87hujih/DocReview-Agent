@@ -16,12 +16,12 @@ type Window struct {
 
 // Citation 是检索后返回给客户端的引用对象。
 type Citation struct {
-	CitationID   string `json:"citation_id"`
-	ResourceID   string `json:"resource_id"`
-	SectionID    string `json:"section_id,omitempty"`
-	SectionType  string `json:"section_type,omitempty"`
-	SectionTitle string `json:"section_title"`
-	Snippet      string `json:"snippet"`
+	CitationID   string  `json:"citation_id"`
+	ResourceID   string  `json:"resource_id"`
+	SectionID    string  `json:"section_id,omitempty"`
+	SectionType  string  `json:"section_type,omitempty"`
+	SectionTitle string  `json:"section_title"`
+	Snippet      string  `json:"snippet"`
 	Window       *Window `json:"window,omitempty"`
 }
 
@@ -93,6 +93,7 @@ func truncateSnippet(content string, maxLength int) string {
 	return string(runes[:maxLength]) + "..."
 }
 
+// optionalChunkText 仅在窗口文本非空时返回对应字符串指针，避免把空窗口内容写进引用结果。
 func optionalChunkText(value *string) string {
 	if value == nil {
 		return ""
@@ -101,10 +102,12 @@ func optionalChunkText(value *string) string {
 	return strings.TrimSpace(*value)
 }
 
+// buildChunkWindow 根据命中的 chunk 和相邻 chunk 构造引用窗口文本，尽量保留回答所需的局部上下文。
 func buildChunkWindow(chunk postgres.ResourceChunk) *Window {
 	return buildChunkWindowRange([]postgres.ResourceChunk{chunk})
 }
 
+// buildChunkWindowRange 计算引用窗口覆盖的 chunk 索引范围，保证前后文扩展不越界。
 func buildChunkWindowRange(chunks []postgres.ResourceChunk) *Window {
 	if len(chunks) == 0 {
 		return nil

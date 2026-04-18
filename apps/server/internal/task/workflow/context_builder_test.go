@@ -7,6 +7,7 @@ import (
 	"agent_project/apps/server/internal/knowledge/citation"
 )
 
+// TestBuildFocusSectionPriority 验证`buildFocusSectionPriority`在特定边界条件下的行为，防止同类回归。
 func TestBuildFocusSectionPriority(t *testing.T) {
 	content := "第一章 总则\n总则内容\n\n第二章 考勤\n考勤规定内容\n\n第三章 薪酬\n薪酬计算方式"
 	focusSections := []string{"考勤"}
@@ -23,6 +24,7 @@ func TestBuildFocusSectionPriority(t *testing.T) {
 	}
 }
 
+// TestBuildCitationSnippetExtracted 验证`buildCitationSnippetExtracted`在特定边界条件下的行为，防止同类回归。
 func TestBuildCitationSnippetExtracted(t *testing.T) {
 	content := "导言\n一般描述\n\n核心条款\n数据分类规定\n\n附录\n参考文献"
 	focusSections := []string{}
@@ -38,6 +40,7 @@ func TestBuildCitationSnippetExtracted(t *testing.T) {
 	}
 }
 
+// TestBuildTrimmedRunesWhenOverBudget 验证`buildTrimmedRunesWhenOverBudget`在特定边界条件下的行为，防止同类回归。
 func TestBuildTrimmedRunesWhenOverBudget(t *testing.T) {
 	// 构造明显超出预算的文档
 	content := strings.Repeat("这是很长的一段文字内容。", 200) // 约 2400 个字符
@@ -56,6 +59,7 @@ func TestBuildTrimmedRunesWhenOverBudget(t *testing.T) {
 	}
 }
 
+// TestBuildFallbackToHeadWhenNoFocusOrCitations 验证`build`在回退路径下的行为，防止同类回归。
 func TestBuildFallbackToHeadWhenNoFocusOrCitations(t *testing.T) {
 	content := "第一段内容是文档开头\n\n第二段内容\n\n第三段内容"
 	maxRunes := 30 // 足够小，强制触发裁剪
@@ -67,6 +71,7 @@ func TestBuildFallbackToHeadWhenNoFocusOrCitations(t *testing.T) {
 	}
 }
 
+// TestBuildReturnsFullContentWhenUnderBudget 验证`build`在返回值分支下的行为，防止同类回归。
 func TestBuildReturnsFullContentWhenUnderBudget(t *testing.T) {
 	content := "短文档"
 	result := (ContextBuilder{}).Build(content, []string{"短"}, nil, 24000)

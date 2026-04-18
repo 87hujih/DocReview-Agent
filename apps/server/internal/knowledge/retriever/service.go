@@ -94,6 +94,7 @@ func (s *Service) SearchByResource(ctx context.Context, resourceID string, query
 	})
 }
 
+// searchGroundedByVersion 在检索中检索 `按版本定位的Grounded`，收口查询与过滤规则。
 func (s *Service) searchGroundedByVersion(ctx context.Context, versionID string, query string, limit int) ([]citation.Citation, bool, error) {
 	analysis := s.analyzer.Analyze(query)
 	if analysis.Intent == QueryIntentGeneralSearch {
@@ -141,6 +142,7 @@ func (s *Service) searchGroundedByVersion(ctx context.Context, versionID string,
 	}
 }
 
+// buildSectionDetailCitations 组装 `section详情引用`，统一接收者返回结果的结构形态。
 func (s *Service) buildSectionDetailCitations(ctx context.Context, versionID string, section postgres.ResourceSection, limit int) ([]citation.Citation, error) {
 	chunks, err := s.resourceRepo.ListChunksByVersion(ctx, versionID)
 	if err != nil {
@@ -161,6 +163,7 @@ func (s *Service) buildSectionDetailCitations(ctx context.Context, versionID str
 	return citations, nil
 }
 
+// buildAggregateCitations 组装 `Aggregate引用`，统一接收者返回结果的结构形态。
 func (s *Service) buildAggregateCitations(ctx context.Context, versionID string, sections []postgres.ResourceSection, field string, limit int) ([]citation.Citation, error) {
 	if limit <= 0 {
 		return []citation.Citation{}, nil
@@ -205,6 +208,7 @@ func (s *Service) buildAggregateCitations(ctx context.Context, versionID string,
 	return buildSectionAggregateCitations(sections, limit), nil
 }
 
+// search 在检索中检索 `搜索`，收口查询与过滤规则。
 func (s *Service) search(
 	ctx context.Context,
 	query string,
@@ -270,6 +274,7 @@ func (s *Service) queryVector(ctx context.Context, query string) (*pgvector.Vect
 	return &vector, nil
 }
 
+// mergeUniqueChunks 合并 `Uniquechunk`，避免多条路径各自维护相同聚合逻辑。
 func mergeUniqueChunks(groups ...[]postgres.ResourceChunk) []postgres.ResourceChunk {
 	seen := make(map[string]struct{})
 	merged := make([]postgres.ResourceChunk, 0)
@@ -288,6 +293,7 @@ func mergeUniqueChunks(groups ...[]postgres.ResourceChunk) []postgres.ResourceCh
 	return merged
 }
 
+// buildRerankerDocuments 组装 `Reranker文档`，统一解析结果在后续链路里的结构表达。
 func buildRerankerDocuments(chunks []postgres.ResourceChunk) []string {
 	documents := make([]string, 0, len(chunks))
 	for _, chunk := range chunks {
@@ -304,6 +310,7 @@ func buildRerankerDocuments(chunks []postgres.ResourceChunk) []string {
 	return documents
 }
 
+// rerankResultsToChunks 把 `rerankResults` 转换成 `chunk`，避免检索链路直接暴露内部模型。
 func rerankResultsToChunks(chunks []postgres.ResourceChunk, results []reranker.Result, limit int) []postgres.ResourceChunk {
 	if limit <= 0 || len(chunks) == 0 || len(results) == 0 {
 		return []postgres.ResourceChunk{}
@@ -329,6 +336,7 @@ func rerankResultsToChunks(chunks []postgres.ResourceChunk, results []reranker.R
 	return ranked
 }
 
+// filterSectionsByType 过滤 `按Type定位的section`，把筛选规则收口在单点。
 func filterSectionsByType(sections []postgres.ResourceSection, sectionType string) []postgres.ResourceSection {
 	trimmedType := strings.TrimSpace(sectionType)
 	if trimmedType == "" {
@@ -345,6 +353,7 @@ func filterSectionsByType(sections []postgres.ResourceSection, sectionType strin
 	return filtered
 }
 
+// resolveSectionByOrdinal 解析 `按序号定位的section`，确定后续处理目标。
 func resolveSectionByOrdinal(sections []postgres.ResourceSection, ordinal int) *postgres.ResourceSection {
 	if ordinal <= 0 {
 		return nil
@@ -359,6 +368,7 @@ func resolveSectionByOrdinal(sections []postgres.ResourceSection, ordinal int) *
 	return nil
 }
 
+// resolveSectionByEntity 解析 `按Entity定位的section`，确定后续处理目标。
 func resolveSectionByEntity(sections []postgres.ResourceSection, entityName string) *postgres.ResourceSection {
 	normalizedEntity := normalizeEntityToken(entityName)
 	if normalizedEntity == "" {
@@ -382,6 +392,7 @@ func resolveSectionByEntity(sections []postgres.ResourceSection, entityName stri
 	return &sections[bestIndex]
 }
 
+// sectionEntityMatchScore 计算 `sectionEntityMatch` 的评分，统一排序依据。
 func sectionEntityMatchScore(section postgres.ResourceSection, normalizedEntity string) int {
 	for _, candidate := range collectSectionEntityCandidates(section) {
 		normalizedCandidate := normalizeEntityToken(candidate)
@@ -396,6 +407,7 @@ func sectionEntityMatchScore(section postgres.ResourceSection, normalizedEntity 
 	return 0
 }
 
+// collectSectionEntityCandidates 遍历结果集收集 `sectionEntityCandidates`，把游标处理细节隔离在仓储层。
 func collectSectionEntityCandidates(section postgres.ResourceSection) []string {
 	candidates := []string{section.Title}
 	if section.CanonicalEntityName != nil {
@@ -411,6 +423,7 @@ func collectSectionEntityCandidates(section postgres.ResourceSection) []string {
 	return candidates
 }
 
+// normalizeEntityToken 归一化 `Entity标记`，避免后续流程重复处理边界输入。
 func normalizeEntityToken(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	replacer := strings.NewReplacer(
@@ -430,6 +443,7 @@ func normalizeEntityToken(value string) string {
 	return replacer.Replace(normalized)
 }
 
+// filterChunksBySection 过滤 `按section定位的chunk`，把筛选规则收口在单点。
 func filterChunksBySection(chunks []postgres.ResourceChunk, sectionID string) []postgres.ResourceChunk {
 	filtered := make([]postgres.ResourceChunk, 0)
 	for _, chunk := range chunks {
@@ -443,6 +457,7 @@ func filterChunksBySection(chunks []postgres.ResourceChunk, sectionID string) []
 	return filtered
 }
 
+// groupChunksByWindow 按窗口分组检索到的 chunk，供后续 section 聚合和引用窗口组装复用。
 func groupChunksByWindow(chunks []postgres.ResourceChunk) [][]postgres.ResourceChunk {
 	groupIndexes := make(map[string]int)
 	grouped := make([][]postgres.ResourceChunk, 0)
@@ -472,6 +487,7 @@ func groupChunksByWindow(chunks []postgres.ResourceChunk) [][]postgres.ResourceC
 	return grouped
 }
 
+// compareChunkOrder 比较 `chunkOrder`，统一排序和优先级判定规则。
 func compareChunkOrder(left postgres.ResourceChunk, right postgres.ResourceChunk) int {
 	leftOrder := optionalIntValue(left.OrderInSection)
 	rightOrder := optionalIntValue(right.OrderInSection)
@@ -482,6 +498,7 @@ func compareChunkOrder(left postgres.ResourceChunk, right postgres.ResourceChunk
 	return cmpInts(left.ChunkIndex, right.ChunkIndex)
 }
 
+// buildSectionListCitations 组装 `sectionList引用`，保持前端和模型看到一致的证据窗口。
 func buildSectionListCitations(sections []postgres.ResourceSection, limit int) []citation.Citation {
 	if limit <= 0 {
 		return []citation.Citation{}
@@ -516,6 +533,7 @@ func buildSectionListCitations(sections []postgres.ResourceSection, limit int) [
 	return output
 }
 
+// buildSectionAggregateCitations 组装 `sectionAggregate引用`，保持前端和模型看到一致的证据窗口。
 func buildSectionAggregateCitations(sections []postgres.ResourceSection, limit int) []citation.Citation {
 	if limit <= 0 {
 		return []citation.Citation{}
@@ -547,6 +565,7 @@ func buildSectionAggregateCitations(sections []postgres.ResourceSection, limit i
 	return output
 }
 
+// extractSectionTechStack 从现有内容里提取 `section技术栈`，避免调用方重复解析同一份数据。
 func extractSectionTechStack(metadataJSON []byte) []string {
 	if len(metadataJSON) == 0 {
 		return nil
@@ -582,6 +601,7 @@ func extractSectionTechStack(metadataJSON []byte) []string {
 	return techStack
 }
 
+// optionalChunkValue 把 `chunkValue` 归一化为可选值表示，统一 nil 和空值边界。
 func optionalChunkValue(value *string) string {
 	if value == nil {
 		return ""
@@ -590,6 +610,7 @@ func optionalChunkValue(value *string) string {
 	return strings.TrimSpace(*value)
 }
 
+// optionalIntValue 把 `IntValue` 归一化为可选值表示，统一 nil 和空值边界。
 func optionalIntValue(value *int) int {
 	if value == nil {
 		return 0
@@ -598,6 +619,7 @@ func optionalIntValue(value *int) int {
 	return *value
 }
 
+// truncateRetrieverSnippet 截断 `检索器片段`，保证输出满足长度预算。
 func truncateRetrieverSnippet(content string, maxLength int) string {
 	runes := []rune(strings.TrimSpace(content))
 	if len(runes) <= maxLength {
@@ -607,6 +629,7 @@ func truncateRetrieverSnippet(content string, maxLength int) string {
 	return string(runes[:maxLength]) + "..."
 }
 
+// cmpInts 比较 `Ints`，统一排序和优先级判定规则。
 func cmpInts(left int, right int) int {
 	switch {
 	case left < right:

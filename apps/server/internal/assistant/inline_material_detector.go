@@ -4,12 +4,14 @@ import "strings"
 
 const inlineMaterialSyntheticName = "对话粘贴正文.md"
 
+// InlineMaterialCandidate 保存判定内联材料所需的正文、指令和摘要片段，供会话入口决定是否转入资源导入链路。
 type InlineMaterialCandidate struct {
 	Body          string
 	HasMaterial   bool
 	SyntheticName string
 }
 
+// DetectInlineMaterial 从用户输入里识别可直接导入为会话资源的结构化正文，并在尾部夹带执行指令时先把指令句剥离出来。
 func DetectInlineMaterial(content string) InlineMaterialCandidate {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
@@ -39,6 +41,7 @@ func DetectInlineMaterial(content string) InlineMaterialCandidate {
 	}
 }
 
+// looksLikeInlineMaterial 用轻量启发式区分“多行材料”与“普通提问”，避免把短问题误判成待导入正文。
 func looksLikeInlineMaterial(lines []string, body string) bool {
 	if len(lines) < 2 || strings.TrimSpace(body) == "" {
 		return false
@@ -66,6 +69,7 @@ func looksLikeInlineMaterial(lines []string, body string) bool {
 	return structuredLines >= 2
 }
 
+// nonEmptyLines 按行裁剪空白并过滤空行，为后续正文结构识别提供稳定输入。
 func nonEmptyLines(content string) []string {
 	rawLines := strings.Split(content, "\n")
 	lines := make([]string, 0, len(rawLines))
@@ -80,6 +84,7 @@ func nonEmptyLines(content string) []string {
 	return lines
 }
 
+// utf8RuneLen 按 rune 统计裁剪后文本长度，避免中文被按字节数错误放大。
 func utf8RuneLen(value string) int {
 	return len([]rune(strings.TrimSpace(value)))
 }

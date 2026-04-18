@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TestIsRetryable 验证`isRetryable`在特定边界条件下的行为，防止同类回归。
 func TestIsRetryable(t *testing.T) {
 	cases := []struct {
 		name string
@@ -37,6 +38,7 @@ func TestIsRetryable(t *testing.T) {
 	}
 }
 
+// TestCallWithRetrySuccessOnFirstAttempt 验证`callWithRetrySuccessOnFirstAttempt`在特定边界条件下的行为，防止同类回归。
 func TestCallWithRetrySuccessOnFirstAttempt(t *testing.T) {
 	calls := 0
 	err := CallWithRetry(context.Background(), Config{RetryMax: 2, BackoffMS: 10}, func() error {
@@ -51,6 +53,7 @@ func TestCallWithRetrySuccessOnFirstAttempt(t *testing.T) {
 	}
 }
 
+// TestCallWithRetryExhaustsMaxRetries 验证`callWithRetryExhaustsMaxRetries`在特定边界条件下的行为，防止同类回归。
 func TestCallWithRetryExhaustsMaxRetries(t *testing.T) {
 	calls := 0
 	retryableErr := fmt.Errorf("upstream error: 503 Service Unavailable")
@@ -66,6 +69,7 @@ func TestCallWithRetryExhaustsMaxRetries(t *testing.T) {
 	}
 }
 
+// TestCallWithRetryStopsOnNonRetryableError 验证`callWithRetry`在流程控制路径下的行为，防止同类回归。
 func TestCallWithRetryStopsOnNonRetryableError(t *testing.T) {
 	calls := 0
 	nonRetryableErr := errors.New("invalid character 'x' looking for beginning of value")
@@ -81,6 +85,7 @@ func TestCallWithRetryStopsOnNonRetryableError(t *testing.T) {
 	}
 }
 
+// TestCallWithRetrySucceedsAfterRetry 验证`callWithRetry`在成功路径下的行为，防止同类回归。
 func TestCallWithRetrySucceedsAfterRetry(t *testing.T) {
 	calls := 0
 	err := CallWithRetry(context.Background(), Config{RetryMax: 2, BackoffMS: 1}, func() error {
@@ -98,6 +103,7 @@ func TestCallWithRetrySucceedsAfterRetry(t *testing.T) {
 	}
 }
 
+// TestCallWithRetryRespectsContextCancellation 验证`callWithRetry`在约束校验路径下的行为，防止同类回归。
 func TestCallWithRetryRespectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
@@ -116,6 +122,7 @@ func TestCallWithRetryRespectsContextCancellation(t *testing.T) {
 	}
 }
 
+// TestCallWithRetryInvokesOnRetryCallback 验证`callWithRetry`在流程控制路径下的行为，防止同类回归。
 func TestCallWithRetryInvokesOnRetryCallback(t *testing.T) {
 	var retryAttempts []int
 	var retryBackoffs []time.Duration
@@ -141,6 +148,7 @@ func TestCallWithRetryInvokesOnRetryCallback(t *testing.T) {
 	}
 }
 
+// TestCallWithRetryZeroRetryMax 验证`callWithRetryZeroRetryMax`在特定边界条件下的行为，防止同类回归。
 func TestCallWithRetryZeroRetryMax(t *testing.T) {
 	calls := 0
 	err := CallWithRetry(context.Background(), Config{RetryMax: 0, BackoffMS: 10}, func() error {

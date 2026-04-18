@@ -9,6 +9,7 @@ import (
 	"strings"
 )
 
+// tikaParser 承载tika解析器相关状态，明确文档解析链路中的数据边界。
 type tikaParser struct {
 	baseURL string
 	client  *http.Client

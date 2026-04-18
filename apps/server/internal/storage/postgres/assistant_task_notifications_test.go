@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestAssistantTaskNotificationsRepoClaimUpdateAndLookup 验证`assistantTaskNotificationsRepoClaimUpdateAndLookup`在特定边界条件下的行为，防止同类回归。
 func TestAssistantTaskNotificationsRepoClaimUpdateAndLookup(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -65,6 +66,7 @@ func TestAssistantTaskNotificationsRepoClaimUpdateAndLookup(t *testing.T) {
 	}
 }
 
+// TestAssistantTaskNotificationsRepoAppendTaskStatusMessageIsIdempotent 验证`assistantTaskNotificationsRepoAppendTaskStatusMessageIsIdempotent`在特定边界条件下的行为，防止同类回归。
 func TestAssistantTaskNotificationsRepoAppendTaskStatusMessageIsIdempotent(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -135,6 +137,7 @@ func TestAssistantTaskNotificationsRepoAppendTaskStatusMessageIsIdempotent(t *te
 	}
 }
 
+// seedAssistantTaskNotificationContext 为测试场景补齐 `助手任务通知上下文` 所需数据，减少重复造数。
 func seedAssistantTaskNotificationContext(
 	t *testing.T,
 	pool *pgxpool.Pool,

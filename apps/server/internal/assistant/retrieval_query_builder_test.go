@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestRetrievalQueryBuilderKeepsExplicitQueryUntouched 验证`retrievalQueryBuilder`在状态保持路径下的行为，防止同类回归。
 func TestRetrievalQueryBuilderKeepsExplicitQueryUntouched(t *testing.T) {
 	builder := RetrievalQueryBuilder{}
 	summary := "用户正在整理学生手册第二章考勤规则。"
@@ -22,6 +23,7 @@ func TestRetrievalQueryBuilderKeepsExplicitQueryUntouched(t *testing.T) {
 	}
 }
 
+// TestRetrievalQueryBuilderExpandsShortAnaphoraQuery 验证`retrievalQueryBuilderExpandsShortAnaphoraQuery`在特定边界条件下的行为，防止同类回归。
 func TestRetrievalQueryBuilderExpandsShortAnaphoraQuery(t *testing.T) {
 	builder := RetrievalQueryBuilder{}
 	summary := "用户正在优化学生手册第二章考勤规则，希望保留按天登记和节假日例外。"
@@ -42,6 +44,7 @@ func TestRetrievalQueryBuilderExpandsShortAnaphoraQuery(t *testing.T) {
 	}
 }
 
+// TestRetrievalQueryBuilderIncludesPendingTaskSuggestionWhenExpanding 验证`retrievalQueryBuilder`在流程控制路径下的行为，防止同类回归。
 func TestRetrievalQueryBuilderIncludesPendingTaskSuggestionWhenExpanding(t *testing.T) {
 	builder := RetrievalQueryBuilder{}
 
@@ -57,6 +60,7 @@ func TestRetrievalQueryBuilderIncludesPendingTaskSuggestionWhenExpanding(t *test
 	}
 }
 
+// TestRetrievalQueryBuilderKeepsResolvedTargetUntouched 验证`retrievalQueryBuilder`在状态保持路径下的行为，防止同类回归。
 func TestRetrievalQueryBuilderKeepsResolvedTargetUntouched(t *testing.T) {
 	builder := RetrievalQueryBuilder{}
 	summary := "用户刚刚列出了两个项目。"

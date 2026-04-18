@@ -6,6 +6,7 @@ import (
 	"agent_project/apps/server/internal/knowledge/citation"
 )
 
+// TestEvidenceGateRejectsOrdinalQuestionWithoutConcreteSection 验证`evidenceGate`在非法输入或失败路径下的行为，防止同类回归。
 func TestEvidenceGateRejectsOrdinalQuestionWithoutConcreteSection(t *testing.T) {
 	ok, reason := EvaluateEvidenceQuality(EvidenceEvaluationInput{
 		QueryIntent: "detail_by_ordinal",
@@ -21,6 +22,7 @@ func TestEvidenceGateRejectsOrdinalQuestionWithoutConcreteSection(t *testing.T) 
 	}
 }
 
+// TestEvidenceGateRejectsHeadingOnlyCitation 验证`evidenceGate`在非法输入或失败路径下的行为，防止同类回归。
 func TestEvidenceGateRejectsHeadingOnlyCitation(t *testing.T) {
 	ok, reason := EvaluateEvidenceQuality(EvidenceEvaluationInput{
 		QueryIntent: "detail_by_entity",
@@ -46,6 +48,7 @@ func TestEvidenceGateRejectsHeadingOnlyCitation(t *testing.T) {
 	}
 }
 
+// TestEvidenceGateAcceptsConcreteSectionEvidence 验证`evidenceGate`在合法输入或兼容路径下的行为，防止同类回归。
 func TestEvidenceGateAcceptsConcreteSectionEvidence(t *testing.T) {
 	ok, reason := EvaluateEvidenceQuality(EvidenceEvaluationInput{
 		QueryIntent: "detail_by_entity",

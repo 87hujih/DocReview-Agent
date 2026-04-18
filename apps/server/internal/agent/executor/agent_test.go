@@ -13,6 +13,7 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// TestApplySectionReplacements 验证`applySectionReplacements`在特定边界条件下的行为，防止同类回归。
 func TestApplySectionReplacements(t *testing.T) {
 	content := strings.Join([]string{
 		"# 文档标题",
@@ -49,6 +50,7 @@ func TestApplySectionReplacements(t *testing.T) {
 	}
 }
 
+// TestExecuteReindexesNewVersion 验证`executeReindexesNewVersion`在特定边界条件下的行为，防止同类回归。
 func TestExecuteReindexesNewVersion(t *testing.T) {
 	preview := editor.DiffPreview{
 		Sections: []editor.DiffSection{
@@ -135,6 +137,7 @@ func TestExecuteReindexesNewVersion(t *testing.T) {
 	}
 }
 
+// TestExecuteReturnsIndexerError 验证`execute`在返回值分支下的行为，防止同类回归。
 func TestExecuteReturnsIndexerError(t *testing.T) {
 	preview := editor.DiffPreview{
 		Sections: []editor.DiffSection{
@@ -198,6 +201,7 @@ func TestExecuteReturnsIndexerError(t *testing.T) {
 	}
 }
 
+// TestPrepareUsesJobBaseVersionInsteadOfCurrentVersion 验证`prepare`在依赖选择路径下的行为，防止同类回归。
 func TestPrepareUsesJobBaseVersionInsteadOfCurrentVersion(t *testing.T) {
 	previewBytes := mustMarshalPreview(t, editor.DiffPreview{
 		Sections: []editor.DiffSection{
@@ -260,6 +264,7 @@ func TestPrepareUsesJobBaseVersionInsteadOfCurrentVersion(t *testing.T) {
 	}
 }
 
+// TestPrepareRejectsLegacyJobWithoutBaseVersion 验证`prepare`在非法输入或失败路径下的行为，防止同类回归。
 func TestPrepareRejectsLegacyJobWithoutBaseVersion(t *testing.T) {
 	exec := New(fakeTaskRepo{}, &fakeResourceRepo{}, &fakeVersionIndexer{})
 
@@ -270,6 +275,7 @@ func TestPrepareRejectsLegacyJobWithoutBaseVersion(t *testing.T) {
 	}
 }
 
+// TestPrepareRejectsOriginalMismatch 验证`prepare`在非法输入或失败路径下的行为，防止同类回归。
 func TestPrepareRejectsOriginalMismatch(t *testing.T) {
 	previewBytes := mustMarshalPreview(t, editor.DiffPreview{
 		Sections: []editor.DiffSection{
@@ -307,6 +313,7 @@ func TestPrepareRejectsOriginalMismatch(t *testing.T) {
 	}
 }
 
+// TestPrepareSupportsLegacyPreviewWithoutOccurrenceWhenTitleUnique 验证`prepare`在合法输入或兼容路径下的行为，防止同类回归。
 func TestPrepareSupportsLegacyPreviewWithoutOccurrenceWhenTitleUnique(t *testing.T) {
 	previewBytes := mustMarshalPreview(t, editor.DiffPreview{
 		Sections: []editor.DiffSection{
@@ -347,6 +354,7 @@ func TestPrepareSupportsLegacyPreviewWithoutOccurrenceWhenTitleUnique(t *testing
 	}
 }
 
+// TestPrepareRejectsLegacyPreviewWithoutOccurrenceWhenTitleDuplicated 验证`prepare`在非法输入或失败路径下的行为，防止同类回归。
 func TestPrepareRejectsLegacyPreviewWithoutOccurrenceWhenTitleDuplicated(t *testing.T) {
 	previewBytes := mustMarshalPreview(t, editor.DiffPreview{
 		Sections: []editor.DiffSection{
@@ -385,6 +393,7 @@ func TestPrepareRejectsLegacyPreviewWithoutOccurrenceWhenTitleDuplicated(t *test
 	}
 }
 
+// TestPrepareUsesWholeDocumentFallback 验证`prepare`在依赖选择路径下的行为，防止同类回归。
 func TestPrepareUsesWholeDocumentFallback(t *testing.T) {
 	original := "这是没有二级标题的正文。"
 	previewBytes := mustMarshalPreview(t, editor.DiffPreview{
@@ -427,19 +436,23 @@ func TestPrepareUsesWholeDocumentFallback(t *testing.T) {
 	}
 }
 
+// fakeTaskRepo 作为任务仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeTaskRepo struct {
 	artifacts []postgres.TaskArtifact
 	task      *postgres.Task
 }
 
+// GetArtifacts 实现测试替身需要的 `GetArtifacts` 接口方法，为用例分支提供可控返回。
 func (r fakeTaskRepo) GetArtifacts(context.Context, string) ([]postgres.TaskArtifact, error) {
 	return r.artifacts, nil
 }
 
+// GetByID 实现测试替身需要的 `GetByID` 接口方法，为用例分支提供可控返回。
 func (r fakeTaskRepo) GetByID(context.Context, string) (*postgres.Task, error) {
 	return r.task, nil
 }
 
+// createVersionCall 记录创建版本的调用参数，便于测试断言副作用。
 type createVersionCall struct {
 	resourceID    string
 	versionNumber int
@@ -447,6 +460,7 @@ type createVersionCall struct {
 	source        string
 }
 
+// fakeResourceRepo 作为资源仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeResourceRepo struct {
 	resource           *postgres.Resource
 	currentVersion     *postgres.ResourceVersion
@@ -458,18 +472,22 @@ type fakeResourceRepo struct {
 	versionByIDErr     error
 }
 
+// GetByID 实现测试替身需要的 `GetByID` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceRepo) GetByID(context.Context, string) (*postgres.Resource, error) {
 	return r.resource, nil
 }
 
+// GetCurrentVersion 实现测试替身需要的 `GetCurrentVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceRepo) GetCurrentVersion(context.Context, string) (*postgres.ResourceVersion, error) {
 	return r.currentVersion, r.currentVersionErr
 }
 
+// GetVersionByID 实现测试替身需要的 `GetVersionByID` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceRepo) GetVersionByID(context.Context, string) (*postgres.ResourceVersion, error) {
 	return r.versionByID, r.versionByIDErr
 }
 
+// CreateVersion 实现测试替身需要的 `CreateVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceRepo) CreateVersion(_ context.Context, resourceID string, versionNumber int, content string, source string) (*postgres.ResourceVersion, error) {
 	r.createVersionCalls = append(r.createVersionCalls, createVersionCall{
 		resourceID:    resourceID,
@@ -496,6 +514,7 @@ func (r *fakeResourceRepo) CreateVersion(_ context.Context, resourceID string, v
 	}, nil
 }
 
+// fakeVersionIndexer 作为版本索引器的测试替身，用于在用例里提供可控的依赖行为。
 type fakeVersionIndexer struct {
 	calls          int
 	buildCalls     int
@@ -505,12 +524,14 @@ type fakeVersionIndexer struct {
 	preparedChunks []postgres.ResourceChunkInput
 }
 
+// ReindexVersion 实现测试替身需要的 `ReindexVersion` 接口方法，为用例分支提供可控返回。
 func (f *fakeVersionIndexer) ReindexVersion(_ context.Context, input indexer.Input) error {
 	f.calls++
 	f.lastInput = input
 	return f.err
 }
 
+// BuildVersionChunks 实现测试替身需要的 `BuildVersionChunks` 接口方法，为用例分支提供可控返回。
 func (f *fakeVersionIndexer) BuildVersionChunks(_ context.Context, input indexer.Input) ([]postgres.ResourceChunkInput, error) {
 	f.buildCalls++
 	f.lastInput = input
@@ -520,6 +541,7 @@ func (f *fakeVersionIndexer) BuildVersionChunks(_ context.Context, input indexer
 	return append([]postgres.ResourceChunkInput(nil), f.preparedChunks...), nil
 }
 
+// mustMarshalPreview 在测试里强制构造 `Marshal预览`，失败时立即终止当前用例。
 func mustMarshalPreview(t *testing.T, preview editor.DiffPreview) []byte {
 	t.Helper()
 
@@ -530,6 +552,7 @@ func mustMarshalPreview(t *testing.T, preview editor.DiffPreview) []byte {
 	return previewBytes
 }
 
+// stringPtr 返回字符串指针，简化测试和构造函数里的可选字段赋值。
 func stringPtr(value string) *string {
 	return &value
 }

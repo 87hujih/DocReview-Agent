@@ -14,6 +14,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
+// TestListApprovalsHandler 验证`listApprovalsHandler`在特定边界条件下的行为，防止同类回归。
 func TestListApprovalsHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -57,6 +58,7 @@ func TestListApprovalsHandler(t *testing.T) {
 	}
 }
 
+// TestGetApprovalHandler 验证`getApprovalHandler`在特定边界条件下的行为，防止同类回归。
 func TestGetApprovalHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -104,6 +106,7 @@ func TestGetApprovalHandler(t *testing.T) {
 	}
 }
 
+// TestGetApprovalHandlerNotFound 验证`getApprovalHandlerNotFound`在特定边界条件下的行为，防止同类回归。
 func TestGetApprovalHandlerNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	taskRepo := postgres.NewTaskRepo(pool)
@@ -120,6 +123,7 @@ func TestGetApprovalHandlerNotFound(t *testing.T) {
 	}
 }
 
+// TestGetJobHandler 验证`getJobHandler`在特定边界条件下的行为，防止同类回归。
 func TestGetJobHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -171,6 +175,7 @@ func TestGetJobHandler(t *testing.T) {
 	}
 }
 
+// TestGetJobHandlerNotFound 验证`getJobHandlerNotFound`在特定边界条件下的行为，防止同类回归。
 func TestGetJobHandlerNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	taskRepo := postgres.NewTaskRepo(pool)
@@ -187,6 +192,7 @@ func TestGetJobHandlerNotFound(t *testing.T) {
 	}
 }
 
+// TestApproveApprovalHandler 验证`approveApprovalHandler`在特定边界条件下的行为，防止同类回归。
 func TestApproveApprovalHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -234,6 +240,7 @@ func TestApproveApprovalHandler(t *testing.T) {
 	}
 }
 
+// TestRejectApprovalHandler 验证`rejectApprovalHandler`在特定边界条件下的行为，防止同类回归。
 func TestRejectApprovalHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -293,6 +300,7 @@ func TestRejectApprovalHandler(t *testing.T) {
 	}
 }
 
+// TestRejectApprovalHandlerMissingReason 验证`rejectApprovalHandlerMissingReason`在特定边界条件下的行为，防止同类回归。
 func TestRejectApprovalHandlerMissingReason(t *testing.T) {
 	handler := NewApprovalHandler(nil)
 	engine := server.New()
@@ -314,6 +322,7 @@ func TestRejectApprovalHandlerMissingReason(t *testing.T) {
 	}
 }
 
+// TestGetApprovalByInvalidUUID 验证`getApprovalByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestGetApprovalByInvalidUUID(t *testing.T) {
 	handler := NewApprovalHandler(nil)
 	engine := server.New()
@@ -326,6 +335,7 @@ func TestGetApprovalByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestApproveByInvalidUUID 验证`approveByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestApproveByInvalidUUID(t *testing.T) {
 	handler := NewApprovalHandler(nil)
 	engine := server.New()
@@ -338,6 +348,7 @@ func TestApproveByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestRejectByInvalidUUID 验证`rejectByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestRejectByInvalidUUID(t *testing.T) {
 	handler := NewApprovalHandler(nil)
 	engine := server.New()
@@ -357,6 +368,7 @@ func TestRejectByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestGetJobByInvalidUUID 验证`getJobByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestGetJobByInvalidUUID(t *testing.T) {
 	handler := NewApprovalHandler(nil)
 	engine := server.New()
@@ -369,6 +381,7 @@ func TestGetJobByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestApproveApprovalNotFound 验证`approveApprovalNotFound`在特定边界条件下的行为，防止同类回归。
 func TestApproveApprovalNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	taskRepo := postgres.NewTaskRepo(pool)

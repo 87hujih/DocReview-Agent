@@ -2,6 +2,7 @@ package postgres
 
 import "testing"
 
+// TestUploadedFileRepoCreateAndGetByID 验证`uploadedFileRepoCreateAndGetByID`在特定边界条件下的行为，防止同类回归。
 func TestUploadedFileRepoCreateAndGetByID(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -53,6 +54,7 @@ func TestUploadedFileRepoCreateAndGetByID(t *testing.T) {
 	}
 }
 
+// TestUploadedFileRepoUpdateResourceID 验证`uploadedFileRepoUpdateResourceID`在特定边界条件下的行为，防止同类回归。
 func TestUploadedFileRepoUpdateResourceID(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)

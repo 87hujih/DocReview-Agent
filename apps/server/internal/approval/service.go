@@ -266,6 +266,7 @@ func (s *Service) Reject(ctx context.Context, approvalID string, reason string) 
 	return updatedApproval, nil
 }
 
+// projectTaskStatus 把 `任务状态` 投影回审批状态，保持后续读取口径一致。
 func (s *Service) projectTaskStatus(ctx context.Context, task *postgres.Task, status string) {
 	if s.projector == nil || task == nil {
 		return
@@ -279,11 +280,13 @@ func (s *Service) projectTaskStatus(ctx context.Context, task *postgres.Task, st
 	}
 }
 
+// syncTaskStatusSideEffects 同步 `任务状态SideEffects`，避免状态联动逻辑散落在多个调用方。
 func (s *Service) syncTaskStatusSideEffects(ctx context.Context, task *postgres.Task, status string) {
 	s.projectTaskStatus(ctx, task, status)
 	s.notifyTaskTerminalStatus(ctx, task, status)
 }
 
+// notifyTaskTerminalStatus 通知 `任务终态状态`，把消息发送时机和格式收口在接收者内部。
 func (s *Service) notifyTaskTerminalStatus(ctx context.Context, task *postgres.Task, status string) {
 	if s.notifier == nil || task == nil || !isTerminalTaskStatus(status) {
 		return
@@ -297,10 +300,12 @@ func (s *Service) notifyTaskTerminalStatus(ctx context.Context, task *postgres.T
 	}
 }
 
+// isTerminalTaskStatus 判断任务状态是否已经进入终态，供通知和投影逻辑复用。
 func isTerminalTaskStatus(status string) bool {
 	return status == models.StatusCompleted || status == models.StatusFailed
 }
 
+// projectionContext 归拢状态投影所需的任务、步骤和产物读取能力，避免不同调用方各自拼装依赖。
 func projectionContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		return context.WithTimeout(context.Background(), snapshotProjectionTimeout)
@@ -309,6 +314,7 @@ func projectionContext(parent context.Context) (context.Context, context.CancelF
 	return context.WithTimeout(context.WithoutCancel(parent), snapshotProjectionTimeout)
 }
 
+// loadPendingApprovalTask 加载 `待处理审批任务`，为后续审批流程准备输入。
 func (s *Service) loadPendingApprovalTask(ctx context.Context, approvalID string, targetStatus string) (*postgres.Approval, *postgres.Task, error) {
 	approvalRecord, err := s.approvalRepo.GetByID(ctx, approvalID)
 	if err != nil {
@@ -336,6 +342,7 @@ func (s *Service) loadPendingApprovalTask(ctx context.Context, approvalID string
 	return approvalRecord, task, nil
 }
 
+// loadPendingApprovalTaskTx 加载 `待处理审批任务事务`，为后续审批流程准备输入。
 func (s *Service) loadPendingApprovalTaskTx(ctx context.Context, tx pgx.Tx, approvalID string, targetStatus string) (*postgres.Approval, *postgres.Task, error) {
 	approvalRecord, err := postgres.GetApprovalByIDForUpdateTx(ctx, tx, approvalID)
 	if err != nil {
@@ -363,6 +370,7 @@ func (s *Service) loadPendingApprovalTaskTx(ctx context.Context, tx pgx.Tx, appr
 	return approvalRecord, task, nil
 }
 
+// enqueueJob 把 `作业` 放入后续处理队列，统一入队前的边界检查。
 func (s *Service) enqueueJob() {
 	if s.jobCh == nil {
 		return
@@ -375,6 +383,7 @@ func (s *Service) enqueueJob() {
 	}
 }
 
+// recordEvent 记录 `事件`，统一事件和审计信息的写入位置。
 func (s *Service) recordEvent(ctx context.Context, input taskevents.RecordInput) {
 	if s.eventService == nil {
 		return
@@ -385,6 +394,7 @@ func (s *Service) recordEvent(ctx context.Context, input taskevents.RecordInput)
 	}
 }
 
+// recordEventTx 记录 `事件事务`，统一事件和审计信息的写入位置。
 func (s *Service) recordEventTx(ctx context.Context, tx pgx.Tx, input taskevents.RecordInput) error {
 	if s.eventService == nil {
 		return nil
@@ -394,6 +404,7 @@ func (s *Service) recordEventTx(ctx context.Context, tx pgx.Tx, input taskevents
 	return err
 }
 
+// stringPointer 返回字符串指针，简化构造可选文本字段时的样板代码。
 func stringPointer(value string) *string {
 	return &value
 }
