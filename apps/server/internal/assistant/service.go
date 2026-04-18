@@ -69,12 +69,6 @@ type summarySnapshotRepository interface {
 }
 
 type replyContextLoader interface {
-	LoadBaseContext(
-		ctx context.Context,
-		sessionID string,
-		history []postgres.AssistantMessage,
-		currentMessage string,
-	) (*ReplyContext, error)
 	LoadForReply(
 		ctx context.Context,
 		sessionID string,
@@ -105,19 +99,18 @@ type ServiceOption func(*Service)
 
 // Service 负责会话消息流、文件导入和任务确认。
 type Service struct {
-	importer         documentImporter
-	repo             sessionRepository
-	retriever        resourceCitationRetriever
-	responder        chatResponder
-	tasks            taskCreator
-	summarizer       ConversationSummarizer
-	fileStore        uploadedFileStore
-	uploadedFiles    uploadedFileRepository
-	contextLoader    replyContextLoader
-	activeFileReader activeFileResourceReader
-	projector        sessionContextProjector
-	summaryRepo      summarySnapshotRepository
-	asyncRunner      func(task func())
+	importer      documentImporter
+	repo          sessionRepository
+	retriever     resourceCitationRetriever
+	responder     chatResponder
+	tasks         taskCreator
+	summarizer    ConversationSummarizer
+	fileStore     uploadedFileStore
+	uploadedFiles uploadedFileRepository
+	contextLoader replyContextLoader
+	projector     sessionContextProjector
+	summaryRepo   summarySnapshotRepository
+	asyncRunner   func(task func())
 }
 
 // NewService 构造助手领域服务。
@@ -165,13 +158,6 @@ func WithUploadedFileStorage(store uploadedFileStore, repo uploadedFileRepositor
 func WithReplyContextLoader(loader replyContextLoader) ServiceOption {
 	return func(service *Service) {
 		service.contextLoader = loader
-	}
-}
-
-// WithActiveFileResourceReader 为 assistant service 注入活跃文件阅读所需的资源读取器。
-func WithActiveFileResourceReader(reader activeFileResourceReader) ServiceOption {
-	return func(service *Service) {
-		service.activeFileReader = reader
 	}
 }
 
@@ -592,61 +578,22 @@ func (s *Service) buildReplyInputs(
 	if err != nil {
 		return nil, nil, err
 	}
+	if s.responder == nil {
+		return nil, nil, errors.New("助手对话模型未配置")
+	}
 
 	replyHistory := history
 	if prepared != nil && len(prepared.History) > 0 {
 		replyHistory = prepared.History
 	}
 
-	readIntent := ClassifyReadIntent(content)
-	deterministicInputs, replyContext, handled, err := s.buildDeterministicAssistantInputs(ctx, sessionID, replyHistory, content, readIntent)
-	if err != nil {
-		return nil, nil, err
-	}
-	if handled {
-		inputs := []postgres.AssistantMessageInput{userInput}
-		if prepared != nil && len(prepared.AdditionalInputs) > 0 {
-			inputs = append(inputs, prepared.AdditionalInputs...)
-		}
-		inputs = append(inputs, deterministicInputs...)
-		return inputs, replyContext, nil
-	}
-
-	groundedSection, groundedSectionTarget, err := s.buildGroundedAnalysisInputForReply(ctx, sessionID, replyHistory, content, readIntent)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if s.responder == nil {
-		return nil, nil, errors.New("助手对话模型未配置")
-	}
-
-	replyContext, err = s.loadReplyContext(ctx, sessionID, replyHistory, content)
+	replyContext, err := s.loadReplyContext(ctx, sessionID, replyHistory, content)
 	if err != nil {
 		return nil, nil, err
 	}
 	replyContext, err = s.repairReplyContext(ctx, content, replyContext)
 	if err != nil {
 		return nil, nil, err
-	}
-	if shouldBuildGroundedAnalysis(readIntent) {
-		if groundedSection != nil && groundedSectionTarget != nil {
-			replyContext.GroundedTarget = groundedSectionTarget
-		} else {
-			replyContext.GroundedTarget = nil
-		}
-	}
-	evidenceInputs, evidenceHandled, err := buildEvidenceGateReplyInputs(readIntent, replyContext, groundedSection)
-	if err != nil {
-		return nil, nil, err
-	}
-	if evidenceHandled {
-		inputs := []postgres.AssistantMessageInput{userInput}
-		if prepared != nil && len(prepared.AdditionalInputs) > 0 {
-			inputs = append(inputs, prepared.AdditionalInputs...)
-		}
-		inputs = append(inputs, evidenceInputs...)
-		return inputs, replyContext, nil
 	}
 
 	taskDecision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
@@ -658,7 +605,6 @@ func (s *Service) buildReplyInputs(
 		Snapshot:               replyContext.Snapshot,
 		Citations:              replyContext.Citations,
 		GroundedTarget:         replyContext.GroundedTarget,
-		GroundedSection:        groundedSection,
 		History:                replyContext.History,
 		Message:                content,
 		Resource:               replyContext.ActiveResource,
@@ -686,259 +632,6 @@ func (s *Service) buildReplyInputs(
 	inputs = append(inputs, assistantInputs...)
 
 	return inputs, replyContext, nil
-}
-
-func (s *Service) buildDeterministicAssistantInputs(
-	ctx context.Context,
-	sessionID string,
-	history []postgres.AssistantMessage,
-	content string,
-	intent ReadIntent,
-) ([]postgres.AssistantMessageInput, *ReplyContext, bool, error) {
-	if s == nil || s.activeFileReader == nil || !shouldHandleDeterministicRead(intent) {
-		return nil, nil, false, nil
-	}
-
-	replyContext, err := s.loadBaseReplyContext(ctx, sessionID, history, content)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	if replyContext == nil || replyContext.ActiveResource == nil {
-		return nil, replyContext, false, nil
-	}
-
-	response, groundedTarget, err := s.buildDeterministicReadResponse(ctx, replyContext, content, intent)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	if response == nil {
-		return nil, replyContext, false, nil
-	}
-
-	replyContext.GroundedTarget = groundedTarget
-	assistantInputs, err := buildAssistantReplyInputs(response, TaskSuggestionDecision{})
-	if err != nil {
-		return nil, nil, false, err
-	}
-
-	return assistantInputs, replyContext, true, nil
-}
-
-func (s *Service) buildDeterministicReadResponse(
-	ctx context.Context,
-	replyContext *ReplyContext,
-	content string,
-	intent ReadIntent,
-) (*ChatCompletionResult, *ResolvedReference, error) {
-	if s == nil || s.activeFileReader == nil || replyContext == nil || replyContext.ActiveResource == nil {
-		return nil, nil, nil
-	}
-
-	responder := DeterministicReadResponder{}
-	resourceID := strings.TrimSpace(replyContext.ActiveResource.ID)
-	if resourceID == "" {
-		return nil, nil, nil
-	}
-
-	switch intent.Kind {
-	case ReadIntentListSections, ReadIntentAggregateAttribute:
-		version, err := s.activeFileReader.GetCurrentVersion(ctx, resourceID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if version == nil {
-			return nil, nil, nil
-		}
-
-		sectionType := inferRequestedReadingSectionType(intent, content)
-		sections, err := s.activeFileReader.ListSectionsForReading(ctx, version.ID, sectionType)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		return responder.Reply(intent, DeterministicReadInput{
-			SectionType: sectionType,
-			Sections:    sections,
-		}), nil, nil
-	case ReadIntentExcerptSection, ReadIntentLocateOrdinal:
-		locator := NewSectionLocator(s.activeFileReader)
-		located, err := locator.Locate(ctx, LocateSectionInput{
-			ResourceID: resourceID,
-			Message:    content,
-			Snapshot:   replyContext.Snapshot,
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		if located == nil {
-			return nil, nil, nil
-		}
-
-		reader := NewSectionReader(s.activeFileReader)
-		readResult, err := reader.ReadSectionExcerpt(ctx, located.SectionID, ExcerptPolicy{})
-		if err != nil {
-			return nil, nil, err
-		}
-		if readResult == nil {
-			return nil, nil, nil
-		}
-
-		return responder.Reply(intent, DeterministicReadInput{
-				LocatedSection: located,
-				SectionRead:    readResult,
-			}),
-			&ResolvedReference{
-				SectionID:   located.SectionID,
-				SectionType: located.SectionType,
-				EntityName:  located.EntityName,
-				Reason:      located.Reason,
-			},
-			nil
-	default:
-		return nil, nil, nil
-	}
-}
-
-func shouldHandleDeterministicRead(intent ReadIntent) bool {
-	switch intent.Kind {
-	case ReadIntentListSections, ReadIntentAggregateAttribute, ReadIntentExcerptSection, ReadIntentLocateOrdinal:
-		return true
-	default:
-		return false
-	}
-}
-
-func inferRequestedReadingSectionType(intent ReadIntent, message string) string {
-	if intent.Kind == ReadIntentAggregateAttribute || containsAny(message, []string{"技术栈", "技能", "哪些技术"}) {
-		return "skills"
-	}
-	if strings.Contains(message, "项目") {
-		return "project"
-	}
-	if strings.Contains(message, "经历") {
-		return "experience"
-	}
-
-	return ""
-}
-
-func (s *Service) buildGroundedAnalysisInputForReply(
-	ctx context.Context,
-	sessionID string,
-	history []postgres.AssistantMessage,
-	content string,
-	intent ReadIntent,
-) (*GroundedAnalysisInput, *ResolvedReference, error) {
-	if s == nil || s.activeFileReader == nil || !shouldBuildGroundedAnalysis(intent) {
-		return nil, nil, nil
-	}
-
-	replyContext, err := s.loadBaseReplyContext(ctx, sessionID, history, content)
-	if err != nil {
-		return nil, nil, err
-	}
-	if replyContext == nil || replyContext.ActiveResource == nil {
-		return nil, nil, nil
-	}
-
-	locator := NewSectionLocator(s.activeFileReader)
-	located, err := locator.Locate(ctx, LocateSectionInput{
-		ResourceID: strings.TrimSpace(replyContext.ActiveResource.ID),
-		Message:    content,
-		Snapshot:   replyContext.Snapshot,
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	if located == nil {
-		return nil, nil, nil
-	}
-
-	reader := NewSectionReader(s.activeFileReader)
-	readResult, err := reader.ReadSectionFull(ctx, located.SectionID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if readResult == nil {
-		return nil, nil, nil
-	}
-
-	groundedSection := GroundedAnalysisInputBuilder{}.Build(located, readResult, content)
-	if groundedSection == nil {
-		return nil, nil, nil
-	}
-
-	return groundedSection, &ResolvedReference{
-		SectionID:   located.SectionID,
-		SectionType: located.SectionType,
-		EntityName:  located.EntityName,
-		Reason:      located.Reason,
-	}, nil
-}
-
-func shouldBuildGroundedAnalysis(intent ReadIntent) bool {
-	switch intent.Kind {
-	case ReadIntentAnalyzeSection, ReadIntentTransformSection:
-		return true
-	default:
-		return false
-	}
-}
-
-func buildEvidenceGateReplyInputs(
-	intent ReadIntent,
-	replyContext *ReplyContext,
-	groundedSection *GroundedAnalysisInput,
-) ([]postgres.AssistantMessageInput, bool, error) {
-	if !shouldGateActiveFileReadIntent(intent) {
-		return nil, false, nil
-	}
-
-	ok, reason := EvaluateEvidenceQuality(EvidenceEvaluationInput{
-		QueryIntent:     string(intent.Kind),
-		ResolvedTarget:  replyContext.GroundedTarget,
-		GroundedSection: groundedSection,
-		Citations:       replyContext.Citations,
-	})
-	if ok {
-		return nil, false, nil
-	}
-
-	inputs, err := buildAssistantReplyInputs(&ChatCompletionResult{
-		Reply: buildEvidenceAbstainReply(intent, reason),
-	}, TaskSuggestionDecision{})
-	if err != nil {
-		return nil, false, err
-	}
-
-	return inputs, true, nil
-}
-
-func shouldGateActiveFileReadIntent(intent ReadIntent) bool {
-	switch intent.Kind {
-	case ReadIntentListSections, ReadIntentLocateOrdinal, ReadIntentExcerptSection, ReadIntentAggregateAttribute, ReadIntentAnalyzeSection, ReadIntentTransformSection:
-		return true
-	default:
-		return false
-	}
-}
-
-func buildEvidenceAbstainReply(intent ReadIntent, reason string) string {
-	switch reason {
-	case "missing_concrete_section", "missing_resolved_section":
-		return "证据不足：我还无法在当前活跃文件里定位到对应的原文 section，暂时不能直接输出或分析。你可以直接告诉我标题，或明确说第几个项目。"
-	case "heading_only":
-		return "证据不足：我目前只拿到标题级内容，没有足够正文，暂时不能直接输出或分析这一节。"
-	case "missing_grounded_sections", "missing_citations":
-		fallthrough
-	default:
-		switch intent.Kind {
-		case ReadIntentListSections, ReadIntentLocateOrdinal, ReadIntentExcerptSection, ReadIntentAggregateAttribute:
-			return "证据不足：当前活跃文件里还没有足够的结构化证据，暂时无法定位或输出对应内容。"
-		default:
-			return "证据不足：当前还拿不到可分析的原文 section，暂时不能基于活跃文件给出确定结论。"
-		}
-	}
 }
 
 func (s *Service) buildUploadMessages(
@@ -1215,6 +908,10 @@ type streamAssistantReplyInput struct {
 }
 
 func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistantReplyInput) error {
+	if s.responder == nil {
+		return errors.New("助手对话模型未配置")
+	}
+
 	replyHistory := input.history
 	prepared, err := s.prepareTurnContext(ctx, input.history, input.content)
 	if err != nil {
@@ -1244,89 +941,13 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		}
 	}
 
-	readIntent := ClassifyReadIntent(input.content)
-	deterministicInputs, replyContext, handled, err := s.buildDeterministicAssistantInputs(ctx, input.sessionID, replyHistory, input.content, readIntent)
-	if err != nil {
-		return err
-	}
-	if handled {
-		if err := input.emit(StreamEvent{Type: StreamEventMessageStarted}); err != nil {
-			return err
-		}
-
-		messages, err := s.repo.AppendMessages(ctx, input.sessionID, deterministicInputs)
-		if err != nil {
-			return err
-		}
-		if len(messages) == 0 {
-			return NewStreamError(StreamErrorCodeInternal, "助手暂时不可用，请稍后重试。", errors.New("deterministic read persisted no messages"))
-		}
-		if err := s.projectPersistedMessages(ctx, input.sessionID, messages); err != nil {
-			return err
-		}
-		if err := s.projectReplyGrounding(ctx, input.sessionID, replyContext); err != nil {
-			return err
-		}
-		s.triggerSummaryRefresh(input.sessionID)
-
-		return input.emit(StreamEvent{
-			Type:    StreamEventMessageCompleted,
-			Message: &messages[0],
-		})
-	}
-
-	groundedSection, groundedSectionTarget, err := s.buildGroundedAnalysisInputForReply(ctx, input.sessionID, replyHistory, input.content, readIntent)
-	if err != nil {
-		return err
-	}
-
-	if s.responder == nil {
-		return errors.New("助手对话模型未配置")
-	}
-
-	replyContext, err = s.loadReplyContext(ctx, input.sessionID, replyHistory, input.content)
+	replyContext, err := s.loadReplyContext(ctx, input.sessionID, replyHistory, input.content)
 	if err != nil {
 		return err
 	}
 	replyContext, err = s.repairReplyContext(ctx, input.content, replyContext)
 	if err != nil {
 		return err
-	}
-	if shouldBuildGroundedAnalysis(readIntent) {
-		if groundedSection != nil && groundedSectionTarget != nil {
-			replyContext.GroundedTarget = groundedSectionTarget
-		} else {
-			replyContext.GroundedTarget = nil
-		}
-	}
-	evidenceInputs, evidenceHandled, err := buildEvidenceGateReplyInputs(readIntent, replyContext, groundedSection)
-	if err != nil {
-		return err
-	}
-	if evidenceHandled {
-		if err := input.emit(StreamEvent{Type: StreamEventMessageStarted}); err != nil {
-			return err
-		}
-
-		messages, err := s.repo.AppendMessages(ctx, input.sessionID, evidenceInputs)
-		if err != nil {
-			return err
-		}
-		if len(messages) == 0 {
-			return NewStreamError(StreamErrorCodeInternal, "助手暂时不可用，请稍后重试。", errors.New("evidence gate persisted no messages"))
-		}
-		if err := s.projectPersistedMessages(ctx, input.sessionID, messages); err != nil {
-			return err
-		}
-		if err := s.projectReplyGrounding(ctx, input.sessionID, replyContext); err != nil {
-			return err
-		}
-		s.triggerSummaryRefresh(input.sessionID)
-
-		return input.emit(StreamEvent{
-			Type:    StreamEventMessageCompleted,
-			Message: &messages[0],
-		})
 	}
 
 	taskDecision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
@@ -1338,7 +959,6 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		Snapshot:               replyContext.Snapshot,
 		Citations:              replyContext.Citations,
 		GroundedTarget:         replyContext.GroundedTarget,
-		GroundedSection:        groundedSection,
 		History:                replyContext.History,
 		Message:                input.content,
 		Resource:               replyContext.ActiveResource,
@@ -1595,19 +1215,6 @@ func (s *Service) loadReplyContext(
 	}
 
 	return s.contextLoader.LoadForReply(ctx, sessionID, history, currentMessage)
-}
-
-func (s *Service) loadBaseReplyContext(
-	ctx context.Context,
-	sessionID string,
-	history []postgres.AssistantMessage,
-	currentMessage string,
-) (*ReplyContext, error) {
-	if s.contextLoader == nil {
-		s.contextLoader = NewContextLoader(snapshotReaderFromProjector(s.projector), s.retriever, s.repo)
-	}
-
-	return s.contextLoader.LoadBaseContext(ctx, sessionID, history, currentMessage)
 }
 
 func (s *Service) repairReplyContext(ctx context.Context, currentMessage string, replyContext *ReplyContext) (*ReplyContext, error) {

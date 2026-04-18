@@ -61,39 +61,6 @@ func (l *ContextLoader) LoadForReply(
 	history []postgres.AssistantMessage,
 	currentMessage string,
 ) (*ReplyContext, error) {
-	replyContext, err := l.LoadBaseContext(ctx, sessionID, history, currentMessage)
-	if err != nil {
-		return nil, err
-	}
-
-	searchQuery := strings.TrimSpace(currentMessage)
-	if l.queries != nil {
-		searchQuery = l.queries.Build(RetrievalQueryInput{
-			CurrentMessage:        searchQuery,
-			ActiveResource:        snapshotActiveResource(replyContext.Snapshot),
-			RollingSummary:        snapshotRollingSummary(replyContext.Snapshot),
-			PendingTaskSuggestion: snapshotPendingTaskSuggestion(replyContext.Snapshot),
-			ResolvedReference:     replyContext.GroundedTarget,
-		})
-	}
-	replyContext.QueryIntent = string(knowledgeRetriever.QueryAnalyzer{}.Analyze(searchQuery).Intent)
-
-	citations, err := l.loadResourceCitations(ctx, replyContext.ActiveResource, searchQuery)
-	if err != nil {
-		return nil, err
-	}
-	replyContext.Citations = citations
-
-	return replyContext, nil
-}
-
-// LoadBaseContext 只装载快照、历史、活跃资源和 snapshot 级 grounding，不默认触发检索。
-func (l *ContextLoader) LoadBaseContext(
-	ctx context.Context,
-	sessionID string,
-	history []postgres.AssistantMessage,
-	currentMessage string,
-) (*ReplyContext, error) {
 	replyContext := &ReplyContext{}
 
 	snapshot, err := l.loadSnapshot(ctx, sessionID)
@@ -113,8 +80,27 @@ func (l *ContextLoader) LoadBaseContext(
 		return nil, err
 	}
 	replyContext.ActiveResource = activeResource
-	replyContext.GroundedTarget = ReferenceResolver{}.Resolve(strings.TrimSpace(currentMessage), snapshot)
-	replyContext.QueryIntent = string(knowledgeRetriever.QueryAnalyzer{}.Analyze(strings.TrimSpace(currentMessage)).Intent)
+
+	resolvedReference := ReferenceResolver{}.Resolve(strings.TrimSpace(currentMessage), snapshot)
+	replyContext.GroundedTarget = resolvedReference
+
+	searchQuery := strings.TrimSpace(currentMessage)
+	if l.queries != nil {
+		searchQuery = l.queries.Build(RetrievalQueryInput{
+			CurrentMessage:        searchQuery,
+			ActiveResource:        snapshotActiveResource(snapshot),
+			RollingSummary:        snapshotRollingSummary(snapshot),
+			PendingTaskSuggestion: snapshotPendingTaskSuggestion(snapshot),
+			ResolvedReference:     resolvedReference,
+		})
+	}
+	replyContext.QueryIntent = string(knowledgeRetriever.QueryAnalyzer{}.Analyze(searchQuery).Intent)
+
+	citations, err := l.loadResourceCitations(ctx, activeResource, searchQuery)
+	if err != nil {
+		return nil, err
+	}
+	replyContext.Citations = citations
 
 	return replyContext, nil
 }

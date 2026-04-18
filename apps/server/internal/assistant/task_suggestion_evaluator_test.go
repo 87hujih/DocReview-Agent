@@ -60,20 +60,3 @@ func TestEvaluateTaskSuggestionMarksExplicitRewriteRequestAsExecution(t *testing
 		t.Fatalf("expected normalized instruction to keep execution request, got %q", decision.NormalizedInstruction)
 	}
 }
-
-func TestEvaluateTaskSuggestionDoesNotTreatExcerptRequestAsExecution(t *testing.T) {
-	decision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
-		CurrentMessage: "把第三个项目输出一遍",
-		ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
-	})
-
-	if decision.IntentState != IntentStateDiscussion {
-		t.Fatalf("expected intent state %q, got %q", IntentStateDiscussion, decision.IntentState)
-	}
-	if decision.ReadinessState != ReadinessStateReadyButNotExecuting {
-		t.Fatalf("expected readiness state %q, got %q", ReadinessStateReadyButNotExecuting, decision.ReadinessState)
-	}
-	if decision.NormalizedInstruction != "" {
-		t.Fatalf("expected excerpt request to keep normalized instruction empty, got %q", decision.NormalizedInstruction)
-	}
-}

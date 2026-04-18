@@ -8,27 +8,19 @@ import (
 
 // EvidenceEvaluationInput 描述一轮 grounded 回答前的证据质量判断输入。
 type EvidenceEvaluationInput struct {
-	QueryIntent     string
-	ResolvedTarget  *ResolvedReference
-	GroundedSection *GroundedAnalysisInput
-	Citations       []citation.Citation
+	QueryIntent    string
+	ResolvedTarget *ResolvedReference
+	Citations      []citation.Citation
 }
 
 // EvaluateEvidenceQuality 只负责纯判断，不触发检索或修复动作。
 func EvaluateEvidenceQuality(input EvidenceEvaluationInput) (bool, string) {
+	if len(input.Citations) == 0 {
+		return false, "missing_citations"
+	}
+
 	switch strings.TrimSpace(input.QueryIntent) {
-	case "excerpt_section", "analyze_section", "transform_section":
-		if input.GroundedSection == nil || strings.TrimSpace(input.GroundedSection.SectionText) == "" {
-			return false, "missing_concrete_section"
-		}
-		if groundedSectionIsHeadingOnly(input.GroundedSection) {
-			return false, "heading_only"
-		}
-		return true, ""
 	case "detail_by_ordinal", "detail_by_entity":
-		if len(input.Citations) == 0 {
-			return false, "missing_citations"
-		}
 		if input.ResolvedTarget == nil || strings.TrimSpace(input.ResolvedTarget.SectionID) == "" {
 			return false, "missing_resolved_section"
 		}
@@ -39,46 +31,20 @@ func EvaluateEvidenceQuality(input EvidenceEvaluationInput) (bool, string) {
 			return false, "heading_only"
 		}
 	case "aggregate_attribute":
-		if len(input.Citations) == 0 {
-			return false, "missing_citations"
-		}
 		if citationsAreHeadingOnly(input.Citations) {
 			return false, "heading_only"
 		}
 	case "list_sections":
-		if len(input.Citations) == 0 {
-			return false, "missing_citations"
-		}
 		if !citationsContainGroundedSection(input.Citations) {
 			return false, "missing_grounded_sections"
 		}
 	default:
-		if input.GroundedSection != nil {
-			if groundedSectionIsHeadingOnly(input.GroundedSection) {
-				return false, "heading_only"
-			}
-			return true, ""
-		}
-		if len(input.Citations) == 0 {
-			return false, "missing_citations"
-		}
 		if citationsAreHeadingOnly(input.Citations) {
 			return false, "heading_only"
 		}
 	}
 
 	return true, ""
-}
-
-func groundedSectionIsHeadingOnly(section *GroundedAnalysisInput) bool {
-	if section == nil {
-		return true
-	}
-
-	return isHeadingOnlyCitation(citation.Citation{
-		SectionTitle: strings.TrimSpace(section.SectionTitle),
-		Snippet:      strings.TrimSpace(section.SectionText),
-	})
 }
 
 func citationsContainSection(citations []citation.Citation, sectionID string) bool {

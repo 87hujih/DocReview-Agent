@@ -34,20 +34,31 @@ func (r ReferenceResolver) Resolve(query string, snapshot *SessionContextSnapsho
 }
 
 func resolveExplicitEntity(query string, snapshot *SessionContextSnapshot) *ResolvedReference {
-	if entity := findEnumeratedEntityMatch(query, snapshot); entity != nil {
-		return &ResolvedReference{
-			SectionID:   entity.SectionID,
-			SectionType: entity.SectionType,
-			EntityName:  entity.EntityName,
-			Reason:      "explicit_entity",
+	for _, entity := range snapshot.LastEnumeratedEntities {
+		if strings.TrimSpace(entity.EntityName) == "" {
+			continue
+		}
+		if strings.Contains(query, entity.EntityName) {
+			return &ResolvedReference{
+				SectionID:   entity.SectionID,
+				SectionType: entity.SectionType,
+				EntityName:  entity.EntityName,
+				Reason:      "explicit_entity",
+			}
 		}
 	}
-	if reference := findOrdinalEntityMatch(query, snapshot); reference != nil {
-		return &ResolvedReference{
-			SectionID:   reference.SectionID,
-			SectionType: reference.SectionType,
-			EntityName:  reference.EntityName,
-			Reason:      "explicit_entity",
+
+	for _, reference := range snapshot.OrdinalReferenceFrame {
+		if strings.TrimSpace(reference.EntityName) == "" {
+			continue
+		}
+		if strings.Contains(query, reference.EntityName) {
+			return &ResolvedReference{
+				SectionID:   reference.SectionID,
+				SectionType: reference.SectionType,
+				EntityName:  reference.EntityName,
+				Reason:      "explicit_entity",
+			}
 		}
 	}
 
@@ -110,58 +121,11 @@ func extractOrdinal(query string) int {
 }
 
 func containsAnaphora(query string) bool {
-	for _, token := range []string{"那个项目", "这个项目", "上面那个项目", "那个经历", "这个经历", "上面那个经历", "这一节", "这一部分"} {
+	for _, token := range []string{"那个项目", "这个项目", "上面那个项目", "那个经历", "这个经历", "上面那个经历"} {
 		if strings.Contains(query, token) {
 			return true
 		}
 	}
 
 	return false
-}
-
-func findExplicitEntityName(query string, snapshot *SessionContextSnapshot) string {
-	if entity := findEnumeratedEntityMatch(query, snapshot); entity != nil {
-		return entity.EntityName
-	}
-	if reference := findOrdinalEntityMatch(query, snapshot); reference != nil {
-		return reference.EntityName
-	}
-
-	return ""
-}
-
-func findEnumeratedEntityMatch(query string, snapshot *SessionContextSnapshot) *EnumeratedEntity {
-	if snapshot == nil {
-		return nil
-	}
-
-	for _, entity := range snapshot.LastEnumeratedEntities {
-		if strings.TrimSpace(entity.EntityName) == "" {
-			continue
-		}
-		if strings.Contains(query, entity.EntityName) {
-			cloned := entity
-			return &cloned
-		}
-	}
-
-	return nil
-}
-
-func findOrdinalEntityMatch(query string, snapshot *SessionContextSnapshot) *OrdinalReference {
-	if snapshot == nil {
-		return nil
-	}
-
-	for _, reference := range snapshot.OrdinalReferenceFrame {
-		if strings.TrimSpace(reference.EntityName) == "" {
-			continue
-		}
-		if strings.Contains(query, reference.EntityName) {
-			cloned := reference
-			return &cloned
-		}
-	}
-
-	return nil
 }

@@ -188,7 +188,6 @@ func main() {
 		taskService,
 		assistantResponder,
 		retrieverService,
-		assistant.WithActiveFileResourceReader(resourceRepo),
 		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
 		assistant.WithConversationSummarizer(conversationSummarizer, sessionContextSnapshotRepo),
 		assistant.WithSessionContextProjector(sessionContextProjector),

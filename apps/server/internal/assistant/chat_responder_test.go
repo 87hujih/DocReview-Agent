@@ -251,39 +251,6 @@ func TestBuildChatMessagesIncludesGroundedTargetAndSectionAwareCitations(t *test
 	}
 }
 
-func TestChatResponderBuildsSystemPromptFromGroundedSectionText(t *testing.T) {
-	messages := buildChatMessages(ChatCompletionInput{
-		GroundedSection: &GroundedAnalysisInput{
-			SectionID:       "section-3",
-			SectionType:     "project",
-			SectionTitle:    "第三个项目",
-			SectionOrder:    3,
-			SectionText:     "原始第三个项目正文",
-			UserInstruction: "第三个项目怎么优化",
-		},
-		Citations: []citation.Citation{
-			{
-				SectionID:    "section-3",
-				SectionType:  "project",
-				SectionTitle: "第三个项目",
-				Snippet:      "辅助 citation 片段",
-			},
-		},
-		Message: "第三个项目怎么优化",
-	})
-
-	systemPrompt := messages[0].Content
-	if !strings.Contains(systemPrompt, "当前需要分析的 section 原文") {
-		t.Fatalf("expected grounded section text block in system prompt, got %q", systemPrompt)
-	}
-	if !strings.Contains(systemPrompt, "原始第三个项目正文") {
-		t.Fatalf("expected section text in system prompt, got %q", systemPrompt)
-	}
-	if !strings.Contains(systemPrompt, "辅助 citation 片段") {
-		t.Fatalf("expected citations to remain auxiliary evidence, got %q", systemPrompt)
-	}
-}
-
 func TestBuildHistoryMessagesDropsStructuredMessagesFromRecentWindow(t *testing.T) {
 	history := []postgres.AssistantMessage{
 		{

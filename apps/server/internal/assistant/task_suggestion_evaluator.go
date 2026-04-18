@@ -21,9 +21,9 @@ const (
 type ReadinessState string
 
 const (
-	ReadinessStateNeedMaterial         ReadinessState = "need_material"
-	ReadinessStateReadyButNotExecuting ReadinessState = "ready_but_not_executing"
-	ReadinessStateReadyForTask         ReadinessState = "ready_for_task"
+	ReadinessStateNeedMaterial          ReadinessState = "need_material"
+	ReadinessStateReadyButNotExecuting  ReadinessState = "ready_but_not_executing"
+	ReadinessStateReadyForTask          ReadinessState = "ready_for_task"
 )
 
 type TaskSuggestionEvaluationInput struct {
@@ -82,7 +82,7 @@ func classifyIntentState(message string) IntentState {
 	if isCapabilityQuery(trimmed) {
 		return IntentStateCapabilityQuery
 	}
-	if ClassifyReadIntent(trimmed).ShouldTriggerTaskFlow {
+	if isExecutionRequest(trimmed) {
 		return IntentStateExecution
 	}
 	return IntentStateDiscussion
@@ -105,7 +105,51 @@ func isCapabilityQuery(message string) bool {
 }
 
 func isExecutionRequest(message string) bool {
-	return matchesExecutionRequest(strings.TrimSpace(message))
+	if containsAny(message, []string{
+		"如果要改",
+		"有什么需要优化",
+		"哪里要改",
+		"问题在哪",
+		"怎么改",
+		"先帮我看看",
+		"你觉得",
+		"怎么看",
+	}) {
+		return false
+	}
+
+	if !containsAny(message, []string{
+		"改成",
+		"改写",
+		"重写",
+		"润色",
+		"修订",
+		"整理成",
+		"整理为",
+		"生成",
+		"输出",
+		"写成",
+		"改为",
+		"做成",
+	}) {
+		return false
+	}
+
+	if containsAny(message, []string{
+		"请直接",
+		"直接",
+		"马上",
+		"现在",
+		"开始",
+		"请帮我",
+		"帮我",
+		"请把",
+		"把这",
+	}) {
+		return true
+	}
+
+	return !strings.ContainsAny(message, "？?")
 }
 
 func containsAny(message string, keywords []string) bool {
