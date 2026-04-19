@@ -59,15 +59,16 @@ type chatStreamResultProvider interface {
 
 // ChatCompletionInput 描述一次助手回复所需的会话上下文。
 type ChatCompletionInput struct {
-	RuntimeState           RuntimeState
-	Snapshot               *SessionContextSnapshot
-	Citations              []citation.Citation
-	GroundedTarget         *ResolvedReference
-	History                []postgres.AssistantMessage
-	Message                string
-	Resource               *resourceContext
-	Decision               *DeliberationDecision
-	TaskSuggestionDecision *TaskSuggestionDecision
+	RuntimeState             RuntimeState
+	Snapshot                 *SessionContextSnapshot
+	Citations                []citation.Citation
+	GroundedTarget           *ResolvedReference
+	CanonicalAnalysisContext string
+	History                  []postgres.AssistantMessage
+	Message                  string
+	Resource                 *resourceContext
+	Decision                 *DeliberationDecision
+	TaskSuggestionDecision   *TaskSuggestionDecision
 }
 
 // ChatCompletionResult 表示模型返回的自然语言回复与可选任务建议。
@@ -315,6 +316,9 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 			lines = append(lines, "定位原因："+reason)
 		}
 		sections = append(sections, strings.Join(lines, "\n"))
+	}
+	if analysisContext := strings.TrimSpace(input.CanonicalAnalysisContext); analysisContext != "" {
+		sections = append(sections, analysisContext)
 	}
 
 	if len(state.Citations) > 0 {

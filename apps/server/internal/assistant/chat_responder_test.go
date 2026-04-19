@@ -87,8 +87,8 @@ func TestBuildChatMessagesPromptUsesDecisionHintsButDoesNotRequestTaskInstructio
 	messages := buildChatMessages(ChatCompletionInput{
 		Message: "请直接把这份简历改成产品经理版本",
 		Decision: &DeliberationDecision{
-			RequestKind:    "workflow_command",
-			ResponseMode:   "answer_then_task_card",
+			RequestKind:     "workflow_command",
+			ResponseMode:    "answer_then_task_card",
 			ChatFulfillable: false,
 		},
 	})
@@ -251,6 +251,19 @@ func TestBuildChatMessagesIncludesGroundedTargetAndSectionAwareCitations(t *test
 	}
 	if !strings.Contains(systemPrompt, "section=project/section-campushub") || !strings.Contains(systemPrompt, "window=project-1") {
 		t.Fatalf("expected section-aware citation label, got %q", systemPrompt)
+	}
+}
+
+// TestBuildChatMessagesIncludesCanonicalAnalysisContext 验证`buildChatMessagesIncludesCanonicalAnalysisContext`在流程控制路径下的行为，防止同类回归。
+func TestBuildChatMessagesIncludesCanonicalAnalysisContext(t *testing.T) {
+	messages := buildChatMessages(ChatCompletionInput{
+		CanonicalAnalysisContext: "当前文件已直接读取到目标 section。\n以下是 canonical 正文：\n这是第三个项目的完整正文",
+		Message:                  "这个项目的问题是什么",
+	})
+
+	systemPrompt := messages[0].Content
+	if !strings.Contains(systemPrompt, "这是第三个项目的完整正文") {
+		t.Fatalf("expected canonical analysis context in system prompt, got %q", systemPrompt)
 	}
 }
 

@@ -63,3 +63,24 @@ func TestEvaluateTaskSuggestionMarksExplicitRewriteRequestAsExecution(t *testing
 		t.Fatalf("expected normalized instruction to keep execution request, got %q", decision.NormalizedInstruction)
 	}
 }
+
+// TestEvaluateTaskSuggestionDoesNotPromoteReadOnlyCurrentFileRequest 验证`evaluateTaskSuggestionDoesNotPromoteReadOnlyCurrentFileRequest`在特定边界条件下的行为，防止同类回归。
+func TestEvaluateTaskSuggestionDoesNotPromoteReadOnlyCurrentFileRequest(t *testing.T) {
+	decision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
+		CurrentMessage: "把第三个项目先输出一遍",
+		ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+	})
+
+	if decision.MaterialState != MaterialStateReady {
+		t.Fatalf("expected material state %q, got %q", MaterialStateReady, decision.MaterialState)
+	}
+	if decision.IntentState != IntentStateDiscussion {
+		t.Fatalf("expected intent state %q for read-only request, got %q", IntentStateDiscussion, decision.IntentState)
+	}
+	if decision.ReadinessState != ReadinessStateReadyButNotExecuting {
+		t.Fatalf("expected readiness state %q, got %q", ReadinessStateReadyButNotExecuting, decision.ReadinessState)
+	}
+	if decision.NormalizedInstruction != "" {
+		t.Fatalf("expected no normalized instruction for read-only request, got %q", decision.NormalizedInstruction)
+	}
+}

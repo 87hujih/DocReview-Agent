@@ -86,7 +86,7 @@ func classifyIntentState(message string) IntentState {
 	if isCapabilityQuery(trimmed) {
 		return IntentStateCapabilityQuery
 	}
-	if isExecutionRequest(trimmed) {
+	if ClassifyReadIntent(trimmed).ShouldEnterTaskFlow {
 		return IntentStateExecution
 	}
 	return IntentStateDiscussion
@@ -111,51 +111,7 @@ func isCapabilityQuery(message string) bool {
 
 // isExecutionRequest 判断 `执行请求` 是否满足当前流程的条件，避免同一谓词在多处分散实现。
 func isExecutionRequest(message string) bool {
-	if containsAny(message, []string{
-		"如果要改",
-		"有什么需要优化",
-		"哪里要改",
-		"问题在哪",
-		"怎么改",
-		"先帮我看看",
-		"你觉得",
-		"怎么看",
-	}) {
-		return false
-	}
-
-	if !containsAny(message, []string{
-		"改成",
-		"改写",
-		"重写",
-		"润色",
-		"修订",
-		"整理成",
-		"整理为",
-		"生成",
-		"输出",
-		"写成",
-		"改为",
-		"做成",
-	}) {
-		return false
-	}
-
-	if containsAny(message, []string{
-		"请直接",
-		"直接",
-		"马上",
-		"现在",
-		"开始",
-		"请帮我",
-		"帮我",
-		"请把",
-		"把这",
-	}) {
-		return true
-	}
-
-	return !strings.ContainsAny(message, "？?")
+	return ClassifyReadIntent(message).ShouldEnterTaskFlow
 }
 
 // containsAny 判断当前集合里是否包含 `Any`，把匹配规则收口在单点。

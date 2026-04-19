@@ -221,6 +221,9 @@ func main() {
 		assistant.WithWorkflowVerifier(assistantWorkflowVerifier),
 		assistant.WithConversationSummarizer(conversationSummarizer, sessionContextSnapshotRepo),
 		assistant.WithSessionContextProjector(sessionContextProjector),
+		assistant.WithSectionLocator(assistant.NewSectionLocator(resourceRepo)),
+		assistant.WithSectionReader(assistant.NewSectionReader(resourceRepo)),
+		assistant.WithDeterministicReadResponder(assistant.NewDeterministicReadResponder()),
 		assistant.WithRuntimeLearning(runtimeLearning.eventService, runtimeLearning.projector),
 	)
 	assistantHandler := handlers.NewAssistantHandlerWithUploadLimitAndPolicy(

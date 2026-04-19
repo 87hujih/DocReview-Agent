@@ -11,10 +11,15 @@ type EvidenceEvaluationInput struct {
 	QueryIntent    string
 	ResolvedTarget *ResolvedReference
 	Citations      []citation.Citation
+	CanonicalRead  *CanonicalReadResult
 }
 
 // EvaluateEvidenceQuality 只负责纯判断，不触发检索或修复动作。
 func EvaluateEvidenceQuality(input EvidenceEvaluationInput) (bool, string) {
+	if canonicalReadSatisfiesIntent(input) {
+		return true, ""
+	}
+
 	if len(input.Citations) == 0 {
 		return false, "missing_citations"
 	}
@@ -45,6 +50,29 @@ func EvaluateEvidenceQuality(input EvidenceEvaluationInput) (bool, string) {
 	}
 
 	return true, ""
+}
+
+// canonicalReadSatisfiesIntent 判断当前是否已经拿到足够稳定的 canonical 内容，可直接跳过 citation 级证据门控。
+func canonicalReadSatisfiesIntent(input EvidenceEvaluationInput) bool {
+	if input.CanonicalRead == nil {
+		return false
+	}
+
+	switch strings.TrimSpace(input.QueryIntent) {
+	case "list_sections":
+		return input.CanonicalRead.Mode == CanonicalReadModeSectionList && len(input.CanonicalRead.Sections) > 0
+	case "detail_by_ordinal", "detail_by_entity":
+		if input.CanonicalRead.Mode != CanonicalReadModeSection || strings.TrimSpace(input.CanonicalRead.Content) == "" {
+			return false
+		}
+		if input.ResolvedTarget == nil || strings.TrimSpace(input.ResolvedTarget.SectionID) == "" {
+			return true
+		}
+
+		return strings.TrimSpace(input.CanonicalRead.SectionID) == strings.TrimSpace(input.ResolvedTarget.SectionID)
+	default:
+		return strings.TrimSpace(input.CanonicalRead.Content) != ""
+	}
 }
 
 // citationsContainSection 判断引用列表里是否已经出现 section 级定位，避免证据门控误把标题级引用当作正文证据。

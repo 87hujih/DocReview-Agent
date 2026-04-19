@@ -2121,6 +2121,362 @@ func TestAppendMessageKeepsReadbackRequestWithoutTaskSuggestion(t *testing.T) {
 	}
 }
 
+// TestAppendMessageReturnsDeterministicReadForCurrentFileExcerpt 验证启用 direct access 后，读取型请求会直接返回 canonical read 结果。
+func TestAppendMessageReturnsDeterministicReadForCurrentFileExcerpt(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("当前文件阅读")
+	currentFileReader := &fakeCurrentFileSectionReader{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-1",
+			ResourceID: "resource-1",
+			Content:    "整份简历正文",
+		},
+		allSections: []postgres.ResourceSection{
+			{ID: "section-1", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 1, Title: "CampusHub", Content: "项目一正文"},
+			{ID: "section-2", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 2, Title: "选课助手", Content: "项目二正文"},
+			{ID: "section-3", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "慢跑计划", Content: "第三个项目正文"},
+		},
+	}
+	responder := &fakeChatResponder{
+		onReply: func(ChatCompletionInput) {
+			t.Fatal("deterministic read should not call chat responder reply")
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot:       &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前请求属于当前文件直接阅读"},
+			},
+		}),
+		WithSectionLocator(NewSectionLocator(currentFileReader)),
+		WithSectionReader(NewSectionReader(currentFileReader)),
+		WithDeterministicReadResponder(NewDeterministicReadResponder()),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先输出一遍")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected user + assistant messages only, got %d", len(result.Messages))
+	}
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if reply.Content != "第三个项目正文" {
+		t.Fatalf("expected deterministic reply %q, got %q", "第三个项目正文", reply.Content)
+	}
+}
+
+// TestAppendMessageDeterministicReadDoesNotCreateTaskSuggestion 验证 deterministic read 请求不会额外生成任务建议。
+func TestAppendMessageDeterministicReadDoesNotCreateTaskSuggestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("当前文件阅读")
+	currentFileReader := &fakeCurrentFileSectionReader{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-1",
+			ResourceID: "resource-1",
+			Content:    "整份简历正文",
+		},
+		allSections: []postgres.ResourceSection{
+			{ID: "section-1", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 1, Title: "CampusHub", Content: "项目一正文"},
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot:       &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前请求属于当前文件直接阅读"},
+			},
+		}),
+		WithSectionLocator(NewSectionLocator(currentFileReader)),
+		WithSectionReader(NewSectionReader(currentFileReader)),
+		WithDeterministicReadResponder(NewDeterministicReadResponder()),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第一个项目先输出一遍")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected no task suggestion for deterministic read, got %d messages", len(result.Messages))
+	}
+}
+
+// TestAppendMessageStreamUsesDeterministicReadForCurrentFileExcerpt 验证流式路径会复用 deterministic read，不再调用聊天模型流式回复。
+func TestAppendMessageStreamUsesDeterministicReadForCurrentFileExcerpt(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("当前文件阅读")
+	currentFileReader := &fakeCurrentFileSectionReader{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-1",
+			ResourceID: "resource-1",
+			Content:    "整份简历正文",
+		},
+		allSections: []postgres.ResourceSection{
+			{ID: "section-1", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 1, Title: "CampusHub", Content: "项目一正文"},
+			{ID: "section-2", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 2, Title: "选课助手", Content: "项目二正文"},
+			{ID: "section-3", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "慢跑计划", Content: "第三个项目正文"},
+		},
+	}
+	responder := &fakeChatResponder{
+		onStream: func(ChatCompletionInput) {
+			t.Fatal("deterministic read should not call chat responder stream")
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot:       &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前请求属于当前文件直接阅读"},
+			},
+		}),
+		WithSectionLocator(NewSectionLocator(currentFileReader)),
+		WithSectionReader(NewSectionReader(currentFileReader)),
+		WithDeterministicReadResponder(NewDeterministicReadResponder()),
+	)
+
+	var events []StreamEvent
+	if err := service.AppendMessageStream(context.Background(), session.ID, "把第三个项目先输出一遍", func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+
+	if len(events) != 3 {
+		t.Fatalf("expected message_started -> delta -> completed, got %d events", len(events))
+	}
+	if events[0].Type != StreamEventMessageStarted || events[1].Type != StreamEventMessageDelta || events[2].Type != StreamEventMessageCompleted {
+		t.Fatalf("expected deterministic read stream events, got %#v", []string{events[0].Type, events[1].Type, events[2].Type})
+	}
+	if events[1].Delta != "第三个项目正文" {
+		t.Fatalf("expected deterministic delta %q, got %q", "第三个项目正文", events[1].Delta)
+	}
+}
+
+// TestAppendMessageBuildsGroundedAnalysisContextFromCanonicalSectionContent 验证分析型请求会把 canonical section 正文注入 responder 输入。
+func TestAppendMessageBuildsGroundedAnalysisContextFromCanonicalSectionContent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("当前文件分析")
+	currentFileReader := &fakeCurrentFileSectionReader{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-1",
+			ResourceID: "resource-1",
+			Content:    "整份简历正文",
+		},
+		allSections: []postgres.ResourceSection{
+			{ID: "section-1", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 1, Title: "CampusHub", Content: "项目一正文"},
+			{ID: "section-2", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 2, Title: "选课助手", Content: "项目二正文"},
+			{ID: "section-3", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "慢跑计划", Content: "这是第三个项目的完整正文"},
+		},
+	}
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "这个项目的主要问题是结果表达偏弱。"},
+		onReply: func(input ChatCompletionInput) {
+			if !strings.Contains(input.CanonicalAnalysisContext, "这是第三个项目的完整正文") {
+				t.Fatalf("expected canonical analysis context, got %q", input.CanonicalAnalysisContext)
+			}
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot:       &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "analysis",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前请求需要先读 section 再分析"},
+			},
+		}),
+		WithSectionLocator(NewSectionLocator(currentFileReader)),
+		WithSectionReader(NewSectionReader(currentFileReader)),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "第三个项目的问题是什么"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+}
+
+// TestAppendMessageFallsBackOnlyWithinCurrentFile 验证分析型请求定位失败后只会在当前文件内做一次 fallback，并继续收敛到 canonical section。
+func TestAppendMessageFallsBackOnlyWithinCurrentFile(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("当前文件分析")
+	currentFileReader := &fakeCurrentFileSectionReader{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-1",
+			ResourceID: "resource-1",
+			Content:    "整份简历正文",
+		},
+		allSections: []postgres.ResourceSection{
+			{ID: "section-3", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "慢跑计划", Content: "这是第三个项目的完整正文"},
+		},
+	}
+	retriever := &fakeResourceCitationRetriever{
+		result: []citation.Citation{
+			{
+				SectionID:    "section-3",
+				SectionType:  "project",
+				SectionTitle: "慢跑计划",
+				Snippet:      "这是第三个项目的片段命中。",
+			},
+		},
+	}
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "这个项目的主要问题是结果表达偏弱。"},
+		onReply: func(input ChatCompletionInput) {
+			if !strings.Contains(input.CanonicalAnalysisContext, "这是第三个项目的完整正文") {
+				t.Fatalf("expected canonical analysis context after fallback, got %q", input.CanonicalAnalysisContext)
+			}
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		retriever,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot:       &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "analysis",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.88,
+				Reasons:             []string{"当前请求需要先读 section 再分析"},
+			},
+		}),
+		WithSectionLocator(NewSectionLocator(currentFileReader)),
+		WithSectionReader(NewSectionReader(currentFileReader)),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "这个项目的问题是什么"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if retriever.calls != 1 {
+		t.Fatalf("expected exactly 1 current-file fallback retrieval, got %d", retriever.calls)
+	}
+	if retriever.resourceID != "resource-1" {
+		t.Fatalf("expected fallback retrieval to stay within current file resource, got %q", retriever.resourceID)
+	}
+}
+
+// TestAppendMessageReturnsExplicitFailureWhenCurrentFileTargetCannotBeLocated 验证当前文件内 fallback 仍失败时，助手会明确说明无法稳定定位目标内容。
+func TestAppendMessageReturnsExplicitFailureWhenCurrentFileTargetCannotBeLocated(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("当前文件分析")
+	currentFileReader := &fakeCurrentFileSectionReader{}
+	retriever := &fakeResourceCitationRetriever{}
+	responder := &fakeChatResponder{
+		onReply: func(ChatCompletionInput) {
+			t.Fatal("explicit failure path should not call chat responder")
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		retriever,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot:       &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "analysis",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "partial",
+				Confidence:          0.66,
+				Reasons:             []string{"当前请求需要先定位 section"},
+			},
+		}),
+		WithSectionLocator(NewSectionLocator(currentFileReader)),
+		WithSectionReader(NewSectionReader(currentFileReader)),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "这个项目的问题是什么")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if retriever.calls != 1 {
+		t.Fatalf("expected exactly 1 current-file fallback retrieval, got %d", retriever.calls)
+	}
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if reply.Content != buildCurrentFileFailureReply("这个项目的问题是什么") {
+		t.Fatalf("expected explicit failure reply, got %q", reply.Content)
+	}
+}
+
 // TestAppendMessageCreatesTaskSuggestionForExecutionRequestWithReadyResource 验证`appendMessage`在写入或副作用路径下的行为，防止同类回归。
 func TestAppendMessageCreatesTaskSuggestionForExecutionRequestWithReadyResource(t *testing.T) {
 	repo := newFakeSessionRepo()
@@ -3855,6 +4211,9 @@ func (l *fakeReplyContextLoader) LoadForReply(_ context.Context, _ string, _ []p
 	cloned.ActiveResource = cloneResourceContext(l.result.ActiveResource)
 	cloned.GroundedTarget = cloneResolvedReference(l.result.GroundedTarget)
 	cloned.Snapshot = cloneSessionContextSnapshot(l.result.Snapshot)
+	cloned.CanonicalRead = cloneCanonicalReadResult(l.result.CanonicalRead)
+	cloned.CanonicalAnalysisContext = l.result.CanonicalAnalysisContext
+	cloned.CurrentFileFailureReply = l.result.CurrentFileFailureReply
 	return &cloned, nil
 }
 
@@ -4377,6 +4736,16 @@ func cloneSessionContextSnapshot(snapshot *SessionContextSnapshot) *SessionConte
 	cloned.LastCitationWindows = append([]CitationWindow(nil), snapshot.LastCitationWindows...)
 	cloned.LastEnumeratedEntities = append([]EnumeratedEntity(nil), snapshot.LastEnumeratedEntities...)
 	cloned.OrdinalReferenceFrame = append([]OrdinalReference(nil), snapshot.OrdinalReferenceFrame...)
+	return &cloned
+}
+
+func cloneCanonicalReadResult(result *CanonicalReadResult) *CanonicalReadResult {
+	if result == nil {
+		return nil
+	}
+
+	cloned := *result
+	cloned.Sections = append([]CanonicalReadSectionItem(nil), result.Sections...)
 	return &cloned
 }
 

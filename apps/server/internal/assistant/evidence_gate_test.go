@@ -70,3 +70,24 @@ func TestEvidenceGateAcceptsConcreteSectionEvidence(t *testing.T) {
 		t.Fatalf("expected concrete section evidence to pass, got reason %q", reason)
 	}
 }
+
+// TestEvidenceGateAcceptsCanonicalSectionRead 验证`evidenceGateAcceptsCanonicalSectionRead`在合法输入或兼容路径下的行为，防止同类回归。
+func TestEvidenceGateAcceptsCanonicalSectionRead(t *testing.T) {
+	ok, reason := EvaluateEvidenceQuality(EvidenceEvaluationInput{
+		QueryIntent: "detail_by_entity",
+		ResolvedTarget: &ResolvedReference{
+			SectionID:   "section-campushub",
+			SectionType: "project",
+			EntityName:  "CampusHub",
+		},
+		CanonicalRead: &CanonicalReadResult{
+			Mode:        CanonicalReadModeSection,
+			SectionID:   "section-campushub",
+			SectionType: "project",
+			Content:     "负责活动发布、报名与签到全流程。",
+		},
+	})
+	if !ok {
+		t.Fatalf("expected canonical read to pass evidence gate, got reason %q", reason)
+	}
+}

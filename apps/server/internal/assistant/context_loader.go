@@ -19,12 +19,15 @@ type assistantMessageWindowReader interface {
 
 // ReplyContext 表示一轮回复组装所需的快照、资源与检索结果。
 type ReplyContext struct {
-	Snapshot       *SessionContextSnapshot
-	ActiveResource *resourceContext
-	Citations      []citation.Citation
-	GroundedTarget *ResolvedReference
-	QueryIntent    string
-	History        []postgres.AssistantMessage
+	Snapshot                 *SessionContextSnapshot
+	ActiveResource           *resourceContext
+	Citations                []citation.Citation
+	GroundedTarget           *ResolvedReference
+	QueryIntent              string
+	History                  []postgres.AssistantMessage
+	CanonicalRead            *CanonicalReadResult
+	CanonicalAnalysisContext string
+	CurrentFileFailureReply  string
 }
 
 // ContextLoader 负责按 snapshot-first 规则装载本轮回复上下文。

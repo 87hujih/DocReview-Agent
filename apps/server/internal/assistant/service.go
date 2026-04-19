@@ -86,6 +86,18 @@ type uploadedFileRepository interface {
 	UpdateResourceID(ctx context.Context, fileID string, resourceID string) error
 }
 
+type sectionLocator interface {
+	Locate(ctx context.Context, input LocateSectionInput) (*LocatedSection, error)
+}
+
+type canonicalSectionReader interface {
+	Read(ctx context.Context, input CanonicalReadInput) (*CanonicalReadResult, error)
+}
+
+type deterministicReadResponder interface {
+	Respond(ctx context.Context, input DeterministicReadInput) (*DeterministicReadResult, error)
+}
+
 type sessionContextProjector interface {
 	InitSession(ctx context.Context, sessionID string) error
 	ProjectSessionFileReady(ctx context.Context, projection SessionFileReadyProjection) error
@@ -125,6 +137,9 @@ type Service struct {
 	runtimeEvents     runtimeEventRecorder
 	learningProjector runtimeLearningProjector
 	asyncRunner       func(task func())
+	sectionLocator    sectionLocator
+	sectionReader     canonicalSectionReader
+	directReader      deterministicReadResponder
 }
 
 // NewService 构造助手领域服务。
@@ -218,6 +233,27 @@ func WithConversationSummarizer(summarizer ConversationSummarizer, snapshotRepo 
 	return func(service *Service) {
 		service.summarizer = summarizer
 		service.summaryRepo = snapshotRepo
+	}
+}
+
+// WithSectionLocator 为 assistant service 注入当前文件目标定位器。
+func WithSectionLocator(locator sectionLocator) ServiceOption {
+	return func(service *Service) {
+		service.sectionLocator = locator
+	}
+}
+
+// WithSectionReader 为 assistant service 注入当前文件 canonical 读取器。
+func WithSectionReader(reader canonicalSectionReader) ServiceOption {
+	return func(service *Service) {
+		service.sectionReader = reader
+	}
+}
+
+// WithDeterministicReadResponder 为 assistant service 注入 deterministic read responder。
+func WithDeterministicReadResponder(responder deterministicReadResponder) ServiceOption {
+	return func(service *Service) {
+		service.directReader = responder
 	}
 }
 
@@ -694,15 +730,78 @@ func (s *Service) buildReplyInputs(
 	}
 	replyDecision := decisionForReply(decision, policy, planDecision, verificationDecision)
 
+	deterministicInputs, usedDeterministicRead, err := s.tryBuildDeterministicReadInputs(ctx, content, replyContext)
+	if err != nil {
+		return nil, err
+	}
+	if usedDeterministicRead {
+		inputs := []postgres.AssistantMessageInput{userInput}
+		if prepared != nil && len(prepared.AdditionalInputs) > 0 {
+			inputs = append(inputs, prepared.AdditionalInputs...)
+		}
+		inputs = append(inputs, deterministicInputs...)
+
+		var correctionSignal *RuntimeCorrectionSignal
+		if runtimeState.PendingTaskSuggestion != nil {
+			correctionSignal = DetectExplicitWorkflowCorrection(content)
+		}
+
+		return &replyBuildResult{
+			Inputs:                         inputs,
+			ReplyContext:                   replyContext,
+			RuntimeState:                   runtimeState,
+			Decision:                       decision,
+			Policy:                         policy,
+			PlanDecision:                   planDecision,
+			VerificationDecision:           verificationDecision,
+			ReplyDecision:                  replyDecision,
+			PendingSuggestion:              clonePendingTaskSuggestion(runtimeState.PendingTaskSuggestion),
+			PreviousClarificationMessageID: latestClarificationPromptMessageID(replyHistory),
+			CorrectionSignal:               correctionSignal,
+		}, nil
+	}
+	if failureReply := strings.TrimSpace(replyContext.CurrentFileFailureReply); failureReply != "" {
+		assistantInput, err := buildMessageInput(RoleAssistant, KindText, TextPayload{Content: failureReply})
+		if err != nil {
+			return nil, err
+		}
+
+		inputs := []postgres.AssistantMessageInput{userInput}
+		if prepared != nil && len(prepared.AdditionalInputs) > 0 {
+			inputs = append(inputs, prepared.AdditionalInputs...)
+		}
+		inputs = append(inputs, assistantInput)
+
+		var correctionSignal *RuntimeCorrectionSignal
+		if runtimeState.PendingTaskSuggestion != nil {
+			correctionSignal = DetectExplicitWorkflowCorrection(content)
+		}
+
+		return &replyBuildResult{
+			Inputs:                         inputs,
+			ReplyContext:                   replyContext,
+			RuntimeState:                   runtimeState,
+			Decision:                       decision,
+			Policy:                         policy,
+			PlanDecision:                   planDecision,
+			VerificationDecision:           verificationDecision,
+			ReplyDecision:                  replyDecision,
+			PendingSuggestion:              clonePendingTaskSuggestion(runtimeState.PendingTaskSuggestion),
+			PreviousClarificationMessageID: latestClarificationPromptMessageID(replyHistory),
+			CorrectionSignal:               correctionSignal,
+		}, nil
+	}
+
 	reply, err := s.responder.Reply(ctx, ChatCompletionInput{
-		RuntimeState:   runtimeState,
-		Snapshot:       replyContext.Snapshot,
-		Citations:      replyContext.Citations,
-		GroundedTarget: replyContext.GroundedTarget,
-		History:        replyContext.History,
-		Message:        content,
-		Resource:       replyContext.ActiveResource,
-		Decision:       replyDecision,
+		RuntimeState:             runtimeState,
+		Snapshot:                 replyContext.Snapshot,
+		Citations:                replyContext.Citations,
+		GroundedTarget:           replyContext.GroundedTarget,
+		CanonicalAnalysisContext: replyContext.CanonicalAnalysisContext,
+		History:                  replyContext.History,
+		Message:                  content,
+		Resource:                 replyContext.ActiveResource,
+		Decision:                 replyDecision,
 	})
 	if err != nil {
 		return nil, err
@@ -737,6 +836,93 @@ func (s *Service) buildReplyInputs(
 		PreviousClarificationMessageID: latestClarificationPromptMessageID(replyHistory),
 		CorrectionSignal:               correctionSignal,
 	}, nil
+}
+
+// tryBuildDeterministicReadInputs 尝试把当前文件读取型请求改写成 deterministic read 的持久化输入。
+func (s *Service) tryBuildDeterministicReadInputs(
+	ctx context.Context,
+	content string,
+	replyContext *ReplyContext,
+) ([]postgres.AssistantMessageInput, bool, error) {
+	if s == nil || s.sectionLocator == nil || s.sectionReader == nil || s.directReader == nil || replyContext == nil || replyContext.ActiveResource == nil {
+		return nil, false, nil
+	}
+
+	intent := ClassifyReadIntent(content)
+	if !isDeterministicReadIntent(intent) {
+		return nil, false, nil
+	}
+
+	located, err := s.sectionLocator.Locate(ctx, LocateSectionInput{
+		ResourceID:      replyContext.ActiveResource.ID,
+		Message:         content,
+		Intent:          intent,
+		ActiveSectionID: activeSectionIDFromSnapshot(replyContext.Snapshot),
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if located == nil {
+		return nil, false, nil
+	}
+
+	readResult, err := s.sectionReader.Read(ctx, CanonicalReadInput{
+		ResourceID: replyContext.ActiveResource.ID,
+		VersionID:  located.VersionID,
+		Located:    located,
+	})
+	if err != nil {
+		if errors.Is(err, ErrCanonicalReadUnavailable) {
+			return nil, false, nil
+		}
+
+		return nil, false, err
+	}
+	if readResult == nil {
+		return nil, false, nil
+	}
+
+	directReply, err := s.directReader.Respond(ctx, DeterministicReadInput{
+		Message:    content,
+		Intent:     intent,
+		Resource:   replyContext.ActiveResource,
+		Located:    located,
+		ReadResult: readResult,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if directReply == nil || strings.TrimSpace(directReply.Content) == "" {
+		return nil, false, nil
+	}
+
+	assistantInput, err := buildMessageInput(RoleAssistant, KindText, TextPayload{
+		Content: strings.TrimSpace(directReply.Content),
+	})
+	if err != nil {
+		return nil, false, err
+	}
+
+	return []postgres.AssistantMessageInput{assistantInput}, true, nil
+}
+
+// isDeterministicReadIntent 判断当前 read intent 是否应该优先走 direct access 的 deterministic read 主路。
+func isDeterministicReadIntent(intent ReadIntent) bool {
+	switch intent.Kind {
+	case ReadIntentListSections, ReadIntentLocateOrdinal, ReadIntentExcerptSection:
+		return true
+	default:
+		return false
+	}
+}
+
+// activeSectionIDFromSnapshot 提取快照里的 active section id，避免调用方重复判空。
+func activeSectionIDFromSnapshot(snapshot *SessionContextSnapshot) string {
+	if snapshot == nil || snapshot.ActiveSection == nil {
+		return ""
+	}
+
+	return strings.TrimSpace(snapshot.ActiveSection.ID)
 }
 
 // recordRuntimeLearningForTurn 记录当前轮的 runtime 事件，并把事件投影为学习样本。
@@ -1526,6 +1712,16 @@ func decodeSessionFile(payload []byte) (SessionFilePayload, error) {
 	return value, nil
 }
 
+// decodeTextInputPayload 解码 `文本消息输入` 载荷，供 direct read 流式分支复用。
+func decodeTextInputPayload(payload []byte) (TextPayload, error) {
+	var value TextPayload
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return TextPayload{}, err
+	}
+
+	return value, nil
+}
+
 // stringPointer 返回字符串指针，简化构造可选文本字段时的样板代码。
 func stringPointer(value string) *string {
 	return &value
@@ -1646,15 +1842,103 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		CorrectionSignal:               correctionSignal,
 	}
 
+	deterministicInputs, usedDeterministicRead, err := s.tryBuildDeterministicReadInputs(ctx, input.content, replyContext)
+	if err != nil {
+		return err
+	}
+	if usedDeterministicRead {
+		replyPayload, decodeErr := decodeTextInputPayload(deterministicInputs[0].Payload)
+		if decodeErr != nil {
+			return decodeErr
+		}
+
+		if err := input.emit(StreamEvent{Type: StreamEventMessageStarted}); err != nil {
+			return err
+		}
+		if err := input.emit(StreamEvent{
+			Type:  StreamEventMessageDelta,
+			Delta: replyPayload.Content,
+		}); err != nil {
+			return err
+		}
+
+		messages, appendErr := s.repo.AppendMessages(ctx, input.sessionID, deterministicInputs)
+		if appendErr != nil {
+			return appendErr
+		}
+		if len(messages) == 0 {
+			return NewStreamError(StreamErrorCodeInternal, "助手暂时不可用，请稍后重试。", errors.New("deterministic read persisted no messages"))
+		}
+		if err := s.projectPersistedMessages(ctx, input.sessionID, messages); err != nil {
+			return err
+		}
+		if err := s.projectReplyGrounding(ctx, input.sessionID, replyContext); err != nil {
+			return err
+		}
+		if err := s.recordRuntimeLearningForTurn(ctx, turnBuild, messages); err != nil {
+			return err
+		}
+		s.triggerSummaryRefresh(input.sessionID)
+
+		return input.emit(StreamEvent{
+			Type:    StreamEventMessageCompleted,
+			Message: &messages[0],
+		})
+	}
+	if failureReply := strings.TrimSpace(replyContext.CurrentFileFailureReply); failureReply != "" {
+		assistantInput, err := buildMessageInput(RoleAssistant, KindText, TextPayload{Content: failureReply})
+		if err != nil {
+			return err
+		}
+		replyPayload, decodeErr := decodeTextInputPayload(assistantInput.Payload)
+		if decodeErr != nil {
+			return decodeErr
+		}
+
+		if err := input.emit(StreamEvent{Type: StreamEventMessageStarted}); err != nil {
+			return err
+		}
+		if err := input.emit(StreamEvent{
+			Type:  StreamEventMessageDelta,
+			Delta: replyPayload.Content,
+		}); err != nil {
+			return err
+		}
+
+		messages, appendErr := s.repo.AppendMessages(ctx, input.sessionID, []postgres.AssistantMessageInput{assistantInput})
+		if appendErr != nil {
+			return appendErr
+		}
+		if len(messages) == 0 {
+			return NewStreamError(StreamErrorCodeInternal, "助手暂时不可用，请稍后重试。", errors.New("current-file failure reply persisted no messages"))
+		}
+		if err := s.projectPersistedMessages(ctx, input.sessionID, messages); err != nil {
+			return err
+		}
+		if err := s.projectReplyGrounding(ctx, input.sessionID, replyContext); err != nil {
+			return err
+		}
+		if err := s.recordRuntimeLearningForTurn(ctx, turnBuild, messages); err != nil {
+			return err
+		}
+		s.triggerSummaryRefresh(input.sessionID)
+
+		return input.emit(StreamEvent{
+			Type:    StreamEventMessageCompleted,
+			Message: &messages[0],
+		})
+	}
+
 	stream, err := s.responder.Stream(ctx, ChatCompletionInput{
-		RuntimeState:   runtimeState,
-		Snapshot:       replyContext.Snapshot,
-		Citations:      replyContext.Citations,
-		GroundedTarget: replyContext.GroundedTarget,
-		History:        replyContext.History,
-		Message:        input.content,
-		Resource:       replyContext.ActiveResource,
-		Decision:       replyDecision,
+		RuntimeState:             runtimeState,
+		Snapshot:                 replyContext.Snapshot,
+		Citations:                replyContext.Citations,
+		GroundedTarget:           replyContext.GroundedTarget,
+		CanonicalAnalysisContext: replyContext.CanonicalAnalysisContext,
+		History:                  replyContext.History,
+		Message:                  input.content,
+		Resource:                 replyContext.ActiveResource,
+		Decision:                 replyDecision,
 	})
 	if err != nil {
 		return mapAssistantStreamError(err)
@@ -1917,7 +2201,16 @@ func (s *Service) repairReplyContext(ctx context.Context, currentMessage string,
 	if replyContext == nil {
 		return nil, nil
 	}
-	if s == nil || s.retriever == nil || replyContext.ActiveResource == nil {
+	intent := ClassifyReadIntent(currentMessage)
+	directAccessEnabled := s != nil && s.sectionLocator != nil && s.sectionReader != nil
+
+	enriched, err := s.enrichReplyContextWithCanonicalRead(ctx, currentMessage, intent, replyContext)
+	if err != nil {
+		return nil, err
+	}
+	replyContext = enriched
+
+	if s == nil || replyContext.ActiveResource == nil {
 		return replyContext, nil
 	}
 
@@ -1925,13 +2218,42 @@ func (s *Service) repairReplyContext(ctx context.Context, currentMessage string,
 		QueryIntent:    replyContext.QueryIntent,
 		ResolvedTarget: replyContext.GroundedTarget,
 		Citations:      replyContext.Citations,
+		CanonicalRead:  replyContext.CanonicalRead,
 	})
 	if ok {
 		return replyContext, nil
 	}
+	if s.retriever == nil {
+		if directAccessEnabled && shouldReturnCurrentFileFailure(intent, replyContext) {
+			replyContext.CurrentFileFailureReply = buildCurrentFileFailureReply(currentMessage)
+		}
 
-	repairQuery := buildRepairRetrievalQuery(currentMessage, replyContext)
+		return replyContext, nil
+	}
+	if !directAccessEnabled {
+		repairQuery := buildRepairRetrievalQuery(currentMessage, replyContext)
+		if strings.TrimSpace(repairQuery) == "" {
+			return replyContext, nil
+		}
+
+		repairedCitations, err := s.retriever.SearchByResource(ctx, replyContext.ActiveResource.ID, repairQuery, 4)
+		if err != nil {
+			return nil, err
+		}
+		if len(repairedCitations) == 0 {
+			return replyContext, nil
+		}
+
+		replyContext.Citations = repairedCitations
+		return replyContext, nil
+	}
+
+	repairQuery := buildCurrentFileFallbackQuery(currentMessage, replyContext)
 	if strings.TrimSpace(repairQuery) == "" {
+		if shouldReturnCurrentFileFailure(intent, replyContext) {
+			replyContext.CurrentFileFailureReply = buildCurrentFileFailureReply(currentMessage)
+		}
+
 		return replyContext, nil
 	}
 
@@ -1940,10 +2262,30 @@ func (s *Service) repairReplyContext(ctx context.Context, currentMessage string,
 		return nil, err
 	}
 	if len(repairedCitations) == 0 {
+		if shouldReturnCurrentFileFailure(intent, replyContext) {
+			replyContext.CurrentFileFailureReply = buildCurrentFileFailureReply(currentMessage)
+		}
+
 		return replyContext, nil
 	}
 
 	replyContext.Citations = repairedCitations
+	enriched, err = s.enrichReplyContextFromFallbackCitations(ctx, currentMessage, intent, replyContext)
+	if err != nil {
+		return nil, err
+	}
+	replyContext = enriched
+
+	ok, _ = EvaluateEvidenceQuality(EvidenceEvaluationInput{
+		QueryIntent:    replyContext.QueryIntent,
+		ResolvedTarget: replyContext.GroundedTarget,
+		Citations:      replyContext.Citations,
+		CanonicalRead:  replyContext.CanonicalRead,
+	})
+	if !ok && shouldReturnCurrentFileFailure(intent, replyContext) {
+		replyContext.CurrentFileFailureReply = buildCurrentFileFailureReply(currentMessage)
+	}
+
 	return replyContext, nil
 }
 
@@ -1966,6 +2308,184 @@ func buildRepairRetrievalQuery(_ string, replyContext *ReplyContext) string {
 	default:
 		return ""
 	}
+}
+
+// enrichReplyContextWithCanonicalRead 在分析型或当前文件定向请求下优先补齐 canonical read 结果。
+func (s *Service) enrichReplyContextWithCanonicalRead(
+	ctx context.Context,
+	currentMessage string,
+	intent ReadIntent,
+	replyContext *ReplyContext,
+) (*ReplyContext, error) {
+	if s == nil || s.sectionLocator == nil || s.sectionReader == nil || replyContext == nil || replyContext.ActiveResource == nil {
+		return replyContext, nil
+	}
+	if !requiresCanonicalCurrentFileRead(intent) || replyContext.CanonicalRead != nil {
+		return replyContext, nil
+	}
+
+	located, err := s.sectionLocator.Locate(ctx, LocateSectionInput{
+		ResourceID:      replyContext.ActiveResource.ID,
+		Message:         currentMessage,
+		Intent:          intent,
+		ActiveSectionID: activeSectionIDFromSnapshot(replyContext.Snapshot),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if located == nil {
+		return replyContext, nil
+	}
+
+	readResult, err := s.sectionReader.Read(ctx, CanonicalReadInput{
+		ResourceID: replyContext.ActiveResource.ID,
+		VersionID:  located.VersionID,
+		Located:    located,
+	})
+	if err != nil {
+		if errors.Is(err, ErrCanonicalReadUnavailable) {
+			return replyContext, nil
+		}
+
+		return nil, err
+	}
+	if readResult == nil {
+		return replyContext, nil
+	}
+
+	return applyCanonicalReadToReplyContext(currentMessage, replyContext, located, readResult)
+}
+
+// enrichReplyContextFromFallbackCitations 尝试把当前文件内 fallback citations 重新收敛成 canonical section 正文。
+func (s *Service) enrichReplyContextFromFallbackCitations(
+	ctx context.Context,
+	currentMessage string,
+	intent ReadIntent,
+	replyContext *ReplyContext,
+) (*ReplyContext, error) {
+	if s == nil || s.sectionReader == nil || replyContext == nil || !requiresCanonicalCurrentFileRead(intent) {
+		return replyContext, nil
+	}
+	if len(replyContext.Citations) == 0 {
+		return replyContext, nil
+	}
+
+	first := replyContext.Citations[0]
+	if strings.TrimSpace(first.SectionID) == "" {
+		return replyContext, nil
+	}
+
+	readResult, err := s.sectionReader.Read(ctx, CanonicalReadInput{
+		ResourceID: replyContext.ActiveResource.ID,
+		Located: &LocatedSection{
+			Mode:        LocatedSectionModeSection,
+			SectionID:   strings.TrimSpace(first.SectionID),
+			SectionType: strings.TrimSpace(first.SectionType),
+			Reason:      "current_file_retrieval_fallback",
+		},
+	})
+	if err != nil {
+		if errors.Is(err, ErrCanonicalReadUnavailable) {
+			return replyContext, nil
+		}
+
+		return nil, err
+	}
+	if readResult == nil {
+		return replyContext, nil
+	}
+
+	return applyCanonicalReadToReplyContext(currentMessage, replyContext, &LocatedSection{
+		Mode:        LocatedSectionModeSection,
+		SectionID:   strings.TrimSpace(first.SectionID),
+		SectionType: strings.TrimSpace(first.SectionType),
+		Reason:      "current_file_retrieval_fallback",
+	}, readResult)
+}
+
+// applyCanonicalReadToReplyContext 把 canonical read 结果回填到 reply context，供 responder 和 evidence gate 共用。
+func applyCanonicalReadToReplyContext(
+	currentMessage string,
+	replyContext *ReplyContext,
+	located *LocatedSection,
+	readResult *CanonicalReadResult,
+) (*ReplyContext, error) {
+	if replyContext == nil || readResult == nil {
+		return replyContext, nil
+	}
+
+	replyContext.CanonicalRead = readResult
+	replyContext.CurrentFileFailureReply = ""
+	if located != nil && replyContext.GroundedTarget == nil && readResult.Mode == CanonicalReadModeSection {
+		replyContext.GroundedTarget = &ResolvedReference{
+			SectionID:   strings.TrimSpace(readResult.SectionID),
+			SectionType: strings.TrimSpace(readResult.SectionType),
+			Reason:      strings.TrimSpace(located.Reason),
+		}
+	}
+	if shouldBuildCanonicalAnalysisContext(currentMessage) {
+		result, err := BuildGroundedAnalysisInput(GroundedAnalysisInput{
+			Message:    currentMessage,
+			ReadResult: *readResult,
+		})
+		if err != nil {
+			if errors.Is(err, ErrCanonicalReadUnavailable) {
+				return replyContext, nil
+			}
+
+			return nil, err
+		}
+		if result != nil {
+			replyContext.CanonicalAnalysisContext = strings.TrimSpace(result.AnalysisContext)
+		}
+	}
+
+	return replyContext, nil
+}
+
+// buildCurrentFileFallbackQuery 组装当前文件内的一次 fallback 检索查询，避免退回全局问答模式。
+func buildCurrentFileFallbackQuery(currentMessage string, replyContext *ReplyContext) string {
+	if query := strings.TrimSpace(buildRepairRetrievalQuery(currentMessage, replyContext)); query != "" {
+		return query
+	}
+
+	return strings.TrimSpace(currentMessage)
+}
+
+// requiresCanonicalCurrentFileRead 判断当前 intent 是否需要“先读 canonical 内容再继续”。
+func requiresCanonicalCurrentFileRead(intent ReadIntent) bool {
+	switch intent.Kind {
+	case ReadIntentListSections, ReadIntentLocateOrdinal, ReadIntentExcerptSection, ReadIntentAggregateAttribute, ReadIntentAnalyzeSection, ReadIntentTransformSection:
+		return true
+	default:
+		return false
+	}
+}
+
+// shouldBuildCanonicalAnalysisContext 判断当前请求是否需要把 canonical 内容进一步包装成分析提示上下文。
+func shouldBuildCanonicalAnalysisContext(currentMessage string) bool {
+	intent := ClassifyReadIntent(currentMessage)
+	switch intent.Kind {
+	case ReadIntentAggregateAttribute, ReadIntentAnalyzeSection, ReadIntentTransformSection:
+		return true
+	default:
+		return false
+	}
+}
+
+// shouldReturnCurrentFileFailure 判断当前轮是否应在当前文件 direct access 失败后直接给出显式失败语义。
+func shouldReturnCurrentFileFailure(intent ReadIntent, replyContext *ReplyContext) bool {
+	return replyContext != nil && replyContext.ActiveResource != nil && requiresCanonicalCurrentFileRead(intent)
+}
+
+// buildCurrentFileFailureReply 返回当前文件 direct access 失败时的统一显式失败文案。
+func buildCurrentFileFailureReply(currentMessage string) string {
+	message := strings.TrimSpace(currentMessage)
+	if message == "" {
+		return "我还没能在当前文件里稳定定位到你要看的内容，请直接指出项目名、章节名，或说明是第几个项目。"
+	}
+
+	return "我还没能在当前文件里稳定定位到你说的目标内容，请直接指出项目名、章节名，或说明是第几个项目。"
 }
 
 // projectReplyGrounding 把 `Replygrounding` 投影回助手状态，保持后续读取口径一致。
