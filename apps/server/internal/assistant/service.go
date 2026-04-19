@@ -94,27 +94,37 @@ type sessionContextProjector interface {
 	ProjectGroundingState(ctx context.Context, projection GroundingStateProjection) error
 }
 
+type runtimeEventRecorder interface {
+	Record(ctx context.Context, input RuntimeRecordInput) (*postgres.AssistantRuntimeEvent, error)
+}
+
+type runtimeLearningProjector interface {
+	Project(ctx context.Context, event *postgres.AssistantRuntimeEvent) error
+}
+
 // ServiceOption 允许按需注入上传原文件存储等扩展能力。
 type ServiceOption func(*Service)
 
 // Service 负责会话消息流、文件导入和任务确认。
 type Service struct {
-	importer         documentImporter
-	repo             sessionRepository
-	retriever        resourceCitationRetriever
-	responder        chatResponder
-	deliberator      deliberationAgent
-	workflowPlanner  workflowPlanner
-	workflowVerifier workflowVerifier
-	tasks            taskCreator
-	summarizer       ConversationSummarizer
-	fileStore        uploadedFileStore
-	uploadedFiles    uploadedFileRepository
-	contextLoader    replyContextLoader
-	projector        sessionContextProjector
-	summaryRepo      summarySnapshotRepository
-	stateBuilder     *RuntimeStateBuilder
-	asyncRunner      func(task func())
+	importer          documentImporter
+	repo              sessionRepository
+	retriever         resourceCitationRetriever
+	responder         chatResponder
+	deliberator       deliberationAgent
+	workflowPlanner   workflowPlanner
+	workflowVerifier  workflowVerifier
+	tasks             taskCreator
+	summarizer        ConversationSummarizer
+	fileStore         uploadedFileStore
+	uploadedFiles     uploadedFileRepository
+	contextLoader     replyContextLoader
+	projector         sessionContextProjector
+	summaryRepo       summarySnapshotRepository
+	stateBuilder      *RuntimeStateBuilder
+	runtimeEvents     runtimeEventRecorder
+	learningProjector runtimeLearningProjector
+	asyncRunner       func(task func())
 }
 
 // NewService 构造助手领域服务。
@@ -211,6 +221,14 @@ func WithConversationSummarizer(summarizer ConversationSummarizer, snapshotRepo 
 	}
 }
 
+// WithRuntimeLearning 为 assistant service 注入 runtime 事件记录与样本投影能力。
+func WithRuntimeLearning(recorder runtimeEventRecorder, projector runtimeLearningProjector) ServiceOption {
+	return func(service *Service) {
+		service.runtimeEvents = recorder
+		service.learningProjector = projector
+	}
+}
+
 // WithSummaryAsyncRunner 为摘要刷新注入异步执行器，便于测试控制触发时机。
 func WithSummaryAsyncRunner(runner func(task func())) ServiceOption {
 	return func(service *Service) {
@@ -251,12 +269,12 @@ func (s *Service) StartConversation(ctx context.Context, content string) (*Conve
 		return nil, ErrMessageRequired
 	}
 
-	inputs, replyContext, err := s.buildReplyInputs(ctx, "", nil, trimmed)
+	replyBuild, err := s.buildReplyInputs(ctx, "", nil, trimmed)
 	if err != nil {
 		return nil, err
 	}
 
-	session, messages, err := s.repo.CreateSessionWithMessages(ctx, buildSessionTitle(trimmed), inputs)
+	session, messages, err := s.repo.CreateSessionWithMessages(ctx, buildSessionTitle(trimmed), replyBuild.Inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +284,7 @@ func (s *Service) StartConversation(ctx context.Context, content string) (*Conve
 	if err := s.projectPersistedMessages(ctx, session.ID, messages); err != nil {
 		return nil, err
 	}
-	if err := s.projectReplyGrounding(ctx, session.ID, replyContext); err != nil {
+	if err := s.projectReplyGrounding(ctx, session.ID, replyBuild.ReplyContext); err != nil {
 		return nil, err
 	}
 
@@ -296,19 +314,22 @@ func (s *Service) AppendMessage(ctx context.Context, sessionID string, content s
 		return nil, err
 	}
 
-	inputs, replyContext, err := s.buildReplyInputs(ctx, sessionID, history, trimmed)
+	replyBuild, err := s.buildReplyInputs(ctx, sessionID, history, trimmed)
 	if err != nil {
 		return nil, err
 	}
 
-	messages, err := s.repo.AppendMessages(ctx, sessionID, inputs)
+	messages, err := s.repo.AppendMessages(ctx, sessionID, replyBuild.Inputs)
 	if err != nil {
 		return nil, err
 	}
 	if err := s.projectPersistedMessages(ctx, sessionID, messages); err != nil {
 		return nil, err
 	}
-	if err := s.projectReplyGrounding(ctx, sessionID, replyContext); err != nil {
+	if err := s.projectReplyGrounding(ctx, sessionID, replyBuild.ReplyContext); err != nil {
+		return nil, err
+	}
+	if err := s.recordRuntimeLearningForTurn(ctx, replyBuild, messages); err != nil {
 		return nil, err
 	}
 	s.triggerSummaryRefresh(sessionID)
@@ -578,6 +599,17 @@ func (s *Service) ConfirmTaskSuggestion(ctx context.Context, messageID string) (
 	if err := s.projectPersistedMessages(ctx, message.SessionID, messages); err != nil {
 		return nil, err
 	}
+	if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+		SessionID: message.SessionID,
+		MessageID: &message.ID,
+		Source:    "task_suggestion",
+		EventType: RuntimeEventTypeTaskSuggestionConfirmed,
+		Payload: map[string]any{
+			"task_id": task.ID,
+		},
+	}); err != nil {
+		return nil, err
+	}
 
 	updatedSession, err := s.repo.GetSessionByID(ctx, message.SessionID)
 	if err != nil {
@@ -600,23 +632,37 @@ func (s *Service) DeleteSession(ctx context.Context, sessionID string) (bool, er
 }
 
 // buildReplyInputs 组装 `Reply输入`，统一接收者返回结果的结构形态。
+type replyBuildResult struct {
+	Inputs                         []postgres.AssistantMessageInput
+	ReplyContext                   *ReplyContext
+	RuntimeState                   RuntimeState
+	Decision                       *DeliberationDecision
+	Policy                         PolicyDecision
+	PlanDecision                   *WorkflowPlanDecision
+	VerificationDecision           *WorkflowVerificationDecision
+	ReplyDecision                  *DeliberationDecision
+	PendingSuggestion              *SnapshotPendingTaskSuggestion
+	PreviousClarificationMessageID *string
+	CorrectionSignal               *RuntimeCorrectionSignal
+}
+
 func (s *Service) buildReplyInputs(
 	ctx context.Context,
 	sessionID string,
 	history []postgres.AssistantMessage,
 	content string,
-) ([]postgres.AssistantMessageInput, *ReplyContext, error) {
+) (*replyBuildResult, error) {
 	userInput, err := buildUserTextInput(content)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	prepared, err := s.prepareTurnContext(ctx, history, content)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if s.responder == nil {
-		return nil, nil, errors.New("助手对话模型未配置")
+		return nil, errors.New("助手对话模型未配置")
 	}
 
 	replyHistory := history
@@ -626,25 +672,25 @@ func (s *Service) buildReplyInputs(
 
 	replyContext, err := s.loadReplyContext(ctx, sessionID, replyHistory, content)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	replyContext, err = s.repairReplyContext(ctx, content, replyContext)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	runtimeState := s.stateBuilder.Build(content, replyContext)
 	decision, policy, err := s.deliberateTurn(ctx, runtimeState)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	planDecision, err := s.planWorkflow(ctx, runtimeState, decision, policy)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	verificationDecision, err := s.verifyWorkflow(ctx, runtimeState, decision, policy, planDecision)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	replyDecision := decisionForReply(decision, policy, planDecision, verificationDecision)
 
@@ -659,12 +705,12 @@ func (s *Service) buildReplyInputs(
 		Decision:       replyDecision,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	assistantInputs, err := buildAssistantReplyInputsFromPolicy(reply, replyDecision, policy, runtimeState.ActiveResource)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	inputs := []postgres.AssistantMessageInput{userInput}
@@ -673,7 +719,338 @@ func (s *Service) buildReplyInputs(
 	}
 	inputs = append(inputs, assistantInputs...)
 
-	return inputs, replyContext, nil
+	var correctionSignal *RuntimeCorrectionSignal
+	if runtimeState.PendingTaskSuggestion != nil {
+		correctionSignal = DetectExplicitWorkflowCorrection(content)
+	}
+
+	return &replyBuildResult{
+		Inputs:                         inputs,
+		ReplyContext:                   replyContext,
+		RuntimeState:                   runtimeState,
+		Decision:                       decision,
+		Policy:                         policy,
+		PlanDecision:                   planDecision,
+		VerificationDecision:           verificationDecision,
+		ReplyDecision:                  replyDecision,
+		PendingSuggestion:              clonePendingTaskSuggestion(runtimeState.PendingTaskSuggestion),
+		PreviousClarificationMessageID: latestClarificationPromptMessageID(replyHistory),
+		CorrectionSignal:               correctionSignal,
+	}, nil
+}
+
+// recordRuntimeLearningForTurn 记录当前轮的 runtime 事件，并把事件投影为学习样本。
+func (s *Service) recordRuntimeLearningForTurn(
+	ctx context.Context,
+	build *replyBuildResult,
+	messages []postgres.AssistantMessage,
+) error {
+	if s == nil || s.runtimeEvents == nil || build == nil {
+		return nil
+	}
+
+	decisionMessageID := runtimeDecisionMessageID(messages)
+	if decisionMessageID == nil {
+		return nil
+	}
+
+	sessionID := runtimeSessionID(build, messages)
+	if strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+
+	if build.PendingSuggestion != nil && strings.TrimSpace(build.PendingSuggestion.MessageID) != "" {
+		pendingMessageID := build.PendingSuggestion.MessageID
+		if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+			SessionID: sessionID,
+			MessageID: &pendingMessageID,
+			Source:    "task_suggestion",
+			EventType: RuntimeEventTypeTaskSuggestionIgnored,
+			Payload: map[string]any{
+				"instruction": strings.TrimSpace(build.PendingSuggestion.Instruction),
+			},
+		}); err != nil {
+			return err
+		}
+		if build.CorrectionSignal != nil {
+			if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+				SessionID: sessionID,
+				MessageID: &pendingMessageID,
+				Source:    "user",
+				EventType: RuntimeEventTypeUserCorrected,
+				Payload: map[string]any{
+					"reason": build.CorrectionSignal.Reason,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	if build.Decision != nil {
+		if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+			SessionID: sessionID,
+			MessageID: decisionMessageID,
+			Source:    "deliberation",
+			EventType: RuntimeEventTypeDeliberationDecided,
+			Payload: map[string]any{
+				"request_kind":         build.Decision.RequestKind,
+				"response_mode":        build.Decision.ResponseMode,
+				"chat_fulfillable":     build.Decision.ChatFulfillable,
+				"workflow_commitment":  build.Decision.WorkflowCommitment,
+				"needs_clarification":  build.Decision.NeedsClarification,
+				"evidence_sufficiency": build.Decision.EvidenceSufficiency,
+				"confidence":           build.Decision.Confidence,
+				"reasons":              build.Decision.Reasons,
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+		SessionID: sessionID,
+		MessageID: decisionMessageID,
+		Source:    "policy",
+		EventType: RuntimeEventTypePolicyApplied,
+		Payload: map[string]any{
+			"allow_answer":            build.Policy.AllowAnswer,
+			"allow_clarification":     build.Policy.AllowClarification,
+			"allow_task_suggestion":   build.Policy.AllowTaskSuggestion,
+			"allow_workflow_planning": build.Policy.AllowWorkflowPlanning,
+			"require_verifier":        build.Policy.RequireVerifier,
+			"blocked_reason":          build.Policy.BlockedReason,
+		},
+	}); err != nil {
+		return err
+	}
+
+	if build.PlanDecision != nil {
+		if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+			SessionID: sessionID,
+			MessageID: decisionMessageID,
+			Source:    "planner",
+			EventType: RuntimeEventTypePlannerUsed,
+			Payload: map[string]any{
+				"should_enter_workflow": build.PlanDecision.ShouldEnterWorkflow,
+				"chat_fulfillable":      build.PlanDecision.ChatFulfillable,
+				"needs_clarification":   build.PlanDecision.NeedsClarification,
+				"candidate_instruction": derefOptionalString(build.PlanDecision.CandidateInstruction),
+				"candidate_plan_goal":   derefOptionalString(build.PlanDecision.CandidatePlanGoal),
+				"confidence":            build.PlanDecision.Confidence,
+				"reasons":               build.PlanDecision.Reasons,
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	if build.VerificationDecision != nil {
+		if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+			SessionID: sessionID,
+			MessageID: decisionMessageID,
+			Source:    "verifier",
+			EventType: RuntimeEventTypeVerifierUsed,
+			Payload: map[string]any{
+				"approve_workflow":    build.VerificationDecision.ApproveWorkflow,
+				"downgrade_to_chat":   build.VerificationDecision.DowngradeToChat,
+				"needs_clarification": build.VerificationDecision.NeedsClarification,
+				"revised_instruction": derefOptionalString(build.VerificationDecision.RevisedInstruction),
+				"confidence":          build.VerificationDecision.Confidence,
+				"reasons":             build.VerificationDecision.Reasons,
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	if build.ReplyDecision != nil && build.ReplyDecision.NeedsClarification && build.ReplyDecision.ClarificationQuestion != nil {
+		if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+			SessionID: sessionID,
+			MessageID: decisionMessageID,
+			Source:    "clarification",
+			EventType: RuntimeEventTypeClarificationPrompted,
+			Payload: map[string]any{
+				"question": *build.ReplyDecision.ClarificationQuestion,
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	if build.PreviousClarificationMessageID != nil && build.ReplyDecision != nil && !build.ReplyDecision.NeedsClarification {
+		switch build.ReplyDecision.ResponseMode {
+		case ResponseModeAnswerThenTaskCard:
+			if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+				SessionID: sessionID,
+				MessageID: build.PreviousClarificationMessageID,
+				Source:    "clarification",
+				EventType: RuntimeEventTypeClarificationResolvedFlow,
+				Payload: map[string]any{
+					"outcome":       "resolved_to_workflow",
+					"response_mode": build.ReplyDecision.ResponseMode,
+				},
+			}); err != nil {
+				return err
+			}
+		case ResponseModeAnswerOnly, ResponseModeAnswerWithGrounding:
+			if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+				SessionID: sessionID,
+				MessageID: build.PreviousClarificationMessageID,
+				Source:    "clarification",
+				EventType: RuntimeEventTypeClarificationResolvedChat,
+				Payload: map[string]any{
+					"outcome":       "resolved_to_chat",
+					"response_mode": build.ReplyDecision.ResponseMode,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	if build.Decision != nil && build.Decision.WorkflowCommitment && build.ReplyDecision != nil {
+		switch build.ReplyDecision.ResponseMode {
+		case ResponseModeAnswerThenTaskCard:
+			if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+				SessionID: sessionID,
+				MessageID: decisionMessageID,
+				Source:    "workflow",
+				EventType: RuntimeEventTypeWorkflowPromoted,
+				Payload: map[string]any{
+					"response_mode": build.ReplyDecision.ResponseMode,
+				},
+			}); err != nil {
+				return err
+			}
+		case ResponseModeAnswerOnly, ResponseModeAnswerWithGrounding, ResponseModeClarifyFirst:
+			if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+				SessionID: sessionID,
+				MessageID: decisionMessageID,
+				Source:    "workflow",
+				EventType: RuntimeEventTypeWorkflowDowngraded,
+				Payload: map[string]any{
+					"response_mode": build.ReplyDecision.ResponseMode,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	if build.ReplyDecision != nil && build.ReplyDecision.ResponseMode == ResponseModeAnswerThenTaskCard && build.ReplyDecision.CandidateTaskInstruction != nil {
+		if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+			SessionID: sessionID,
+			MessageID: decisionMessageID,
+			Source:    "task_suggestion",
+			EventType: RuntimeEventTypeTaskSuggestionCreated,
+			Payload: map[string]any{
+				"instruction": strings.TrimSpace(*build.ReplyDecision.CandidateTaskInstruction),
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// recordRuntimeEvent 统一处理 runtime 事件写入与样本投影，避免调用点重复编排。
+func (s *Service) recordRuntimeEvent(ctx context.Context, input RuntimeRecordInput) error {
+	if s == nil || s.runtimeEvents == nil {
+		return nil
+	}
+
+	event, err := s.runtimeEvents.Record(ctx, input)
+	if err != nil {
+		return err
+	}
+	if s.learningProjector == nil {
+		return nil
+	}
+
+	return s.learningProjector.Project(ctx, event)
+}
+
+// runtimeDecisionMessageID 选出当前轮最适合作为学习样本主键的 assistant message id。
+func runtimeDecisionMessageID(messages []postgres.AssistantMessage) *string {
+	for index := range messages {
+		if messages[index].Kind == KindTaskSuggestion {
+			return stringPointer(messages[index].ID)
+		}
+	}
+	for index := range messages {
+		if messages[index].Role == RoleAssistant && messages[index].Kind == KindText {
+			return stringPointer(messages[index].ID)
+		}
+	}
+	for index := range messages {
+		if messages[index].Role == RoleAssistant {
+			return stringPointer(messages[index].ID)
+		}
+	}
+
+	return nil
+}
+
+// latestClarificationPromptMessageID 识别上一轮 assistant 输出中的最近澄清提示消息。
+func latestClarificationPromptMessageID(history []postgres.AssistantMessage) *string {
+	sawAssistant := false
+
+	for index := len(history) - 1; index >= 0; index-- {
+		message := history[index]
+		if message.Role != RoleAssistant {
+			if sawAssistant {
+				break
+			}
+
+			continue
+		}
+
+		sawAssistant = true
+		if message.Kind != KindText {
+			continue
+		}
+
+		payload, err := unmarshalTextPayload(message.Payload)
+		if err != nil {
+			continue
+		}
+		if isClarificationPromptText(payload.Content) {
+			return stringPointer(message.ID)
+		}
+	}
+
+	return nil
+}
+
+// isClarificationPromptText 用保守规则识别“你是想……还是……”这类澄清提示。
+func isClarificationPromptText(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+	if !strings.HasSuffix(trimmed, "？") && !strings.HasSuffix(trimmed, "?") {
+		return false
+	}
+	if strings.Contains(trimmed, "还是") {
+		return true
+	}
+
+	return strings.Contains(trimmed, "请确认")
+}
+
+// runtimeSessionID 优先从构建结果里提取 session id，必要时退回到持久化消息。
+func runtimeSessionID(build *replyBuildResult, messages []postgres.AssistantMessage) string {
+	if build != nil && build.ReplyContext != nil && build.ReplyContext.Snapshot != nil {
+		if sessionID := strings.TrimSpace(build.ReplyContext.Snapshot.SessionID); sessionID != "" {
+			return sessionID
+		}
+	}
+	if len(messages) > 0 {
+		return strings.TrimSpace(messages[0].SessionID)
+	}
+
+	return ""
 }
 
 // deliberateTurn 执行当前轮的 deliberation 与 policy 裁决。
@@ -1154,6 +1531,14 @@ func stringPointer(value string) *string {
 	return &value
 }
 
+func derefOptionalString(value *string) string {
+	if value == nil {
+		return ""
+	}
+
+	return strings.TrimSpace(*value)
+}
+
 // buildTaskDetailURL 拼装 `任务详情URL` 链接，统一助手里的页面跳转规则。
 func buildTaskDetailURL(taskID string, sessionID string) string {
 	return buildSessionAwareURL("/tasks/"+taskID, sessionID)
@@ -1244,6 +1629,22 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		return err
 	}
 	replyDecision := decisionForReply(decision, policy, planDecision, verificationDecision)
+	var correctionSignal *RuntimeCorrectionSignal
+	if runtimeState.PendingTaskSuggestion != nil {
+		correctionSignal = DetectExplicitWorkflowCorrection(input.content)
+	}
+	turnBuild := &replyBuildResult{
+		ReplyContext:                   replyContext,
+		RuntimeState:                   runtimeState,
+		Decision:                       decision,
+		Policy:                         policy,
+		PlanDecision:                   planDecision,
+		VerificationDecision:           verificationDecision,
+		ReplyDecision:                  replyDecision,
+		PendingSuggestion:              clonePendingTaskSuggestion(runtimeState.PendingTaskSuggestion),
+		PreviousClarificationMessageID: latestClarificationPromptMessageID(replyHistory),
+		CorrectionSignal:               correctionSignal,
+	}
 
 	stream, err := s.responder.Stream(ctx, ChatCompletionInput{
 		RuntimeState:   runtimeState,
@@ -1315,6 +1716,9 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		return err
 	}
 	if err := s.projectReplyGrounding(ctx, input.sessionID, replyContext); err != nil {
+		return err
+	}
+	if err := s.recordRuntimeLearningForTurn(ctx, turnBuild, messages); err != nil {
 		return err
 	}
 	s.triggerSummaryRefresh(input.sessionID)

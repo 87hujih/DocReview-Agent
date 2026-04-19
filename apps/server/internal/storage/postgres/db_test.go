@@ -51,6 +51,8 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 		"resource_chunks",
 		"assistant_sessions",
 		"assistant_messages",
+		"assistant_runtime_events",
+		"assistant_runtime_samples",
 		"assistant_task_notifications",
 		"session_context_snapshots",
 		"tasks",
@@ -83,6 +85,97 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 
 	if trigramExtension != "pg_trgm" {
 		t.Fatalf("expected pg_trgm extension, got %q", trigramExtension)
+	}
+}
+
+// TestRunMigrationsCreatesAssistantRuntimeEventsTable 验证迁移会创建 assistant runtime 事件真源表。
+func TestRunMigrationsCreatesAssistantRuntimeEventsTable(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'assistant_runtime_events'
+		ORDER BY ordinal_position ASC
+	`)
+	if err != nil {
+		t.Fatalf("query assistant_runtime_events columns: %v", err)
+	}
+	defer rows.Close()
+
+	columnNames, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collect assistant_runtime_events columns: %v", err)
+	}
+
+	expectedColumns := []string{
+		"id",
+		"session_id",
+		"message_id",
+		"source",
+		"event_type",
+		"payload",
+		"created_at",
+	}
+	if !reflect.DeepEqual(columnNames, expectedColumns) {
+		t.Fatalf("expected assistant_runtime_events columns %v, got %v", expectedColumns, columnNames)
+	}
+}
+
+// TestRunMigrationsCreatesAssistantRuntimeSamplesTable 验证迁移会创建 assistant runtime 学习样本表。
+func TestRunMigrationsCreatesAssistantRuntimeSamplesTable(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'assistant_runtime_samples'
+		ORDER BY ordinal_position ASC
+	`)
+	if err != nil {
+		t.Fatalf("query assistant_runtime_samples columns: %v", err)
+	}
+	defer rows.Close()
+
+	columnNames, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collect assistant_runtime_samples columns: %v", err)
+	}
+
+	expectedColumns := []string{
+		"id",
+		"session_id",
+		"decision_message_id",
+		"request_kind",
+		"response_mode",
+		"planner_used",
+		"verifier_used",
+		"clarification_asked",
+		"clarification_outcome",
+		"task_suggestion_created",
+		"task_suggestion_confirmed",
+		"task_suggestion_ignored",
+		"user_corrected",
+		"promoted_to_workflow",
+		"final_outcome",
+		"payload",
+		"created_at",
+		"updated_at",
+	}
+	if !reflect.DeepEqual(columnNames, expectedColumns) {
+		t.Fatalf("expected assistant_runtime_samples columns %v, got %v", expectedColumns, columnNames)
 	}
 }
 

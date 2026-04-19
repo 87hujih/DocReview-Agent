@@ -2906,6 +2906,606 @@ func TestConfirmTaskSuggestionReturnsExistingTaskWithoutAppendingDuplicateTaskCr
 	}
 }
 
+// TestAppendMessageStreamRecordsDeliberationAndPolicyEvents 验证`appendMessageStream`会沿用同一套 runtime learning 插桩。
+func TestAppendMessageStreamRecordsDeliberationAndPolicyEvents(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-stream-deliberation")
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{
+				chunks: []string{"我先把第三个项目内容输出给你。"},
+			},
+		},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前轮只需要直接回答"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	if err := service.AppendMessageStream(context.Background(), session.ID, "先把第三个项目内容输出一遍", func(StreamEvent) error { return nil }); err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+
+	recorder.mustFindEvent(t, RuntimeEventTypeDeliberationDecided)
+	recorder.mustFindEvent(t, RuntimeEventTypePolicyApplied)
+}
+
+// TestAppendMessageStreamRecordsTaskSuggestionCreatedEvent 验证`appendMessageStream`在 workflow promotion 时会记录 task_suggestion.created 事件。
+func TestAppendMessageStreamRecordsTaskSuggestionCreatedEvent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-stream-task-suggestion")
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{
+				chunks: []string{"这件事适合进入任务流。"},
+			},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{
+					ID:     "resource-1",
+					Title:  "项目资料",
+					Source: "upload",
+				},
+				Snapshot: &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请开始整理第三个项目"),
+				CandidatePlanGoal:        stringPointer("产出可审批的修订方案"),
+				Confidence:               0.91,
+				Reasons:                  []string{"用户明确要求进入执行链路"},
+			},
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				ShouldEnterWorkflow:  true,
+				CandidateInstruction: stringPointer("请开始整理第三个项目"),
+				CandidatePlanGoal:    stringPointer("产出可审批的修订方案"),
+				Confidence:           0.88,
+				Reasons:              []string{"材料已齐备"},
+			},
+		}),
+		WithWorkflowVerifier(&fakeWorkflowVerifier{
+			result: &WorkflowVerificationDecision{
+				ApproveWorkflow:    true,
+				RevisedInstruction: stringPointer("请开始整理第三个项目"),
+				Confidence:         0.9,
+				Reasons:            []string{"进入任务流更符合用户目标"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	if err := service.AppendMessageStream(context.Background(), session.ID, "直接开始整理第三个项目", func(StreamEvent) error { return nil }); err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypeTaskSuggestionCreated)
+	assertRuntimeEventPayloadField(t, event.Payload, "instruction", "请开始整理第三个项目")
+}
+
+// TestAppendMessageRecordsDeliberationDecisionEvent 验证`appendMessage`会记录 deliberation 决策事件。
+func TestAppendMessageRecordsDeliberationDecisionEvent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-deliberation")
+	recorder := &fakeRuntimeEventRecorder{}
+	projector := &fakeRuntimeLearningProjector{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我先把内容读给你。"}},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.92,
+				Reasons:             []string{"当前请求是阅读型交付"},
+			},
+		}),
+		WithRuntimeLearning(recorder, projector),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "先看看第三个项目内容")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypeDeliberationDecided)
+	if event.MessageID == nil || *event.MessageID != result.Messages[1].ID {
+		t.Fatalf("expected deliberation event message id %q, got %#v", result.Messages[1].ID, event.MessageID)
+	}
+	assertRuntimeEventPayloadField(t, event.Payload, "request_kind", "readback")
+	assertRuntimeEventPayloadField(t, event.Payload, "response_mode", ResponseModeAnswerWithGrounding)
+	if len(projector.events) == 0 {
+		t.Fatal("expected runtime projector to receive persisted runtime events")
+	}
+}
+
+// TestAppendMessageRecordsPolicyDecisionEvent 验证`appendMessage`会记录 policy 裁决事件。
+func TestAppendMessageRecordsPolicyDecisionEvent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-policy")
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我先帮你看看。"}},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前可以直接回答"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "先输出第三个项目"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypePolicyApplied)
+	assertRuntimeEventPayloadField(t, event.Payload, "allow_answer", true)
+	assertRuntimeEventPayloadField(t, event.Payload, "allow_task_suggestion", false)
+}
+
+// TestAppendMessageRecordsPlannerAndVerifierEventsWhenUsed 验证`appendMessage`在 workflow promotion 时会记录 planner 和 verifier 事件。
+func TestAppendMessageRecordsPlannerAndVerifierEventsWhenUsed(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-planner-verifier")
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "这件事适合进入任务流。"}},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{
+					ID:     "resource-1",
+					Title:  "项目资料",
+					Source: "upload",
+				},
+				Snapshot: &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请开始整理第三个项目"),
+				CandidatePlanGoal:        stringPointer("产出可审批的修订方案"),
+				Confidence:               0.91,
+				Reasons:                  []string{"用户明确要求进入执行链路"},
+			},
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				ShouldEnterWorkflow:  true,
+				CandidateInstruction: stringPointer("请开始整理第三个项目"),
+				CandidatePlanGoal:    stringPointer("产出可审批的修订方案"),
+				Confidence:           0.88,
+				Reasons:              []string{"材料已齐备"},
+			},
+		}),
+		WithWorkflowVerifier(&fakeWorkflowVerifier{
+			result: &WorkflowVerificationDecision{
+				ApproveWorkflow:    true,
+				RevisedInstruction: stringPointer("请开始整理第三个项目"),
+				Confidence:         0.9,
+				Reasons:            []string{"进入任务流更符合用户目标"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "直接开始整理第三个项目")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	plannerEvent := recorder.mustFindEvent(t, RuntimeEventTypePlannerUsed)
+	verifierEvent := recorder.mustFindEvent(t, RuntimeEventTypeVerifierUsed)
+	if plannerEvent.MessageID == nil || *plannerEvent.MessageID != result.Messages[2].ID {
+		t.Fatalf("expected planner event message id %q, got %#v", result.Messages[2].ID, plannerEvent.MessageID)
+	}
+	if verifierEvent.MessageID == nil || *verifierEvent.MessageID != result.Messages[2].ID {
+		t.Fatalf("expected verifier event message id %q, got %#v", result.Messages[2].ID, verifierEvent.MessageID)
+	}
+}
+
+// TestAppendMessageRecordsClarificationPromptedEvent 验证`appendMessage`在澄清分支会记录 clarification.prompted 事件。
+func TestAppendMessageRecordsClarificationPromptedEvent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-clarification")
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "你是想先输出原文，还是直接创建任务？"}},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:           "other",
+				ResponseMode:          ResponseModeClarifyFirst,
+				NeedsClarification:    true,
+				ClarificationQuestion: stringPointer("你是想先输出原文，还是直接创建任务？"),
+				EvidenceSufficiency:   "partial",
+				Confidence:            0.62,
+				Reasons:               []string{"当前请求既可能是阅读，也可能是执行"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "整理成表格"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypeClarificationPrompted)
+	assertRuntimeEventPayloadField(t, event.Payload, "question", "你是想先输出原文，还是直接创建任务？")
+}
+
+// TestAppendMessageRecordsClarificationResolvedToChatEvent 验证`appendMessage`在澄清后回到聊天模式时会记录 clarification.resolved_to_chat 事件。
+func TestAppendMessageRecordsClarificationResolvedToChatEvent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-clarification-to-chat")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "clarification-1",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindText,
+		SequenceNo: 1,
+		Payload:    mustJSON(t, TextPayload{Content: "你是想先输出原文，还是直接创建任务？"}),
+		CreatedAt:  time.Now(),
+	})
+
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我先把原文内容输出给你。"}},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.83,
+				Reasons:             []string{"用户已经明确要先看内容"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "先输出原文"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypeClarificationResolvedChat)
+	if event.MessageID == nil || *event.MessageID != "clarification-1" {
+		t.Fatalf("expected clarification resolved chat message id %q, got %#v", "clarification-1", event.MessageID)
+	}
+	assertRuntimeEventPayloadField(t, event.Payload, "outcome", "resolved_to_chat")
+}
+
+// TestAppendMessageRecordsClarificationResolvedToWorkflowEvent 验证`appendMessage`在澄清后进入任务流时会记录 clarification.resolved_to_workflow 事件。
+func TestAppendMessageRecordsClarificationResolvedToWorkflowEvent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-clarification-to-workflow")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "clarification-1",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindText,
+		SequenceNo: 1,
+		Payload:    mustJSON(t, TextPayload{Content: "你是想先输出原文，还是直接创建任务？"}),
+		CreatedAt:  time.Now(),
+	})
+
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我已经整理出适合进入任务流的方案。"}},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{
+					ID:     "resource-1",
+					Title:  "项目资料",
+					Source: "upload",
+				},
+				Snapshot: &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请开始整理第三个项目"),
+				CandidatePlanGoal:        stringPointer("产出可审批的修订方案"),
+				Confidence:               0.9,
+				Reasons:                  []string{"用户已经明确要创建任务"},
+			},
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				ShouldEnterWorkflow:  true,
+				CandidateInstruction: stringPointer("请开始整理第三个项目"),
+				CandidatePlanGoal:    stringPointer("产出可审批的修订方案"),
+				Confidence:           0.88,
+				Reasons:              []string{"材料已齐备"},
+			},
+		}),
+		WithWorkflowVerifier(&fakeWorkflowVerifier{
+			result: &WorkflowVerificationDecision{
+				ApproveWorkflow:    true,
+				RevisedInstruction: stringPointer("请开始整理第三个项目"),
+				Confidence:         0.89,
+				Reasons:            []string{"进入任务流更符合用户目标"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "直接创建任务"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypeClarificationResolvedFlow)
+	if event.MessageID == nil || *event.MessageID != "clarification-1" {
+		t.Fatalf("expected clarification resolved flow message id %q, got %#v", "clarification-1", event.MessageID)
+	}
+	assertRuntimeEventPayloadField(t, event.Payload, "outcome", "resolved_to_workflow")
+}
+
+// TestAppendMessageRecordsTaskSuggestionCreatedEvent 验证`appendMessage`在创建任务建议时会记录 task_suggestion.created 事件。
+func TestAppendMessageRecordsTaskSuggestionCreatedEvent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-task-suggestion-created")
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我已经整理出适合进入任务流的方案。"}},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{
+					ID:     "resource-1",
+					Title:  "项目资料",
+					Source: "upload",
+				},
+				Snapshot: &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请开始整理第三个项目"),
+				CandidatePlanGoal:        stringPointer("产出可审批的修订方案"),
+				Confidence:               0.9,
+				Reasons:                  []string{"当前已经具备进入任务流的材料"},
+			},
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				ShouldEnterWorkflow:  true,
+				CandidateInstruction: stringPointer("请开始整理第三个项目"),
+				CandidatePlanGoal:    stringPointer("产出可审批的修订方案"),
+				Confidence:           0.88,
+				Reasons:              []string{"材料已齐备"},
+			},
+		}),
+		WithWorkflowVerifier(&fakeWorkflowVerifier{
+			result: &WorkflowVerificationDecision{
+				ApproveWorkflow:    true,
+				RevisedInstruction: stringPointer("请开始整理第三个项目"),
+				Confidence:         0.89,
+				Reasons:            []string{"任务流更合适"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "直接开始整理第三个项目")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypeTaskSuggestionCreated)
+	if event.MessageID == nil || *event.MessageID != result.Messages[2].ID {
+		t.Fatalf("expected task suggestion event message id %q, got %#v", result.Messages[2].ID, event.MessageID)
+	}
+	assertRuntimeEventPayloadField(t, event.Payload, "instruction", "请开始整理第三个项目")
+}
+
+// TestConfirmTaskSuggestionRecordsConfirmedEvent 验证`confirmTaskSuggestion`在确认建议时会记录 confirmed 事件。
+func TestConfirmTaskSuggestionRecordsConfirmedEvent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-confirm-task-suggestion")
+	suggestionMessage := repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "suggestion-1",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindTaskSuggestion,
+		SequenceNo: 1,
+		Payload: mustJSON(t, TaskSuggestionPayload{
+			ActionLabel:   "确认创建任务",
+			CanCreate:     true,
+			Instruction:   "请开始整理第三个项目",
+			ResourceID:    stringPointer("resource-1"),
+			ResourceLabel: "项目资料",
+			StatusMessage: "材料已齐备，可以创建任务。",
+			Title:         "建议创建任务",
+		}),
+		CreatedAt: time.Now(),
+	})
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{
+			result: &postgres.Task{
+				ID:          "task-1",
+				ResourceID:  "resource-1",
+				Instruction: "请开始整理第三个项目",
+				Status:      "planning",
+			},
+		},
+		&fakeChatResponder{},
+		nil,
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	if _, err := service.ConfirmTaskSuggestion(context.Background(), suggestionMessage.ID); err != nil {
+		t.Fatalf("confirm task suggestion: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypeTaskSuggestionConfirmed)
+	if event.MessageID == nil || *event.MessageID != suggestionMessage.ID {
+		t.Fatalf("expected confirmed event message id %q, got %#v", suggestionMessage.ID, event.MessageID)
+	}
+	assertRuntimeEventPayloadField(t, event.Payload, "task_id", "task-1")
+}
+
+// TestAppendMessageRecordsIgnoredSuggestionOnNextUserTurn 验证`appendMessage`在下一轮未确认时会记录 ignored 事件。
+func TestAppendMessageRecordsIgnoredSuggestionOnNextUserTurn(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-ignored-suggestion")
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我先把第三个项目内容输出给你。"}},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				Snapshot: &SessionContextSnapshot{
+					SessionID: session.ID,
+					PendingTaskSuggestion: &SnapshotPendingTaskSuggestion{
+						MessageID:   "suggestion-pending",
+						Instruction: "请开始整理第三个项目",
+					},
+				},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.84,
+				Reasons:             []string{"当前轮只需要直接回答"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "先把第三个项目内容输出一遍"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypeTaskSuggestionIgnored)
+	if event.MessageID == nil || *event.MessageID != "suggestion-pending" {
+		t.Fatalf("expected ignored event message id %q, got %#v", "suggestion-pending", event.MessageID)
+	}
+}
+
+// TestAppendMessageRecordsExplicitCorrectionWhenPendingSuggestionExists 验证`appendMessage`在显式纠正待确认建议时会记录 corrected 事件。
+func TestAppendMessageRecordsExplicitCorrectionWhenPendingSuggestionExists(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-explicit-correction")
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我先按阅读模式帮你看内容。"}},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				Snapshot: &SessionContextSnapshot{
+					SessionID: session.ID,
+					PendingTaskSuggestion: &SnapshotPendingTaskSuggestion{
+						MessageID:   "suggestion-pending",
+						Instruction: "请开始整理第三个项目",
+					},
+				},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.82,
+				Reasons:             []string{"当前轮只需要直接回答"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "不是这个意思，我只是想先看看内容。"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypeUserCorrected)
+	if event.MessageID == nil || *event.MessageID != "suggestion-pending" {
+		t.Fatalf("expected corrected event message id %q, got %#v", "suggestion-pending", event.MessageID)
+	}
+	assertRuntimeEventPayloadField(t, event.Payload, "reason", RuntimeCorrectionReasonNotThisIntent)
+}
+
 // fakeSessionRepo 作为会话仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeSessionRepo struct {
 	sessions map[string]postgres.AssistantSession
@@ -3232,6 +3832,86 @@ func (r *fakeChatResponder) Stream(_ context.Context, input ChatCompletionInput)
 	}
 
 	return r.stream, nil
+}
+
+// fakeReplyContextLoader 作为 reply context loader 的测试替身，用于在用例里提供可控返回。
+type fakeReplyContextLoader struct {
+	result *ReplyContext
+	err    error
+}
+
+// LoadForReply 实现测试替身需要的 `LoadForReply` 接口方法，为用例分支提供可控返回。
+func (l *fakeReplyContextLoader) LoadForReply(_ context.Context, _ string, _ []postgres.AssistantMessage, _ string) (*ReplyContext, error) {
+	if l.err != nil {
+		return nil, l.err
+	}
+	if l.result == nil {
+		return &ReplyContext{}, nil
+	}
+
+	cloned := *l.result
+	cloned.History = cloneAssistantMessages(l.result.History)
+	cloned.Citations = cloneCitations(l.result.Citations)
+	cloned.ActiveResource = cloneResourceContext(l.result.ActiveResource)
+	cloned.GroundedTarget = cloneResolvedReference(l.result.GroundedTarget)
+	cloned.Snapshot = cloneSessionContextSnapshot(l.result.Snapshot)
+	return &cloned, nil
+}
+
+// fakeRuntimeEventRecorder 作为 runtime event recorder 的测试替身，用于在用例里观察 service 的事件写入。
+type fakeRuntimeEventRecorder struct {
+	events []postgres.AssistantRuntimeEvent
+}
+
+// Record 实现测试替身需要的 `Record` 接口方法，为用例分支提供可控返回。
+func (r *fakeRuntimeEventRecorder) Record(_ context.Context, input RuntimeRecordInput) (*postgres.AssistantRuntimeEvent, error) {
+	payload, err := marshalRuntimePayload(input.Payload)
+	if err != nil {
+		return nil, err
+	}
+
+	event := postgres.AssistantRuntimeEvent{
+		ID:        fmt.Sprintf("runtime-event-%d", len(r.events)+1),
+		SessionID: strings.TrimSpace(input.SessionID),
+		MessageID: normalizeOptionalText(input.MessageID),
+		Source:    strings.TrimSpace(input.Source),
+		EventType: strings.TrimSpace(input.EventType),
+		Payload:   payload,
+	}
+	r.events = append(r.events, event)
+	return &event, nil
+}
+
+// mustFindEvent 返回指定类型的 runtime 事件，缺失时立即失败。
+func (r *fakeRuntimeEventRecorder) mustFindEvent(t *testing.T, eventType string) *postgres.AssistantRuntimeEvent {
+	t.Helper()
+
+	for index := range r.events {
+		if r.events[index].EventType == eventType {
+			return &r.events[index]
+		}
+	}
+
+	t.Fatalf("expected runtime event %q, got %#v", eventType, r.events)
+	return nil
+}
+
+// fakeRuntimeLearningProjector 作为 runtime learning projector 的测试替身，用于观察 service 是否把事件投影出去。
+type fakeRuntimeLearningProjector struct {
+	events []postgres.AssistantRuntimeEvent
+}
+
+// Project 实现测试替身需要的 `Project` 接口方法，为用例分支记录被投影的事件。
+func (p *fakeRuntimeLearningProjector) Project(_ context.Context, event *postgres.AssistantRuntimeEvent) error {
+	if event == nil {
+		return nil
+	}
+
+	copied := *event
+	copied.Payload = append([]byte(nil), event.Payload...)
+	copied.MessageID = cloneOptionalString(event.MessageID)
+	p.events = append(p.events, copied)
+	return nil
 }
 
 // fakeChatStream 作为聊天流式消息的测试替身，用于在用例里提供可控的依赖行为。
@@ -3671,4 +4351,60 @@ func mustJSON(t *testing.T, value any) []byte {
 	}
 
 	return payload
+}
+
+func cloneSessionContextSnapshot(snapshot *SessionContextSnapshot) *SessionContextSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+
+	cloned := *snapshot
+	cloned.ActiveResource = nil
+	if snapshot.ActiveResource != nil {
+		activeResource := *snapshot.ActiveResource
+		cloned.ActiveResource = &activeResource
+	}
+	cloned.ActiveSection = nil
+	if snapshot.ActiveSection != nil {
+		activeSection := *snapshot.ActiveSection
+		cloned.ActiveSection = &activeSection
+	}
+	cloned.ActiveEntityName = cloneOptionalString(snapshot.ActiveEntityName)
+	cloned.PendingTaskSuggestion = clonePendingTaskSuggestion(snapshot.PendingTaskSuggestion)
+	cloned.LatestTask = cloneLatestTask(snapshot.LatestTask)
+	cloned.ConfirmedConstraints = cloneConfirmedConstraints(snapshot.ConfirmedConstraints)
+	cloned.RollingSummary = cloneOptionalString(snapshot.RollingSummary)
+	cloned.LastCitationWindows = append([]CitationWindow(nil), snapshot.LastCitationWindows...)
+	cloned.LastEnumeratedEntities = append([]EnumeratedEntity(nil), snapshot.LastEnumeratedEntities...)
+	cloned.OrdinalReferenceFrame = append([]OrdinalReference(nil), snapshot.OrdinalReferenceFrame...)
+	return &cloned
+}
+
+func assertRuntimeEventPayloadField(t *testing.T, payload []byte, field string, expected any) {
+	t.Helper()
+
+	var value map[string]any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		t.Fatalf("unmarshal runtime event payload: %v", err)
+	}
+
+	got, ok := value[field]
+	if !ok {
+		t.Fatalf("expected runtime event payload field %q, got %v", field, value)
+	}
+
+	switch expectedValue := expected.(type) {
+	case bool:
+		gotValue, ok := got.(bool)
+		if !ok || gotValue != expectedValue {
+			t.Fatalf("expected runtime event payload field %q=%v, got %#v", field, expectedValue, got)
+		}
+	case string:
+		gotValue, ok := got.(string)
+		if !ok || gotValue != expectedValue {
+			t.Fatalf("expected runtime event payload field %q=%q, got %#v", field, expectedValue, got)
+		}
+	default:
+		t.Fatalf("unsupported runtime event payload assertion type %T", expected)
+	}
 }

@@ -31,6 +31,8 @@ import (
 	taskevents "agent_project/apps/server/internal/task/events"
 	taskservice "agent_project/apps/server/internal/task/service"
 	"agent_project/apps/server/internal/task/workflow"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // main 负责装配配置、数据库、检索能力和 HTTP 服务入口
@@ -63,6 +65,7 @@ func main() {
 	sessionContextSnapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
 	uploadedFileRepo := postgres.NewUploadedFileRepo(pool)
 	eventService := taskevents.New(eventRepo)
+	runtimeLearning := buildAssistantRuntimeLearning(pool)
 
 	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
 	if err != nil {
@@ -218,6 +221,7 @@ func main() {
 		assistant.WithWorkflowVerifier(assistantWorkflowVerifier),
 		assistant.WithConversationSummarizer(conversationSummarizer, sessionContextSnapshotRepo),
 		assistant.WithSessionContextProjector(sessionContextProjector),
+		assistant.WithRuntimeLearning(runtimeLearning.eventService, runtimeLearning.projector),
 	)
 	assistantHandler := handlers.NewAssistantHandlerWithUploadLimitAndPolicy(
 		assistantService,
@@ -235,6 +239,28 @@ func main() {
 
 	if err := h.Run(); err != nil {
 		log.Fatalf("服务退出：%v", err)
+	}
+}
+
+type assistantRuntimeLearningDeps struct {
+	eventRepo    *postgres.AssistantRuntimeEventRepo
+	sampleRepo   *postgres.AssistantRuntimeSampleRepo
+	eventService *assistant.RuntimeEventService
+	projector    *assistant.RuntimeLearningProjector
+}
+
+// buildAssistantRuntimeLearning 装配 assistant runtime learning 依赖，避免 main 入口继续散落 wiring 细节。
+func buildAssistantRuntimeLearning(pool *pgxpool.Pool) *assistantRuntimeLearningDeps {
+	eventRepo := postgres.NewAssistantRuntimeEventRepo(pool)
+	sampleRepo := postgres.NewAssistantRuntimeSampleRepo(pool)
+	eventService := assistant.NewRuntimeEventService(eventRepo)
+	projector := assistant.NewRuntimeLearningProjector(sampleRepo)
+
+	return &assistantRuntimeLearningDeps{
+		eventRepo:    eventRepo,
+		sampleRepo:   sampleRepo,
+		eventService: eventService,
+		projector:    projector,
 	}
 }
 

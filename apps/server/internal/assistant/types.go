@@ -37,6 +37,38 @@ const (
 	StreamErrorCodeInternal     = "assistant_internal_error"
 )
 
+const (
+	RuntimeEventTypeDeliberationDecided       = "deliberation.decided"
+	RuntimeEventTypePolicyApplied             = "policy.applied"
+	RuntimeEventTypePlannerUsed               = "planner.used"
+	RuntimeEventTypeVerifierUsed              = "verifier.used"
+	RuntimeEventTypeClarificationPrompted     = "clarification.prompted"
+	RuntimeEventTypeClarificationResolvedChat = "clarification.resolved_to_chat"
+	RuntimeEventTypeClarificationResolvedFlow = "clarification.resolved_to_workflow"
+	RuntimeEventTypeTaskSuggestionCreated     = "task_suggestion.created"
+	RuntimeEventTypeTaskSuggestionConfirmed   = "task_suggestion.confirmed"
+	RuntimeEventTypeTaskSuggestionIgnored     = "task_suggestion.ignored"
+	RuntimeEventTypeUserCorrected             = "user.corrected"
+	RuntimeEventTypeWorkflowPromoted          = "workflow.promoted"
+	RuntimeEventTypeWorkflowDowngraded        = "workflow.downgraded"
+)
+
+const (
+	RuntimeFinalOutcomeTaskSuggestionCreated   = "task_suggestion_created"
+	RuntimeFinalOutcomeTaskSuggestionConfirmed = "task_suggestion_confirmed"
+	RuntimeFinalOutcomeTaskSuggestionIgnored   = "task_suggestion_ignored"
+	RuntimeFinalOutcomeClarificationToChat     = "clarification_resolved_to_chat"
+	RuntimeFinalOutcomeClarificationToFlow     = "clarification_resolved_to_workflow"
+	RuntimeFinalOutcomeWorkflowDowngraded      = "workflow_downgraded"
+	RuntimeFinalOutcomeUserCorrected           = "user_corrected"
+)
+
+const (
+	RuntimeCorrectionReasonNotThisIntent       = "not_this_intent"
+	RuntimeCorrectionReasonDeclineTaskCreation = "decline_task_creation"
+	RuntimeCorrectionReasonReadbackOnly        = "readback_only"
+)
+
 // ConversationResult 表示创建会话、加载会话后的标准结果。
 type ConversationResult struct {
 	Session  postgres.AssistantSession
