@@ -534,8 +534,8 @@ func TestAssistantHandlerStreamStillEmitsTaskSuggestionForWorkflowDecision(t *te
 	}
 }
 
-// TestAssistantHandlerStreamKeepsProtocolStableWithWorkflowPlanner 验证接入 workflow planner 后 SSE 协议顺序保持不变。
-func TestAssistantHandlerStreamKeepsProtocolStableWithWorkflowPlanner(t *testing.T) {
+// TestAssistantHandlerStreamKeepsProtocolStableWithVerifier 验证接入 verifier 后 SSE 协议顺序保持不变。
+func TestAssistantHandlerStreamKeepsProtocolStableWithVerifier(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{
 		getConversationResult: &assistant.ConversationResult{
 			Session: postgres.AssistantSession{ID: "session-1"},

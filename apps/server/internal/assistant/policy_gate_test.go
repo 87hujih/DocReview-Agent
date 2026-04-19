@@ -74,3 +74,27 @@ func TestPolicyGateTurnsAmbiguousTransformIntoClarifyFirst(t *testing.T) {
 		t.Fatalf("expected blocked reason for missing workflow commitment, got %#v", policy)
 	}
 }
+
+// TestPolicyGateRequiresVerifierForWorkflowPromotion 验证 workflow promotion 会被标记为需要 verifier 复核。
+func TestPolicyGateRequiresVerifierForWorkflowPromotion(t *testing.T) {
+	policy := ApplyPolicy(RuntimeState{
+		Message: "直接开始改第三个项目，创建任务",
+		ActiveResource: &resourceContext{
+			ID:     "resource-1",
+			Title:  "简历",
+			Source: "upload",
+		},
+	}, &DeliberationDecision{
+		RequestKind:        "workflow_command",
+		ResponseMode:       ResponseModePlanThenAnswer,
+		ChatFulfillable:    false,
+		WorkflowCommitment: true,
+	})
+
+	if !policy.AllowWorkflowPlanning || !policy.AllowTaskSuggestion {
+		t.Fatalf("expected workflow candidate to keep planning and suggestion lanes, got %#v", policy)
+	}
+	if !policy.RequireVerifier {
+		t.Fatalf("expected workflow promotion to require verifier, got %#v", policy)
+	}
+}

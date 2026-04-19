@@ -6,6 +6,7 @@ type PolicyDecision struct {
 	AllowClarification    bool
 	AllowTaskSuggestion   bool
 	AllowWorkflowPlanning bool
+	RequireVerifier       bool
 	BlockedReason         string
 }
 
@@ -38,6 +39,7 @@ func ApplyPolicy(state RuntimeState, decision *DeliberationDecision) PolicyDecis
 			AllowAnswer:           true,
 			AllowTaskSuggestion:   true,
 			AllowWorkflowPlanning: true,
+			RequireVerifier:       true,
 		}
 	default:
 		return PolicyDecision{AllowAnswer: true}

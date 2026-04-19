@@ -58,6 +58,17 @@ type StreamError struct {
 	cause   error
 }
 
+// WorkflowVerificationDecision 表示 verifier 对 workflow promotion 的最终复核结论。
+type WorkflowVerificationDecision struct {
+	ApproveWorkflow       bool     `json:"approve_workflow"`
+	DowngradeToChat       bool     `json:"downgrade_to_chat"`
+	NeedsClarification    bool     `json:"needs_clarification"`
+	ClarificationQuestion *string  `json:"clarification_question,omitempty"`
+	RevisedInstruction    *string  `json:"revised_instruction,omitempty"`
+	Confidence            float64  `json:"confidence"`
+	Reasons               []string `json:"reasons"`
+}
+
 // Error 返回接收者封装后的错误文本，便于上层直接对外暴露。
 func (e *StreamError) Error() string {
 	if e == nil {
