@@ -32,6 +32,18 @@ export async function createAssistantConversation(message: string): Promise<Assi
   });
 }
 
+export async function createAssistantConversationWithFile(
+  file: File
+): Promise<AssistantUploadResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return apiFetch<AssistantUploadResult>("/api/assistant/conversations/files", {
+    body: formData,
+    method: "POST"
+  });
+}
+
 export async function appendAssistantMessage(
   sessionId: string,
   message: string

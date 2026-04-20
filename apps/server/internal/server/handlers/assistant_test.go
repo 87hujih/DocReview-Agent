@@ -820,6 +820,67 @@ func TestUploadAssistantFileHandler(t *testing.T) {
 	}
 }
 
+// TestUploadAssistantConversationFileHandler 验证空白草稿会话也可以直接上传文件。
+func TestUploadAssistantConversationFileHandler(t *testing.T) {
+	var uploadedFileName string
+	handler := NewAssistantHandler(fakeAssistantService{
+		startConversationWithFileResult: &assistant.UploadFileResult{
+			Session: postgres.AssistantSession{
+				ID:            "session-1",
+				Title:         "学生守则",
+				LastMessageAt: time.Unix(1710000000, 0),
+				CreatedAt:     time.Unix(1710000000, 0),
+				UpdatedAt:     time.Unix(1710000000, 0),
+			},
+			Resource: &postgres.Resource{
+				ID:         "resource-1",
+				Title:      "学生守则",
+				SourceType: "upload",
+			},
+			Messages: []postgres.AssistantMessage{
+				{
+					ID:         "message-file",
+					SessionID:  "session-1",
+					Role:       assistant.RoleAssistant,
+					Kind:       assistant.KindSessionFile,
+					SequenceNo: 1,
+					Payload: mustMarshalHandlerJSON(t, assistant.SessionFilePayload{
+						FileName:      "学生守则.md",
+						FileID:        "file-1",
+						ResourceID:    "resource-1",
+						ResourceTitle: "学生守则",
+						SourceType:    "upload",
+						Status:        "ready",
+					}),
+					CreatedAt: time.Unix(1710000000, 0),
+				},
+			},
+		},
+		startConversationWithFileHook: func(_ context.Context, fileName string, _ []byte) {
+			uploadedFileName = fileName
+		},
+	})
+
+	engine := server.New()
+	engine.POST("/api/assistant/conversations/files", handler.UploadConversationFile)
+
+	response := performUploadRequestToPath(
+		t,
+		engine,
+		"/api/assistant/conversations/files",
+		"学生守则.md",
+		"text/markdown",
+		[]byte("# 学生守则\n内容"),
+	)
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", consts.StatusOK, response.StatusCode(), string(response.Body()))
+	}
+	if uploadedFileName != "学生守则.md" {
+		t.Fatalf("expected uploaded file name %q, got %q", "学生守则.md", uploadedFileName)
+	}
+}
+
 // TestUploadAssistantFileHandlerRejectsTikaDocumentInTextMode 验证`uploadAssistantFileHandler`在非法输入或失败路径下的行为，防止同类回归。
 func TestUploadAssistantFileHandlerRejectsTikaDocumentInTextMode(t *testing.T) {
 	var uploadCalled bool
@@ -1007,27 +1068,30 @@ func TestDeleteAssistantSessionHandler(t *testing.T) {
 
 // fakeAssistantService 作为助手服务的测试替身，用于在用例里提供可控的依赖行为。
 type fakeAssistantService struct {
-	listSessionsResult            []postgres.AssistantSession
-	getConversationResult         *assistant.ConversationResult
-	startConversationResult       *assistant.ConversationResult
-	startConversationStreamEvents []assistant.StreamEvent
-	appendMessageResult           *assistant.ConversationResult
-	appendMessageStreamEvents     []assistant.StreamEvent
-	uploadFileResult              *assistant.UploadFileResult
-	confirmTaskResult             *assistant.ConfirmTaskResult
-	deleteSessionResult           bool
+	listSessionsResult              []postgres.AssistantSession
+	getConversationResult           *assistant.ConversationResult
+	startConversationResult         *assistant.ConversationResult
+	startConversationWithFileResult *assistant.UploadFileResult
+	startConversationStreamEvents   []assistant.StreamEvent
+	appendMessageResult             *assistant.ConversationResult
+	appendMessageStreamEvents       []assistant.StreamEvent
+	uploadFileResult                *assistant.UploadFileResult
+	confirmTaskResult               *assistant.ConfirmTaskResult
+	deleteSessionResult             bool
 
-	listSessionsErr            error
-	getConversationErr         error
-	startConversationErr       error
-	startConversationStreamErr error
-	appendMessageErr           error
-	appendMessageStreamErr     error
-	uploadFileErr              error
-	confirmTaskErr             error
-	deleteSessionErr           error
+	listSessionsErr              error
+	getConversationErr           error
+	startConversationErr         error
+	startConversationWithFileErr error
+	startConversationStreamErr   error
+	appendMessageErr             error
+	appendMessageStreamErr       error
+	uploadFileErr                error
+	confirmTaskErr               error
+	deleteSessionErr             error
 
-	uploadFileHook func(context.Context, string, string, []byte)
+	startConversationWithFileHook func(context.Context, string, []byte)
+	uploadFileHook                func(context.Context, string, string, []byte)
 }
 
 // ListSessions 实现测试替身需要的 `ListSessions` 接口方法，为用例分支提供可控返回。
@@ -1043,6 +1107,14 @@ func (f fakeAssistantService) GetConversation(context.Context, string) (*assista
 // StartConversation 实现测试替身需要的 `StartConversation` 接口方法，为用例分支提供可控返回。
 func (f fakeAssistantService) StartConversation(context.Context, string) (*assistant.ConversationResult, error) {
 	return f.startConversationResult, f.startConversationErr
+}
+
+// StartConversationWithFile 实现测试替身需要的空会话上传接口，为用例分支提供可控返回。
+func (f fakeAssistantService) StartConversationWithFile(ctx context.Context, fileName string, content []byte) (*assistant.UploadFileResult, error) {
+	if f.startConversationWithFileHook != nil {
+		f.startConversationWithFileHook(ctx, fileName, content)
+	}
+	return f.startConversationWithFileResult, f.startConversationWithFileErr
 }
 
 // StartConversationStream 实现测试替身需要的 `StartConversationStream` 接口方法，为用例分支提供可控返回。

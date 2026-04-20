@@ -122,11 +122,9 @@ export function AssistantComposer({
             type="file"
           />
           <span className={styles.fileName}>
-            {canUpload
-              ? selectedFileName
-                ? `${selectedFileName} · ${uploadCapabilities.hint}`
-                : uploadCapabilities.hint
-              : `请先发送第一条消息后再上传 · ${uploadCapabilities.hint}`}
+            {selectedFileName
+              ? `${selectedFileName} · ${uploadCapabilities.hint}`
+              : uploadCapabilities.hint}
           </span>
           <button
             aria-label="发送"

@@ -209,6 +209,16 @@ func TestNewRegistersAssistantStreamingRoutesWhenHandlerProvided(t *testing.T) {
 	if appendResponse.StatusCode() != consts.StatusBadRequest {
 		t.Fatalf("expected status %d for registered append stream route, got %d", consts.StatusBadRequest, appendResponse.StatusCode())
 	}
+
+	uploadConversationResponse := ut.PerformRequest(
+		h.Engine,
+		"POST",
+		"/api/assistant/conversations/files",
+		nil,
+	).Result()
+	if uploadConversationResponse.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d for registered conversation upload route, got %d", consts.StatusBadRequest, uploadConversationResponse.StatusCode())
+	}
 }
 
 // TestNewAddsCORSHeadersToAssistantStreamingResponses 验证`new`在写入或副作用路径下的行为，防止同类回归。
@@ -262,6 +272,11 @@ func (fakeAssistantRouterService) GetConversation(context.Context, string) (*ass
 
 // StartConversation 实现测试替身需要的 `StartConversation` 接口方法，为用例分支提供可控返回。
 func (fakeAssistantRouterService) StartConversation(context.Context, string) (*assistant.ConversationResult, error) {
+	return nil, nil
+}
+
+// StartConversationWithFile 实现测试替身需要的空会话上传接口，为用例分支提供可控返回。
+func (fakeAssistantRouterService) StartConversationWithFile(context.Context, string, []byte) (*assistant.UploadFileResult, error) {
 	return nil, nil
 }
 

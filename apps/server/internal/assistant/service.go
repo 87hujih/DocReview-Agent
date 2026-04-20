@@ -84,6 +84,7 @@ type uploadedFileStore interface {
 type uploadedFileRepository interface {
 	Create(ctx context.Context, input postgres.UploadedFileCreateParams) (*postgres.UploadedFile, error)
 	UpdateResourceID(ctx context.Context, fileID string, resourceID string) error
+	UpdateSessionID(ctx context.Context, fileID string, sessionID string) error
 }
 
 type sectionLocator interface {
@@ -330,6 +331,55 @@ func (s *Service) StartConversation(ctx context.Context, content string) (*Conve
 	}, nil
 }
 
+// StartConversationWithFile 用首个上传文件创建空会话，并只写入结构化文件消息。
+func (s *Service) StartConversationWithFile(ctx context.Context, fileName string, content []byte) (*UploadFileResult, error) {
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		return nil, ErrFileNameRequired
+	}
+	if len(content) == 0 {
+		return nil, ErrFileContentRequired
+	}
+
+	uploadedFile, err := s.persistUploadedFile(ctx, nil, fileName, content)
+	if err != nil {
+		return nil, err
+	}
+
+	resource, createInputs, errorMessage, err := s.buildUploadMessages(ctx, fileName, content, uploadedFile)
+	if err != nil {
+		return nil, err
+	}
+
+	session, messages, err := s.repo.CreateSessionWithMessages(ctx, buildUploadSessionTitle(fileName, resource), createInputs)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.initSessionSnapshot(ctx, session.ID); err != nil {
+		return nil, err
+	}
+	if uploadedFile != nil {
+		if err := s.uploadedFiles.UpdateSessionID(ctx, uploadedFile.ID, session.ID); err != nil {
+			return nil, err
+		}
+		if resource != nil {
+			if err := s.uploadedFiles.UpdateResourceID(ctx, uploadedFile.ID, resource.ID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := s.projectPersistedMessages(ctx, session.ID, messages); err != nil {
+		return nil, err
+	}
+
+	return &UploadFileResult{
+		Session:      *session,
+		Resource:     resource,
+		Messages:     messages,
+		ErrorMessage: errorMessage,
+	}, nil
+}
+
 // AppendMessage 向已有会话追加一轮用户消息及回复。
 func (s *Service) AppendMessage(ctx context.Context, sessionID string, content string) (*ConversationResult, error) {
 	trimmed := strings.TrimSpace(content)
@@ -513,7 +563,7 @@ func (s *Service) UploadFile(ctx context.Context, sessionID string, fileName str
 }
 
 // persistUploadedFile 持久化 `Uploaded文件`，把写库细节收口在接收者内部。
-func (s *Service) persistUploadedFile(ctx context.Context, sessionID string, fileName string, content []byte) (*postgres.UploadedFile, error) {
+func (s *Service) persistUploadedFile(ctx context.Context, sessionID *string, fileName string, content []byte) (*postgres.UploadedFile, error) {
 	if s.fileStore == nil && s.uploadedFiles == nil {
 		return nil, nil
 	}
@@ -527,7 +577,7 @@ func (s *Service) persistUploadedFile(ctx context.Context, sessionID string, fil
 	}
 
 	return s.uploadedFiles.Create(ctx, postgres.UploadedFileCreateParams{
-		SessionID:        stringPointer(sessionID),
+		SessionID:        sessionID,
 		OriginalFilename: fileName,
 		ContentType:      http.DetectContentType(content),
 		SizeBytes:        stored.SizeBytes,
@@ -1690,6 +1740,25 @@ func buildSessionTitle(content string) string {
 	}
 
 	return string(runes[:24]) + "..."
+}
+
+// buildUploadSessionTitle 为首屏上传场景生成会话标题，优先使用解析后的资源标题。
+func buildUploadSessionTitle(fileName string, resource *postgres.Resource) string {
+	if resource != nil {
+		if title := strings.TrimSpace(resource.Title); title != "" {
+			return buildSessionTitle(title)
+		}
+	}
+
+	baseName := strings.TrimSpace(fileName)
+	if dot := strings.LastIndex(baseName, "."); dot > 0 {
+		baseName = baseName[:dot]
+	}
+	if baseName == "" {
+		baseName = "未命名文件"
+	}
+
+	return buildSessionTitle(baseName)
 }
 
 // decodeTaskSuggestion 解码 `任务建议` 载荷，避免上层直接处理原始 JSON。

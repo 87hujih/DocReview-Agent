@@ -92,3 +92,39 @@ func TestUploadedFileRepoUpdateResourceID(t *testing.T) {
 		t.Fatalf("expected resource id %q, got %#v", resource.ID, found.ResourceID)
 	}
 }
+
+// TestUploadedFileRepoUpdateSessionID 验证`uploadedFileRepoUpdateSessionID`在特定边界条件下的行为，防止同类回归。
+func TestUploadedFileRepoUpdateSessionID(t *testing.T) {
+	pool := newTestPool(t)
+	assistantRepo := NewAssistantRepo(pool)
+	fileRepo := NewUploadedFileRepo(pool)
+	ctx := testContext(t)
+
+	session, _, err := assistantRepo.CreateSessionWithMessages(ctx, "上传元数据绑定会话", nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	file, err := fileRepo.Create(ctx, UploadedFileCreateParams{
+		OriginalFilename: "学生守则.md",
+		ContentType:      "text/markdown",
+		SizeBytes:        12,
+		SHA256:           "sha256-for-session-update",
+		StorageKey:       "sh/sha256-for-session-update",
+	})
+	if err != nil {
+		t.Fatalf("create uploaded file: %v", err)
+	}
+
+	if err := fileRepo.UpdateSessionID(ctx, file.ID, session.ID); err != nil {
+		t.Fatalf("update session id: %v", err)
+	}
+
+	found, err := fileRepo.GetByID(ctx, file.ID)
+	if err != nil {
+		t.Fatalf("get uploaded file: %v", err)
+	}
+	if found.SessionID == nil || *found.SessionID != session.ID {
+		t.Fatalf("expected session id %q, got %#v", session.ID, found.SessionID)
+	}
+}

@@ -26,6 +26,7 @@ describe("AssistantComposer", () => {
 
     expect(input).toHaveAttribute("accept", ".md,.txt");
     expect(screen.getByText("支持 md、txt")).toBeInTheDocument();
+    expect(input).not.toBeDisabled();
   });
 
   it("forwards the selected file to upload handler", () => {

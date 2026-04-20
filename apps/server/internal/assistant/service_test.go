@@ -2819,6 +2819,58 @@ func TestStartConversationStreamReturnsEmptyReplyError(t *testing.T) {
 	}
 }
 
+// TestStartConversationWithFileCreatesEmptySessionWithOnlySessionFile 验证首个动作直接上传会创建空会话且只写入 `session_file`。
+func TestStartConversationWithFileCreatesEmptySessionWithOnlySessionFile(t *testing.T) {
+	repo := newFakeSessionRepo()
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-uploaded",
+				Title:      "学生手册",
+				SourceType: "upload",
+			},
+		},
+	}
+
+	service := NewService(repo, importer, &fakeTaskCreator{}, &fakeChatResponder{}, nil)
+	result, err := service.StartConversationWithFile(context.Background(), "学生手册.md", []byte("# 学生手册\n内容"))
+	if err != nil {
+		t.Fatalf("start conversation with file: %v", err)
+	}
+
+	if result.Session.ID != "session-created" {
+		t.Fatalf("expected created session id %q, got %q", "session-created", result.Session.ID)
+	}
+	if result.Session.Title != "学生手册" {
+		t.Fatalf("expected session title %q, got %q", "学生手册", result.Session.Title)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 created message, got %d", len(result.Messages))
+	}
+	if result.Messages[0].Kind != KindSessionFile {
+		t.Fatalf("expected only session_file message, got %q", result.Messages[0].Kind)
+	}
+
+	persistedMessages, err := repo.ListMessages(context.Background(), result.Session.ID)
+	if err != nil {
+		t.Fatalf("list persisted messages: %v", err)
+	}
+	if len(persistedMessages) != 1 {
+		t.Fatalf("expected 1 persisted message, got %d", len(persistedMessages))
+	}
+	if persistedMessages[0].Kind != KindSessionFile {
+		t.Fatalf("expected persisted session_file message, got %q", persistedMessages[0].Kind)
+	}
+
+	filePayload := decodeSessionFilePayload(t, result.Messages[0].Payload)
+	if filePayload.ResourceID != "resource-uploaded" {
+		t.Fatalf("expected payload resource id %q, got %q", "resource-uploaded", filePayload.ResourceID)
+	}
+	if filePayload.FileName != "学生手册.md" {
+		t.Fatalf("expected payload file name %q, got %q", "学生手册.md", filePayload.FileName)
+	}
+}
+
 // TestUploadFilePersistsSessionFileMessage 验证`uploadFile`在写入或副作用路径下的行为，防止同类回归。
 func TestUploadFilePersistsSessionFileMessage(t *testing.T) {
 	repo := newFakeSessionRepo()
@@ -2961,6 +3013,68 @@ func TestUploadFileStoresOriginalFileAndPersistsFileID(t *testing.T) {
 	}
 	if uploadedFiles.updatedFileID != "file-1" {
 		t.Fatalf("expected updated file id %q, got %q", "file-1", uploadedFiles.updatedFileID)
+	}
+	if uploadedFiles.updatedResourceID != "resource-uploaded" {
+		t.Fatalf("expected uploaded file to bind resource %q, got %q", "resource-uploaded", uploadedFiles.updatedResourceID)
+	}
+
+	filePayload := decodeSessionFilePayload(t, result.Messages[0].Payload)
+	if filePayload.FileID != "file-1" {
+		t.Fatalf("expected payload file id %q, got %q", "file-1", filePayload.FileID)
+	}
+}
+
+// TestStartConversationWithFileStoresOriginalFileAndBackfillsSessionID 验证首屏上传也会保留原文件元数据并回填会话 ID。
+func TestStartConversationWithFileStoresOriginalFileAndBackfillsSessionID(t *testing.T) {
+	repo := newFakeSessionRepo()
+	fileStore := &fakeFileStore{
+		result: &filestore.StoredFile{
+			SHA256:     "sha256-uploaded",
+			SizeBytes:  int64(len([]byte("# 学生手册\n内容"))),
+			StorageKey: "sh/sha256-uploaded",
+		},
+	}
+	uploadedFiles := &fakeUploadedFileRepo{
+		result: &postgres.UploadedFile{
+			ID:               "file-1",
+			OriginalFilename: "学生手册.md",
+			ContentType:      "text/plain; charset=utf-8",
+			SizeBytes:        int64(len([]byte("# 学生手册\n内容"))),
+			SHA256:           "sha256-uploaded",
+			StorageKey:       "sh/sha256-uploaded",
+		},
+	}
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-uploaded",
+				Title:      "学生手册",
+				SourceType: "upload",
+			},
+		},
+	}
+
+	service := NewService(
+		repo,
+		importer,
+		&fakeTaskCreator{},
+		&fakeChatResponder{},
+		nil,
+		WithUploadedFileStorage(fileStore, uploadedFiles),
+	)
+	result, err := service.StartConversationWithFile(context.Background(), "学生手册.md", []byte("# 学生手册\n内容"))
+	if err != nil {
+		t.Fatalf("start conversation with file: %v", err)
+	}
+
+	if uploadedFiles.createInput == nil {
+		t.Fatal("expected uploaded file metadata to be created")
+	}
+	if uploadedFiles.createInput.SessionID != nil {
+		t.Fatalf("expected uploaded file metadata to be created before session binding, got %#v", uploadedFiles.createInput.SessionID)
+	}
+	if uploadedFiles.updatedSessionID != result.Session.ID {
+		t.Fatalf("expected uploaded file to bind session %q, got %q", result.Session.ID, uploadedFiles.updatedSessionID)
 	}
 	if uploadedFiles.updatedResourceID != "resource-uploaded" {
 		t.Fatalf("expected uploaded file to bind resource %q, got %q", "resource-uploaded", uploadedFiles.updatedResourceID)
@@ -4089,6 +4203,7 @@ type fakeUploadedFileRepo struct {
 	result            *postgres.UploadedFile
 	updatedFileID     string
 	updatedResourceID string
+	updatedSessionID  string
 }
 
 // Create 实现测试替身需要的 `Create` 接口方法，为用例分支提供可控返回。
@@ -4105,6 +4220,13 @@ func (r *fakeUploadedFileRepo) Create(_ context.Context, input postgres.Uploaded
 func (r *fakeUploadedFileRepo) UpdateResourceID(_ context.Context, fileID string, resourceID string) error {
 	r.updatedFileID = fileID
 	r.updatedResourceID = resourceID
+	return nil
+}
+
+// UpdateSessionID 实现测试替身需要的 `UpdateSessionID` 接口方法，为用例分支提供可控返回。
+func (r *fakeUploadedFileRepo) UpdateSessionID(_ context.Context, fileID string, sessionID string) error {
+	r.updatedFileID = fileID
+	r.updatedSessionID = sessionID
 	return nil
 }
 

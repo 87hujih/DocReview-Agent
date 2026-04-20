@@ -5,6 +5,7 @@ import { AssistantShell } from "./assistant-shell";
 import { AppChrome } from "../app-chrome";
 import {
   confirmAssistantTaskSuggestion,
+  createAssistantConversationWithFile,
   deleteAssistantSession,
   getAssistantCapabilities,
   getAssistantSession,
@@ -21,6 +22,7 @@ vi.mock("../../lib/api/assistant", async () => {
   return {
     ...actual,
     confirmAssistantTaskSuggestion: vi.fn(),
+    createAssistantConversationWithFile: vi.fn(),
     deleteAssistantSession: vi.fn(),
     getAssistantCapabilities: vi.fn(),
     getAssistantSession: vi.fn(),
@@ -38,6 +40,7 @@ vi.mock("next/navigation", () => ({
 const mockedGetAssistantSessions = vi.mocked(getAssistantSessions);
 const mockedGetAssistantSession = vi.mocked(getAssistantSession);
 const mockedGetAssistantCapabilities = vi.mocked(getAssistantCapabilities);
+const mockedCreateAssistantConversationWithFile = vi.mocked(createAssistantConversationWithFile);
 const mockedStreamAssistantConversation = vi.mocked(streamAssistantConversation);
 const mockedStreamAssistantMessage = vi.mocked(streamAssistantMessage);
 const mockedUploadAssistantFile = vi.mocked(uploadAssistantFile);
@@ -61,6 +64,7 @@ describe("AssistantShell", () => {
     mockedGetAssistantSessions.mockReset();
     mockedGetAssistantSession.mockReset();
     mockedGetAssistantCapabilities.mockReset();
+    mockedCreateAssistantConversationWithFile.mockReset();
     mockedStreamAssistantConversation.mockReset();
     mockedStreamAssistantMessage.mockReset();
     mockedUploadAssistantFile.mockReset();
@@ -100,7 +104,7 @@ describe("AssistantShell", () => {
     await waitFor(() => {
       expect(input).toHaveAttribute("accept", ".md,.txt,.pdf");
     });
-    expect(screen.getByText("请先发送第一条消息后再上传 · 支持 md、txt、pdf")).toBeInTheDocument();
+    expect(screen.getByText("支持 md、txt、pdf")).toBeInTheDocument();
   });
 
   it("falls back to conservative upload capabilities when the capability request fails", async () => {
@@ -119,7 +123,61 @@ describe("AssistantShell", () => {
     }
 
     expect(input).toHaveAttribute("accept", ".md,.txt");
-    expect(screen.getByText("请先发送第一条消息后再上传 · 支持 md、txt")).toBeInTheDocument();
+    expect(screen.getByText("支持 md、txt")).toBeInTheDocument();
+  });
+
+  it("creates an empty session when uploading a file from the blank draft conversation", async () => {
+    mockedGetAssistantSessions.mockResolvedValue([]);
+    mockedCreateAssistantConversationWithFile.mockResolvedValue({
+      error_message: null,
+      messages: [
+        {
+          created_at: "2026-04-20T10:10:00Z",
+          id: "message-file",
+          kind: "session_file",
+          payload: {
+            file_name: "学生守则.md",
+            resource_id: "resource-1",
+            resource_title: "学生守则",
+            source_type: "upload",
+            status: "ready"
+          },
+          role: "assistant",
+          sequence_no: 1
+        }
+      ],
+      resource: {
+        id: "resource-1",
+        source_type: "upload",
+        title: "学生守则"
+      },
+      session: {
+        created_at: "2026-04-20T10:10:00Z",
+        id: "session-1",
+        last_message_at: "2026-04-20T10:10:00Z",
+        title: "学生守则",
+        updated_at: "2026-04-20T10:10:00Z"
+      }
+    });
+
+    const { container } = renderAssistantShell();
+
+    await waitFor(() => {
+      expect(mockedGetAssistantSessions).toHaveBeenCalledTimes(1);
+    });
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement | null;
+    if (!input) {
+      throw new Error("expected file input to exist");
+    }
+
+    const file = new File(["# 学生守则"], "学生守则.md", { type: "text/markdown" });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(mockedCreateAssistantConversationWithFile).toHaveBeenCalledWith(file);
+    });
+    expect(mockedUploadAssistantFile).not.toHaveBeenCalled();
   });
 
   it("loads session history but still starts from a blank draft conversation", async () => {

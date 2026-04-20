@@ -15,6 +15,7 @@ import type {
 } from "../../lib/assistant/types";
 import {
   confirmAssistantTaskSuggestion,
+  createAssistantConversationWithFile,
   deleteAssistantSession,
   getAssistantCapabilities,
   getAssistantSession,
@@ -362,10 +363,6 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
   }
 
   async function handleUploadFile(file: File) {
-    if (!currentSession) {
-      setActionNotice("请先发送第一条消息后再上传文件。");
-      return;
-    }
     if (turnStatus !== "idle") {
       return;
     }
@@ -374,12 +371,16 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
     setTurnStatus("uploading_file");
 
     try {
-      const result = await uploadAssistantFile(currentSession.id, file);
+      const result = currentSession
+        ? await uploadAssistantFile(currentSession.id, file)
+        : await createAssistantConversationWithFile(file);
+      replaceSessionQuery(result.session.id);
       startTransition(() => {
         setCurrentSession(result.session);
         setMessages((current) => [...current, ...result.messages]);
         setSessions((current) => upsertSession(current, result.session));
         setActionNotice(result.error_message || null);
+        setStickToBottom(true);
         setTurnStatus("idle");
       });
     } catch (error) {
@@ -489,7 +490,7 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
           </div>
 
           <AssistantComposer
-            canUpload={currentSession !== null}
+            canUpload
             isBusy={isBusy}
             onSubmitMessage={(nextMessage) => handleSubmitMessage(nextMessage)}
             onUploadFile={(file) => handleUploadFile(file)}

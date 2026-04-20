@@ -21,6 +21,7 @@ type assistantService interface {
 	ListSessions(ctx context.Context) ([]postgres.AssistantSession, error)
 	GetConversation(ctx context.Context, sessionID string) (*assistant.ConversationResult, error)
 	StartConversation(ctx context.Context, content string) (*assistant.ConversationResult, error)
+	StartConversationWithFile(ctx context.Context, fileName string, content []byte) (*assistant.UploadFileResult, error)
 	StartConversationStream(ctx context.Context, content string, emit func(assistant.StreamEvent) error) error
 	AppendMessage(ctx context.Context, sessionID string, content string) (*assistant.ConversationResult, error)
 	AppendMessageStream(ctx context.Context, sessionID string, content string, emit func(assistant.StreamEvent) error) error
@@ -113,6 +114,12 @@ type assistantUploadCapabilitiesResponse struct {
 	SupportedExtensions []string `json:"supported_extensions"`
 	Accept              string   `json:"accept"`
 	Hint                string   `json:"hint"`
+}
+
+// assistantUploadInput 收口助手文件上传入口解析后的结果，避免在 handler 间重复传递临时字段。
+type assistantUploadInput struct {
+	FileName string
+	Content  []byte
 }
 
 // confirmTaskSuggestionResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
@@ -367,41 +374,14 @@ func (h *AssistantHandler) AppendMessageStream(requestCtx context.Context, ctx *
 	})
 }
 
-// UploadFile 接收一个文件并写入资源库与当前会话。
-func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.RequestContext) {
-	file, err := ctx.FormFile("file")
-	if err != nil {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "必须上传文件"})
-		return
-	}
-	if !h.uploadPolicy.SupportsFileName(file.Filename) {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": h.uploadPolicy.UnsupportedFileMessage(file.Filename)})
-		return
-	}
-
-	reader, err := file.Open()
-	if err != nil {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "读取上传文件失败"})
-		return
-	}
-	defer reader.Close()
-
-	content, err := io.ReadAll(io.LimitReader(reader, h.uploadMaxBytes+1))
-	if err != nil {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "读取上传文件失败"})
-		return
-	}
-	if int64(len(content)) > h.uploadMaxBytes {
-		ctx.JSON(consts.StatusRequestEntityTooLarge, map[string]string{"error": "上传文件过大"})
-		return
-	}
-
-	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+// UploadConversationFile 在空白草稿会话中直接上传文件，并由服务端创建空会话。
+func (h *AssistantHandler) UploadConversationFile(requestCtx context.Context, ctx *app.RequestContext) {
+	input, ok := h.readAssistantUploadInput(ctx)
 	if !ok {
 		return
 	}
 
-	result, err := h.service.UploadFile(requestCtx, sessionID, file.Filename, content)
+	result, err := h.service.StartConversationWithFile(requestCtx, input.FileName, input.Content)
 	if err != nil {
 		h.writeAssistantError(ctx, err, "上传文件失败")
 		return
@@ -413,6 +393,67 @@ func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.Reque
 		Messages:     toAssistantMessageResponses(result.Messages),
 		ErrorMessage: result.ErrorMessage,
 	})
+}
+
+// UploadFile 接收一个文件并写入资源库与当前会话。
+func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.RequestContext) {
+	input, ok := h.readAssistantUploadInput(ctx)
+	if !ok {
+		return
+	}
+
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	result, err := h.service.UploadFile(requestCtx, sessionID, input.FileName, input.Content)
+	if err != nil {
+		h.writeAssistantError(ctx, err, "上传文件失败")
+		return
+	}
+
+	ctx.JSON(consts.StatusOK, assistantUploadResponse{
+		Session:      toAssistantSessionResponse(result.Session),
+		Resource:     toAssistantResourceResponse(result.Resource),
+		Messages:     toAssistantMessageResponses(result.Messages),
+		ErrorMessage: result.ErrorMessage,
+	})
+}
+
+// readAssistantUploadInput 统一解析助手上传接口的 multipart 文件输入，并执行格式与大小校验。
+func (h *AssistantHandler) readAssistantUploadInput(ctx *app.RequestContext) (*assistantUploadInput, bool) {
+	file, err := ctx.FormFile("file")
+	if err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "必须上传文件"})
+		return nil, false
+	}
+	if !h.uploadPolicy.SupportsFileName(file.Filename) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": h.uploadPolicy.UnsupportedFileMessage(file.Filename)})
+		return nil, false
+	}
+
+	reader, err := file.Open()
+	if err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "读取上传文件失败"})
+		return nil, false
+	}
+	defer reader.Close()
+
+	content, err := io.ReadAll(io.LimitReader(reader, h.uploadMaxBytes+1))
+	if err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "读取上传文件失败"})
+		return nil, false
+	}
+	if int64(len(content)) > h.uploadMaxBytes {
+		ctx.JSON(consts.StatusRequestEntityTooLarge, map[string]string{"error": "上传文件过大"})
+		return nil, false
+	}
+
+	return &assistantUploadInput{
+		FileName: file.Filename,
+		Content:  content,
+	}, true
 }
 
 // ConfirmTaskSuggestion 把一条任务建议落为真实任务。
