@@ -17,9 +17,9 @@ const (
 
 // ReadIntent 承载当前文件直接访问链所需的最小分类结果，供任务建议和后续 direct access 主链复用。
 type ReadIntent struct {
-	Kind                ReadIntentKind
-	NeedsLLM            bool
-	ShouldEnterTaskFlow bool
+	Kind                  ReadIntentKind
+	NeedsLLM              bool
+	ShouldEnterTaskFlow   bool
 	RequiresSectionTarget bool
 }
 
@@ -90,6 +90,7 @@ func isExplicitExecutionRequest(message string) bool {
 		"创建任务",
 		"任务建议",
 		"任务卡",
+		"开始执行",
 	}) {
 		return true
 	}
@@ -103,6 +104,8 @@ func isExplicitExecutionRequest(message string) bool {
 		"请把",
 		"开始处理",
 		"开始修改",
+		"开始执行",
+		"执行吧",
 		"生成新版本",
 		"按这个方向开始修改",
 		"按这个方向开始处理",

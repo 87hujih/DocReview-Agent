@@ -61,8 +61,8 @@ func TestBuildChatMessagesMergesRuntimeContextIntoSingleSystemPrompt(t *testing.
 	}
 }
 
-// TestReplyParsesOptionalTaskInstruction 验证`reply`在约束校验路径下的行为，防止同类回归。
-func TestReplyParsesOptionalTaskInstruction(t *testing.T) {
+// TestReplyIgnoresLegacyTaskInstructionSideChannel 验证 responder 不再消费 task_instruction 侧通道。
+func TestReplyIgnoresLegacyTaskInstructionSideChannel(t *testing.T) {
 	responder := newChatResponderWithClient(fakeAssistantLLMClient{
 		generate: func(_ context.Context, _ []*schema.Message) (*schema.Message, error) {
 			return &schema.Message{Content: `{"reply":"可以开始。","task_instruction":"请把这份简历改成产品经理版本"}`}, nil
@@ -77,8 +77,50 @@ func TestReplyParsesOptionalTaskInstruction(t *testing.T) {
 	if result.Reply != "可以开始。" {
 		t.Fatalf("expected reply %q, got %q", "可以开始。", result.Reply)
 	}
-	if result.TaskInstruction == nil || *result.TaskInstruction != "请把这份简历改成产品经理版本" {
-		t.Fatalf("expected optional task instruction to be parsed, got %#v", result.TaskInstruction)
+	if result.TaskInstruction != nil {
+		t.Fatalf("expected responder to ignore legacy task instruction side channel, got %#v", result.TaskInstruction)
+	}
+}
+
+// TestStreamResultIgnoresLegacyTaskInstructionSideChannel 验证流式 responder 也不会再消费 task_instruction 侧通道。
+func TestStreamResultIgnoresLegacyTaskInstructionSideChannel(t *testing.T) {
+	responder := newChatResponderWithClient(fakeAssistantLLMClient{
+		stream: func(_ context.Context, _ []*schema.Message) (assistantLLMStream, error) {
+			return &fakeAssistantLLMStream{
+				messages: []*schema.Message{
+					{Content: `{"reply":"可以继续。","task_instruction":"请把这份简历改成产品经理版本"}`},
+				},
+			}, nil
+		},
+	}, llmclient.Config{TimeoutMS: 1400})
+
+	stream, err := responder.Stream(context.Background(), ChatCompletionInput{Message: "请继续"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	delta, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if delta != "可以继续。" {
+		t.Fatalf("expected stream delta %q, got %q", "可以继续。", delta)
+	}
+
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF after single chunk, got %v", err)
+	}
+
+	provider, ok := stream.(chatStreamResultProvider)
+	if !ok {
+		t.Fatal("expected stream to expose final result provider")
+	}
+	result, err := provider.Result()
+	if err != nil {
+		t.Fatalf("stream result: %v", err)
+	}
+	if result.TaskInstruction != nil {
+		t.Fatalf("expected stream responder to ignore legacy task instruction side channel, got %#v", result.TaskInstruction)
 	}
 }
 
@@ -264,6 +306,65 @@ func TestBuildChatMessagesIncludesCanonicalAnalysisContext(t *testing.T) {
 	systemPrompt := messages[0].Content
 	if !strings.Contains(systemPrompt, "这是第三个项目的完整正文") {
 		t.Fatalf("expected canonical analysis context in system prompt, got %q", systemPrompt)
+	}
+}
+
+// TestBuildChatMessagesUsesFileAwarePromptWhenCurrentDocumentReady 验证当前文件 ready 时 responder 会切到 file-aware prompt。
+func TestBuildChatMessagesUsesFileAwarePromptWhenCurrentDocumentReady(t *testing.T) {
+	messages := buildChatMessages(ChatCompletionInput{
+		RuntimeState: RuntimeState{
+			CurrentDocument: &CurrentDocument{
+				ResourceID: "resource-1",
+				VersionID:  "version-1",
+				Title:      "产品经理简历",
+				SourceType: "upload",
+				FullText:   "这是完整正文。",
+				Ready:      true,
+			},
+		},
+		Message: "结合全文分析第三个项目",
+	})
+
+	systemPrompt := messages[0].Content
+	if !strings.Contains(systemPrompt, "当前文件 canonical 内容已可访问") {
+		t.Fatalf("expected file-aware prompt, got %q", systemPrompt)
+	}
+}
+
+// TestBuildChatMessagesFileAwarePromptDoesNotContainSnippetOnlyConstraint 验证 file-aware prompt 不再沿用 snippet-only 约束。
+func TestBuildChatMessagesFileAwarePromptDoesNotContainSnippetOnlyConstraint(t *testing.T) {
+	messages := buildChatMessages(ChatCompletionInput{
+		RuntimeState: RuntimeState{
+			CurrentDocument: &CurrentDocument{
+				ResourceID: "resource-1",
+				VersionID:  "version-1",
+				Title:      "产品经理简历",
+				SourceType: "upload",
+				FullText:   "这是完整正文。",
+				Ready:      true,
+			},
+		},
+		Message: "结合全文分析第三个项目",
+	})
+
+	systemPrompt := messages[0].Content
+	if strings.Contains(systemPrompt, "如果提供了资源片段，只能基于片段回答") {
+		t.Fatalf("expected file-aware prompt to remove snippet-only constraint, got %q", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "当前已有资源，但本轮没有命中直接证据片段") {
+		t.Fatalf("expected file-aware prompt to remove missing-citation warning, got %q", systemPrompt)
+	}
+}
+
+// TestBuildChatMessagesGenericPromptStillSupportsNoDocumentCase 验证没有当前文件时仍保留 generic prompt 语义。
+func TestBuildChatMessagesGenericPromptStillSupportsNoDocumentCase(t *testing.T) {
+	messages := buildChatMessages(ChatCompletionInput{
+		Message: "你可以做什么",
+	})
+
+	systemPrompt := messages[0].Content
+	if !strings.Contains(systemPrompt, "如果提供了资源片段，只能基于片段回答") {
+		t.Fatalf("expected generic prompt to keep snippet constraint, got %q", systemPrompt)
 	}
 }
 

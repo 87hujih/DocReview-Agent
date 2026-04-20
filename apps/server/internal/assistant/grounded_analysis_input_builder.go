@@ -7,8 +7,9 @@ import (
 
 // GroundedAnalysisInput 描述基于 canonical read 构造分析上下文所需的输入。
 type GroundedAnalysisInput struct {
-	Message    string
-	ReadResult CanonicalReadResult
+	Message      string
+	ResolvedNode *ResolvedNode
+	ReadResult   CanonicalReadResult
 }
 
 // GroundedAnalysisBuildResult 承载分析链可直接消费的 canonical 上下文。
@@ -25,10 +26,21 @@ func BuildGroundedAnalysisInput(input GroundedAnalysisInput) (*GroundedAnalysisB
 			return nil, ErrCanonicalReadUnavailable
 		}
 
+		targetLabel := "section"
+		idLabel := "section_id"
+		kindLabel := "section_type"
+		if input.ResolvedNode != nil {
+			targetLabel = "node"
+			idLabel = "node_id"
+			kindLabel = "node_kind"
+		}
 		lines := []string{
-			fmt.Sprintf("当前文件已直接读取到目标 section：title=%s；section_id=%s；section_type=%s。",
+			fmt.Sprintf("当前文件已直接读取到目标 %s：title=%s；%s=%s；%s=%s。",
+				targetLabel,
 				strings.TrimSpace(input.ReadResult.SectionTitle),
+				idLabel,
 				strings.TrimSpace(input.ReadResult.SectionID),
+				kindLabel,
 				strings.TrimSpace(input.ReadResult.SectionType),
 			),
 			"以下是 canonical 正文：",

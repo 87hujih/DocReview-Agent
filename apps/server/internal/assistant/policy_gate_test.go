@@ -7,19 +7,20 @@ func TestPolicyGateBlocksTaskSuggestionWithoutMaterial(t *testing.T) {
 	policy := ApplyPolicy(RuntimeState{
 		Message: "直接开始改第三个项目，创建任务",
 	}, &DeliberationDecision{
-		RequestKind:        "workflow_command",
-		ResponseMode:       ResponseModeAnswerThenTaskCard,
-		ChatFulfillable:    false,
-		WorkflowCommitment: true,
+		RequestKind:          "workflow_command",
+		ResponseMode:         ResponseModeAnswerThenTaskCard,
+		ChatFulfillable:      false,
+		WorkflowCommitment:   true,
+		ConversationMode:     "execute",
+		RequestedNextStep:    "promote_to_workflow",
+		ProposalReady:        true,
+		AwaitingAuthorization: true,
 	})
 
-	if policy.AllowTaskSuggestion {
-		t.Fatalf("expected policy to block task suggestion without material, got %#v", policy)
+	if !policy.AllowAnswer {
+		t.Fatalf("expected policy to keep reply lane open, got %#v", policy)
 	}
-	if policy.AllowClarification {
-		t.Fatalf("expected missing material to block directly instead of clarifying, got %#v", policy)
-	}
-	if policy.BlockedReason == "" {
+	if policy.BlockedReason != "missing_material" {
 		t.Fatalf("expected blocked reason for missing material, got %#v", policy)
 	}
 }
@@ -43,8 +44,11 @@ func TestPolicyGateKeepsReadbackInAnswerWithGrounding(t *testing.T) {
 	if !policy.AllowAnswer {
 		t.Fatalf("expected grounded readback to stay answerable, got %#v", policy)
 	}
-	if policy.AllowTaskSuggestion || policy.AllowWorkflowPlanning || policy.AllowClarification {
+	if policy.AllowClarification {
 		t.Fatalf("expected grounded readback to stay in answer lane, got %#v", policy)
+	}
+	if policy.BlockedReason != "" {
+		t.Fatalf("expected grounded readback to avoid workflow boundary block reason, got %#v", policy)
 	}
 }
 
@@ -58,24 +62,23 @@ func TestPolicyGateTurnsAmbiguousTransformIntoClarifyFirst(t *testing.T) {
 			Source: "upload",
 		},
 	}, &DeliberationDecision{
-		RequestKind:        "workflow_command",
-		ResponseMode:       ResponseModeAnswerThenTaskCard,
-		ChatFulfillable:    true,
-		WorkflowCommitment: false,
+		RequestKind:         "workflow_command",
+		ResponseMode:        ResponseModeClarifyFirst,
+		ChatFulfillable:     true,
+		WorkflowCommitment:  false,
+		NeedsClarification:  true,
+		ClarificationQuestion: stringPointer("你是想先给草案，还是直接修改？"),
 	})
 
 	if !policy.AllowClarification {
 		t.Fatalf("expected ambiguous transform to require clarification, got %#v", policy)
 	}
-	if policy.AllowTaskSuggestion {
-		t.Fatalf("expected ambiguous transform to block task suggestion, got %#v", policy)
-	}
-	if policy.BlockedReason == "" {
-		t.Fatalf("expected blocked reason for missing workflow commitment, got %#v", policy)
+	if !policy.AllowAnswer {
+		t.Fatalf("expected clarification to stay in assistant text lane, got %#v", policy)
 	}
 }
 
-// TestPolicyGateRequiresVerifierForWorkflowPromotion 验证 workflow promotion 会被标记为需要 verifier 复核。
+// TestPolicyGateKeepsAuthorizedProposalDecisionInReplyLane 验证 policy 不再决定 workflow verifier / task suggestion，只保留最小硬边界。
 func TestPolicyGateRequiresVerifierForWorkflowPromotion(t *testing.T) {
 	policy := ApplyPolicy(RuntimeState{
 		Message: "直接开始改第三个项目，创建任务",
@@ -85,16 +88,23 @@ func TestPolicyGateRequiresVerifierForWorkflowPromotion(t *testing.T) {
 			Source: "upload",
 		},
 	}, &DeliberationDecision{
-		RequestKind:        "workflow_command",
-		ResponseMode:       ResponseModePlanThenAnswer,
-		ChatFulfillable:    false,
-		WorkflowCommitment: true,
+		RequestKind:          "workflow_command",
+		ResponseMode:         ResponseModePlanThenAnswer,
+		ChatFulfillable:      false,
+		WorkflowCommitment:   true,
+		ConversationMode:     "execute",
+		RequestedNextStep:    "promote_to_workflow",
+		ProposalReady:        true,
+		AwaitingAuthorization: false,
 	})
 
-	if !policy.AllowWorkflowPlanning || !policy.AllowTaskSuggestion {
-		t.Fatalf("expected workflow candidate to keep planning and suggestion lanes, got %#v", policy)
+	if !policy.AllowAnswer {
+		t.Fatalf("expected authorized proposal decision to stay replyable, got %#v", policy)
 	}
-	if !policy.RequireVerifier {
-		t.Fatalf("expected workflow promotion to require verifier, got %#v", policy)
+	if policy.AllowClarification {
+		t.Fatalf("expected policy to stop owning clarification/task gate decisions, got %#v", policy)
+	}
+	if policy.BlockedReason != "" {
+		t.Fatalf("expected ready resource to avoid hard block, got %#v", policy)
 	}
 }

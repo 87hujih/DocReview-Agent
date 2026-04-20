@@ -40,6 +40,7 @@ type currentFileSectionLookup interface {
 	GetCurrentVersion(ctx context.Context, resourceID string) (*postgres.ResourceVersion, error)
 	GetSectionByID(ctx context.Context, sectionID string) (*postgres.ResourceSection, error)
 	GetSectionByOrder(ctx context.Context, versionID string, sectionType string, ordinal int) (*postgres.ResourceSection, error)
+	GetVersionStructureByVersionID(ctx context.Context, versionID string) (*postgres.ResourceVersionStructure, error)
 	ListSectionsForReading(ctx context.Context, versionID string, sectionType string) ([]postgres.ResourceSection, error)
 }
 

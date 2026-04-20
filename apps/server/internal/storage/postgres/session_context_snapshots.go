@@ -30,6 +30,11 @@ type SessionContextSnapshotRecord struct {
 	LastCitationWindowsJSON        []byte
 	LastEnumeratedEntitiesJSON     []byte
 	OrdinalReferenceFrameJSON      []byte
+	PendingClarificationJSON       []byte
+	AdvisoryContextJSON            []byte
+	PendingProposalJSON            []byte
+	AuthorizationStateJSON         []byte
+	ExecutionStateJSON             []byte
 	RollingSummary                 *string
 	SummaryBaseSequenceNo          int
 	CreatedAt                      time.Time
@@ -94,6 +99,16 @@ type UpdateGroundingStateParams struct {
 	OrdinalReferenceFrame  []OrdinalReference
 }
 
+// UpdateAdvisorStateParams 描述顾问型运行时状态更新所需的最小字段。
+type UpdateAdvisorStateParams struct {
+	SessionID                string
+	PendingClarificationJSON []byte
+	AdvisoryContextJSON      []byte
+	PendingProposalJSON      []byte
+	AuthorizationStateJSON   []byte
+	ExecutionStateJSON       []byte
+}
+
 // SessionContextSnapshotRepo 封装会话上下文快照表的最小读写能力。
 type SessionContextSnapshotRepo struct {
 	pool *pgxpool.Pool
@@ -128,6 +143,11 @@ func (r *SessionContextSnapshotRepo) CreateEmpty(ctx context.Context, sessionID 
 		          last_citation_windows_json,
 		          last_enumerated_entities_json,
 		          ordinal_reference_frame_json,
+		          pending_clarification_json,
+		          advisory_context_json,
+		          pending_proposal_json,
+		          authorization_state_json,
+		          execution_state_json,
 		          rolling_summary,
 		          summary_base_sequence_no,
 		          created_at,
@@ -160,6 +180,11 @@ func (r *SessionContextSnapshotRepo) GetBySessionID(ctx context.Context, session
 		       last_citation_windows_json,
 		       last_enumerated_entities_json,
 		       ordinal_reference_frame_json,
+		       pending_clarification_json,
+		       advisory_context_json,
+		       pending_proposal_json,
+		       authorization_state_json,
+		       execution_state_json,
 		       rolling_summary,
 		       summary_base_sequence_no,
 		       created_at,
@@ -354,6 +379,36 @@ func (r *SessionContextSnapshotRepo) UpdateGroundingState(ctx context.Context, p
 	return err
 }
 
+// UpdateAdvisorState 更新当前会话的顾问型运行时状态。
+func (r *SessionContextSnapshotRepo) UpdateAdvisorState(ctx context.Context, params UpdateAdvisorStateParams) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO session_context_snapshots (
+		    session_id,
+		    pending_clarification_json,
+		    advisory_context_json,
+		    pending_proposal_json,
+		    authorization_state_json,
+		    execution_state_json
+		)
+		VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb)
+		ON CONFLICT (session_id) DO UPDATE
+		SET pending_clarification_json = EXCLUDED.pending_clarification_json,
+		    advisory_context_json = EXCLUDED.advisory_context_json,
+		    pending_proposal_json = EXCLUDED.pending_proposal_json,
+		    authorization_state_json = EXCLUDED.authorization_state_json,
+		    execution_state_json = EXCLUDED.execution_state_json,
+		    updated_at = now()
+	`,
+		strings.TrimSpace(params.SessionID),
+		string(normalizeSnapshotJSONObject(params.PendingClarificationJSON)),
+		string(normalizeSnapshotJSONObject(params.AdvisoryContextJSON)),
+		string(normalizeSnapshotJSONObject(params.PendingProposalJSON)),
+		string(normalizeSnapshotJSONObject(params.AuthorizationStateJSON)),
+		string(normalizeSnapshotJSONObject(params.ExecutionStateJSON)),
+	)
+	return err
+}
+
 // scanSessionContextSnapshot 把当前数据库行扫描成 `会话上下文快照`，统一查询结果到领域结构的映射。
 func scanSessionContextSnapshot(row pgx.Row) (SessionContextSnapshotRecord, error) {
 	var record SessionContextSnapshotRecord
@@ -376,6 +431,11 @@ func scanSessionContextSnapshot(row pgx.Row) (SessionContextSnapshotRecord, erro
 		&record.LastCitationWindowsJSON,
 		&record.LastEnumeratedEntitiesJSON,
 		&record.OrdinalReferenceFrameJSON,
+		&record.PendingClarificationJSON,
+		&record.AdvisoryContextJSON,
+		&record.PendingProposalJSON,
+		&record.AuthorizationStateJSON,
+		&record.ExecutionStateJSON,
 		&record.RollingSummary,
 		&record.SummaryBaseSequenceNo,
 		&record.CreatedAt,
@@ -409,4 +469,14 @@ func trimOptionalString(value *string) *string {
 
 	trimmed := strings.TrimSpace(*value)
 	return &trimmed
+}
+
+// normalizeSnapshotJSONObject 归一化对象型快照 JSON，避免 nil 或 null 继续落成空对象之外的值。
+func normalizeSnapshotJSONObject(body []byte) []byte {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" || trimmed == "null" {
+		return []byte("{}")
+	}
+
+	return []byte(trimmed)
 }

@@ -151,3 +151,70 @@ func TestConversationSummarizerPreservesStableSnapshotContextWithoutDuplicatingI
 		t.Fatalf("expected summary prompt to drop structured transcript messages, got %q", prompt)
 	}
 }
+
+// TestConversationSummarizerIncludesPendingProposalAndClarification 验证摘要提示会保留 advisor state，避免长会话丢失待确认语义。
+func TestConversationSummarizerIncludesPendingProposalAndClarification(t *testing.T) {
+	var captured []*schema.Message
+	summarizer := newConversationSummarizerWithClient(fakeAssistantLLMClient{
+		generate: func(_ context.Context, messages []*schema.Message) (*schema.Message, error) {
+			captured = messages
+			return &schema.Message{
+				Content: "当前目标：先比较方案。\n关键结论：proposal 已形成。\n待继续事项：等待用户确认是否执行。",
+			}, nil
+		},
+	}, llmclient.Config{TimeoutMS: 1000})
+
+	snapshot := &SessionContextSnapshot{
+		ActiveResource: &SnapshotActiveResource{
+			ID:         "resource-3",
+			Title:      "产品经理简历",
+			SourceType: "upload",
+		},
+	}
+	mustSetPointerStructField(t, snapshot, "PendingClarification", map[string]any{
+		"Kind":           "execution_confirmation",
+		"Question":       "要不要直接按这个方向改？",
+		"AskedMessageID": "message-clarify-1",
+		"Options":        []string{"先分析", "直接修改"},
+	})
+	mustSetPointerStructField(t, snapshot, "PendingProposal", map[string]any{
+		"ProposalID":                    "proposal-1",
+		"Instruction":                   "把第三个项目改成问题-动作-结果结构",
+		"PlanGoal":                      "产出可执行的简历改写任务",
+		"ProposedMessageID":             "message-proposal-1",
+		"RequiresExplicitAuthorization": true,
+	})
+	mustSetPointerStructField(t, snapshot, "AuthorizationState", map[string]any{
+		"Status":               "pending",
+		"GrantedForProposalID": "proposal-1",
+		"GrantedByMessageID":   "message-authorize-1",
+	})
+
+	_, err := summarizer.Summarize(context.Background(), SummaryInput{
+		Snapshot: snapshot,
+		Transcript: []postgres.AssistantMessage{
+			{
+				Role:    RoleUser,
+				Kind:    KindText,
+				Payload: mustJSON(t, TextPayload{Content: "按你的建议继续看"}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("summarize: %v", err)
+	}
+
+	if len(captured) != 2 {
+		t.Fatalf("expected summarizer to send 2 messages, got %d", len(captured))
+	}
+	prompt := captured[1].Content
+	if !strings.Contains(prompt, "待确认澄清") {
+		t.Fatalf("expected summary prompt to include pending clarification, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "待确认 proposal") {
+		t.Fatalf("expected summary prompt to include pending proposal, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "授权状态") {
+		t.Fatalf("expected summary prompt to include authorization state, got %q", prompt)
+	}
+}

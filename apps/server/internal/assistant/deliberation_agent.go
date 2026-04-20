@@ -33,11 +33,12 @@ const assistantDeliberationSystemPrompt = `你是 assistant runtime 的 delibera
 职责：
 1. 只判断当前请求的语义类型与产品下一步动作。
 2. 只输出结构化 JSON 决策，绝不能输出 reply、话术或面向用户的正文。
-3. 优先判断当前请求属于直接回答、基于证据回答、先澄清，还是回答后给任务卡。
-4. 候选 task instruction 只是候选动作，不代表系统已经创建任务。
+3. assistant 默认是顾问：先分析、再建议、再确认，只有明确授权才进入执行。
+4. 你需要同时给出兼容旧链路的 response_mode，以及顾问型主语义 conversation_mode / proposal_ready / awaiting_authorization。
+5. proposed_instruction 只是 proposal 候选，不代表系统已经创建任务或开始执行。
 
 只输出 JSON：
-{"request_kind":"readback|analysis|workflow_command|capability_query|other","response_mode":"answer_only|answer_with_grounding|clarify_first|answer_then_task_card|plan_then_answer","chat_fulfillable":true,"workflow_commitment":false,"needs_clarification":false,"clarification_question":"可选","evidence_sufficiency":"sufficient|partial|insufficient","candidate_task_instruction":"可选","candidate_plan_goal":"可选","confidence":0.0,"reasons":["至少一条理由"]}`
+{"request_kind":"readback|analysis|workflow_command|capability_query|other","response_mode":"answer_only|answer_with_grounding|clarify_first|answer_then_task_card|plan_then_answer","conversation_mode":"explore|advise|confirm|execute","requested_next_step":"answer|give_recommendations|request_authorization|promote_to_workflow|clarify","proposal_ready":false,"proposed_instruction":"可选","proposed_plan_goal":"可选","awaiting_authorization":false,"chat_fulfillable":true,"workflow_commitment":false,"needs_clarification":false,"clarification_question":"可选","evidence_sufficiency":"sufficient|partial|insufficient","candidate_task_instruction":"可选","candidate_plan_goal":"可选","confidence":0.0,"reasons":["至少一条理由"]}`
 
 type deliberationAgent interface {
 	Deliberate(ctx context.Context, state RuntimeState) (*DeliberationDecision, error)
@@ -47,6 +48,12 @@ type deliberationAgent interface {
 type DeliberationDecision struct {
 	RequestKind              string   `json:"request_kind"`
 	ResponseMode             string   `json:"response_mode"`
+	ConversationMode         string   `json:"conversation_mode,omitempty"`
+	RequestedNextStep        string   `json:"requested_next_step,omitempty"`
+	ProposalReady            bool     `json:"proposal_ready"`
+	ProposedInstruction      *string  `json:"proposed_instruction,omitempty"`
+	ProposedPlanGoal         *string  `json:"proposed_plan_goal,omitempty"`
+	AwaitingAuthorization    bool     `json:"awaiting_authorization"`
 	ChatFulfillable          bool     `json:"chat_fulfillable"`
 	WorkflowCommitment       bool     `json:"workflow_commitment"`
 	NeedsClarification       bool     `json:"needs_clarification"`
@@ -191,11 +198,27 @@ func decodeDeliberationDecision(raw string) (*DeliberationDecision, error) {
 
 	decision.RequestKind = strings.TrimSpace(decision.RequestKind)
 	decision.ResponseMode = strings.TrimSpace(decision.ResponseMode)
+	decision.ConversationMode = normalizeConversationMode(decision.ConversationMode)
+	decision.RequestedNextStep = normalizeRequestedNextStep(decision.RequestedNextStep)
+	decision.ProposedInstruction = normalizeOptionalText(decision.ProposedInstruction)
+	decision.ProposedPlanGoal = normalizeOptionalText(decision.ProposedPlanGoal)
 	decision.EvidenceSufficiency = strings.TrimSpace(decision.EvidenceSufficiency)
 	decision.ClarificationQuestion = normalizeOptionalText(decision.ClarificationQuestion)
 	decision.CandidateTaskInstruction = normalizeOptionalText(decision.CandidateTaskInstruction)
 	decision.CandidatePlanGoal = normalizeOptionalText(decision.CandidatePlanGoal)
 	decision.Reasons = normalizeDecisionReasons(decision.Reasons)
+	if decision.ProposedInstruction == nil {
+		decision.ProposedInstruction = decision.CandidateTaskInstruction
+	}
+	if decision.ProposedPlanGoal == nil {
+		decision.ProposedPlanGoal = decision.CandidatePlanGoal
+	}
+	if decision.CandidateTaskInstruction == nil {
+		decision.CandidateTaskInstruction = decision.ProposedInstruction
+	}
+	if decision.CandidatePlanGoal == nil {
+		decision.CandidatePlanGoal = decision.ProposedPlanGoal
+	}
 
 	if err := validateDeliberationDecision(&decision); err != nil {
 		return nil, err
@@ -224,6 +247,12 @@ func validateDeliberationDecision(decision *DeliberationDecision) error {
 	if len(decision.Reasons) == 0 {
 		return fmt.Errorf("deliberation 结果缺少 reasons")
 	}
+	if decision.ConversationMode != "" && !isSupportedConversationMode(decision.ConversationMode) {
+		return fmt.Errorf("deliberation 结果包含非法 conversation_mode: %s", decision.ConversationMode)
+	}
+	if !isSupportedRequestedNextStep(decision.RequestedNextStep) {
+		return fmt.Errorf("deliberation 结果包含非法 requested_next_step: %s", decision.RequestedNextStep)
+	}
 
 	return nil
 }
@@ -242,6 +271,26 @@ func isSupportedResponseMode(mode string) bool {
 	}
 }
 
+// isSupportedConversationMode 判断顾问型对话模式是否属于当前 runtime 允许的枚举。
+func isSupportedConversationMode(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case "explore", "advise", "confirm", "execute":
+		return true
+	default:
+		return false
+	}
+}
+
+// isSupportedRequestedNextStep 判断顾问型下一步动作是否属于当前 runtime 允许的枚举。
+func isSupportedRequestedNextStep(step string) bool {
+	switch strings.TrimSpace(step) {
+	case "", "answer", "give_recommendations", "request_authorization", "promote_to_workflow", "clarify":
+		return true
+	default:
+		return false
+	}
+}
+
 // normalizeOptionalText 归一化可选文本字段，避免空字符串继续向后传播。
 func normalizeOptionalText(value *string) *string {
 	if value == nil {
@@ -254,6 +303,21 @@ func normalizeOptionalText(value *string) *string {
 	}
 
 	return &trimmed
+}
+
+// normalizeConversationMode 归一化顾问型对话模式，缺省时保持空值以兼容旧链路。
+func normalizeConversationMode(mode string) string {
+	trimmed := strings.TrimSpace(mode)
+	if trimmed != "" {
+		return trimmed
+	}
+
+	return ""
+}
+
+// normalizeRequestedNextStep 归一化顾问型下一步动作，避免空白字符串继续向后传播。
+func normalizeRequestedNextStep(step string) string {
+	return strings.TrimSpace(step)
 }
 
 // normalizeDecisionReasons 清理 deliberation reasons，避免空白理由进入后续链路。

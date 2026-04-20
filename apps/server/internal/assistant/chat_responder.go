@@ -26,12 +26,20 @@ const (
 	recentRawTurnCharBudget = 1600
 )
 
-const assistantSystemPrompt = `你是中文个人助手。
+const assistantGenericSystemPrompt = `你是中文个人助手。
 
 要求：
 1. 基于会话历史继续自然对话，回答直接、简洁、有帮助。
 2. 不要声称已经创建任务、上传文件或修改资源。
 3. 如果提供了资源片段，只能基于片段回答；证据不足时明确说明。`
+
+const assistantFileAwareSystemPrompt = `你是中文个人助手。
+
+要求：
+1. 基于会话历史继续自然对话，回答直接、简洁、有帮助。
+2. 不要声称已经创建任务、上传文件或修改资源。
+3. 当前文件 canonical 内容已可访问；优先基于当前文件的 canonical 内容回答。
+4. 只有在当前文件真实不可读或目标无法稳定定位时，才说明具体原因。`
 
 type chatResponder interface {
 	Reply(ctx context.Context, input ChatCompletionInput) (*ChatCompletionResult, error)
@@ -67,20 +75,21 @@ type ChatCompletionInput struct {
 	History                  []postgres.AssistantMessage
 	Message                  string
 	Resource                 *resourceContext
+	CurrentDocument          *CurrentDocument
 	Decision                 *DeliberationDecision
 	TaskSuggestionDecision   *TaskSuggestionDecision
 }
 
-// ChatCompletionResult 表示模型返回的自然语言回复与可选任务建议。
+// ChatCompletionResult 表示模型返回的自然语言回复。
 type ChatCompletionResult struct {
-	Reply           string
+	Reply string
+	// TaskInstruction 保留给旧测试替身兼容，responder 不再填充该字段。
 	TaskInstruction *string
 }
 
 // chatResponsePayload 承载聊天响应载荷相关状态，明确助手链路中的数据边界。
 type chatResponsePayload struct {
-	Reply           string  `json:"reply"`
-	TaskInstruction *string `json:"task_instruction"`
+	Reply string `json:"reply"`
 }
 
 // ChatResponder 封装 assistant 会话所需的模型客户端。
@@ -156,12 +165,6 @@ func (r *ChatResponder) Reply(ctx context.Context, input ChatCompletionInput) (*
 
 	result := &ChatCompletionResult{
 		Reply: strings.TrimSpace(payload.Reply),
-	}
-	if payload.TaskInstruction != nil {
-		trimmed := strings.TrimSpace(*payload.TaskInstruction)
-		if trimmed != "" {
-			result.TaskInstruction = &trimmed
-		}
 	}
 
 	return result, nil
@@ -242,7 +245,8 @@ func buildChatMessages(input ChatCompletionInput) []*schema.Message {
 
 // buildSystemPrompt 组装 `系统提示词`，统一模型输入文案和约束说明。
 func buildSystemPrompt(input ChatCompletionInput) string {
-	parts := []string{assistantSystemPrompt, buildAssistantResponseSchemaPrompt()}
+	state := runtimeStateFromChatInput(input)
+	parts := []string{assistantSystemPromptForState(state), buildAssistantResponseSchemaPrompt()}
 	if decisionHint := buildReplyDecisionHint(input.Decision); decisionHint != "" {
 		parts = append(parts, decisionHint)
 	}
@@ -251,6 +255,15 @@ func buildSystemPrompt(input ChatCompletionInput) string {
 	}
 
 	return strings.Join(parts, "\n\n")
+}
+
+// assistantSystemPromptForState 根据当前文件可见性选择系统提示词，避免 file-aware 路径继续沿用 snippet-only 世界观。
+func assistantSystemPromptForState(state RuntimeState) string {
+	if state.CurrentDocument != nil && state.CurrentDocument.Ready {
+		return assistantFileAwareSystemPrompt
+	}
+
+	return assistantGenericSystemPrompt
 }
 
 // buildAssistantResponseSchemaPrompt 组装 `助手响应Schema提示词`，统一模型输入文案和约束说明。
@@ -302,6 +315,15 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 			state.ActiveResource.ID,
 		))
 	}
+	if state.CurrentDocument != nil && state.CurrentDocument.Ready {
+		sections = append(sections, fmt.Sprintf(
+			"当前文件 canonical 内容已可访问：标题=%s；来源=%s；资源ID=%s；版本ID=%s。",
+			state.CurrentDocument.Title,
+			state.CurrentDocument.SourceType,
+			state.CurrentDocument.ResourceID,
+			state.CurrentDocument.VersionID,
+		))
+	}
 	if state.GroundedTarget != nil {
 		lines := []string{
 			fmt.Sprintf("本轮 grounding 目标：section_id=%s；section_type=%s。",
@@ -323,7 +345,11 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 
 	if len(state.Citations) > 0 {
 		lines := make([]string, 0, len(state.Citations)+1)
-		lines = append(lines, "与本轮用户问题最相关的资源片段：")
+		if state.CurrentDocument != nil && state.CurrentDocument.Ready {
+			lines = append(lines, "当前文件内的辅助证据片段（仅用于定位与引用展示）：")
+		} else {
+			lines = append(lines, "与本轮用户问题最相关的资源片段：")
+		}
 		for index, item := range state.Citations {
 			labelParts := []string{fallbackSectionTitle(item.SectionTitle)}
 			if strings.TrimSpace(item.SectionType) != "" || strings.TrimSpace(item.SectionID) != "" {
@@ -340,7 +366,7 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 			))
 		}
 		sections = append(sections, strings.Join(lines, "\n"))
-	} else if state.ActiveResource != nil {
+	} else if state.ActiveResource != nil && (state.CurrentDocument == nil || !state.CurrentDocument.Ready) {
 		sections = append(sections, "当前已有资源，但本轮没有命中直接证据片段；若用户追问资源细节，请明确说明信息不足。")
 	}
 
@@ -358,6 +384,9 @@ func runtimeStateFromChatInput(input ChatCompletionInput) RuntimeState {
 	}
 	if state.ActiveResource == nil {
 		state.ActiveResource = input.Resource
+	}
+	if state.CurrentDocument == nil {
+		state.CurrentDocument = cloneCurrentDocument(input.CurrentDocument)
 	}
 	if state.GroundedTarget == nil {
 		state.GroundedTarget = input.GroundedTarget
@@ -720,12 +749,6 @@ func (s *responseChunkStream) Result() (*ChatCompletionResult, error) {
 
 	s.result = &ChatCompletionResult{
 		Reply: strings.TrimSpace(payload.Reply),
-	}
-	if payload.TaskInstruction != nil {
-		trimmed := strings.TrimSpace(*payload.TaskInstruction)
-		if trimmed != "" {
-			s.result.TaskInstruction = &trimmed
-		}
 	}
 
 	return s.result, nil

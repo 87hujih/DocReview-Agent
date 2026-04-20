@@ -134,8 +134,9 @@ func TestSectionLocatorFallsBackToDocumentWhenNoStructuredSections(t *testing.T)
 
 // fakeCurrentFileSectionReader 提供当前文件 section / version 读取替身，便于隔离 locator 与 reader 的行为测试。
 type fakeCurrentFileSectionReader struct {
-	currentVersion *postgres.ResourceVersion
-	allSections    []postgres.ResourceSection
+	currentVersion   *postgres.ResourceVersion
+	versionStructure *postgres.ResourceVersionStructure
+	allSections      []postgres.ResourceSection
 }
 
 // GetCurrentVersion 返回测试替身里的当前版本快照。
@@ -171,6 +172,15 @@ func (f *fakeCurrentFileSectionReader) GetSectionByOrder(_ context.Context, vers
 	}
 
 	return nil, nil
+}
+
+// GetVersionStructureByVersionID 返回测试替身里的结构化文档 JSON。
+func (f *fakeCurrentFileSectionReader) GetVersionStructureByVersionID(_ context.Context, versionID string) (*postgres.ResourceVersionStructure, error) {
+	if f.versionStructure == nil || f.versionStructure.VersionID != versionID {
+		return nil, nil
+	}
+
+	return f.versionStructure, nil
 }
 
 // ListSectionsForReading 返回测试替身里按条件过滤后的 section 列表。

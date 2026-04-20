@@ -231,6 +231,11 @@ func (r *ResourceRepo) ListSectionsForReading(ctx context.Context, versionID str
 	return NewResourceStructureRepo(r.pool).ListSectionsForReading(ctx, versionID, sectionType)
 }
 
+// GetVersionStructureByVersionID 返回指定版本的结构化文档 JSON。
+func (r *ResourceRepo) GetVersionStructureByVersionID(ctx context.Context, versionID string) (*ResourceVersionStructure, error) {
+	return NewResourceStructureRepo(r.pool).GetVersionStructureByVersionID(ctx, versionID)
+}
+
 // CountChunksByVersion 返回指定版本当前已有的 chunk 数。
 func (r *ResourceRepo) CountChunksByVersion(ctx context.Context, versionID string) (int, error) {
 	var count int

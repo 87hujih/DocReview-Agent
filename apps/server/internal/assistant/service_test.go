@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/filestore"
 	"agent_project/apps/server/internal/storage/postgres"
@@ -85,7 +86,7 @@ func TestStartConversationDoesNotSuggestTaskForCapabilityQuestion(t *testing.T) 
 	}
 }
 
-// TestAppendMessageBuildsTaskSuggestionFromPolicyDecisionNotReplySideEffect 验证任务建议只来自 deliberation/policy，不来自 reply 副产物。
+// TestAppendMessageBuildsTaskSuggestionFromPolicyDecisionNotReplySideEffect 验证任务建议只来自 deliberation / gate，而不是 reply 副产物。
 func TestAppendMessageBuildsTaskSuggestionFromPolicyDecisionNotReplySideEffect(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("学生手册优化")
@@ -117,7 +118,7 @@ func TestAppendMessageBuildsTaskSuggestionFromPolicyDecisionNotReplySideEffect(t
 		responder,
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
 				RequestKind:              "workflow_command",
 				ResponseMode:             ResponseModeAnswerThenTaskCard,
 				ChatFulfillable:          false,
@@ -127,7 +128,7 @@ func TestAppendMessageBuildsTaskSuggestionFromPolicyDecisionNotReplySideEffect(t
 				CandidateTaskInstruction: stringPointer("请把学生手册第二章整理成可执行的修订任务"),
 				Confidence:               0.92,
 				Reasons:                  []string{"用户明确要求直接进入执行"},
-			},
+			}),
 		}),
 	)
 
@@ -141,8 +142,8 @@ func TestAppendMessageBuildsTaskSuggestionFromPolicyDecisionNotReplySideEffect(t
 	}
 
 	reply := decodeTextPayload(t, result.Messages[1].Payload)
-	if reply.Content != "这件事已经适合进入任务流了，我先给你一张建议卡。" {
-		t.Fatalf("expected responder text reply, got %q", reply.Content)
+	if !strings.Contains(reply.Content, "尚未写回原文件") {
+		t.Fatalf("expected proposal-phase reply audit to keep non-executed wording, got %q", reply.Content)
 	}
 
 	suggestion := decodeTaskSuggestionPayload(t, result.Messages[2].Payload)
@@ -151,49 +152,30 @@ func TestAppendMessageBuildsTaskSuggestionFromPolicyDecisionNotReplySideEffect(t
 	}
 }
 
-// TestAppendMessageUsesDeliberationBeforeReply 验证非流式路径会先跑 deliberation，再调用 responder。
+// TestAppendMessageUsesDeliberationBeforeReply 验证非流式聊天回复路径会先跑 deliberation，再调用 responder。
 func TestAppendMessageUsesDeliberationBeforeReply(t *testing.T) {
 	repo := newFakeSessionRepo()
 	session := repo.seedSession("简历对话")
-	repo.seedMessage(session.ID, postgres.AssistantMessage{
-		ID:         "message-file",
-		SessionID:  session.ID,
-		Role:       RoleAssistant,
-		Kind:       KindSessionFile,
-		SequenceNo: 1,
-		Payload: mustJSON(t, SessionFilePayload{
-			FileName:      "resume.md",
-			ResourceID:    "resource-1",
-			ResourceTitle: "产品经理简历",
-			SourceType:    "upload",
-			Status:        "ready",
-		}),
-		CreatedAt: time.Now(),
-	})
-
 	order := make([]string, 0, 2)
 	deliberator := &fakeDeliberationAgent{
 		result: &DeliberationDecision{
-			RequestKind:         "readback",
-			ResponseMode:        ResponseModeAnswerWithGrounding,
+			RequestKind:         "analysis",
+			ResponseMode:        ResponseModeAnswerOnly,
 			ChatFulfillable:     true,
 			WorkflowCommitment:  false,
 			EvidenceSufficiency: "sufficient",
 			Confidence:          0.83,
-			Reasons:             []string{"这是文件内阅读请求"},
+			Reasons:             []string{"这是文件内分析请求，应进入 responder"},
 		},
-		onDeliberate: func(state RuntimeState) {
+		onDeliberate: func(_ RuntimeState) {
 			order = append(order, "deliberate")
-			if state.ActiveResource == nil || state.ActiveResource.ID != "resource-1" {
-				t.Fatalf("expected deliberation to receive runtime state with active resource, got %#v", state.ActiveResource)
-			}
 		},
 	}
 	responder := &fakeChatResponder{
-		result: &ChatCompletionResult{Reply: "我先把第三个项目按原文输出给你。"},
+		result: &ChatCompletionResult{Reply: "我先分析第三个项目为什么显得薄弱。"},
 		onReply: func(input ChatCompletionInput) {
 			order = append(order, "reply")
-			if input.Decision == nil || input.Decision.ResponseMode != ResponseModeAnswerWithGrounding {
+			if input.Decision == nil || input.Decision.ResponseMode != ResponseModeAnswerOnly {
 				t.Fatalf("expected responder to receive deliberation decision, got %#v", input.Decision)
 			}
 		},
@@ -207,7 +189,7 @@ func TestAppendMessageUsesDeliberationBeforeReply(t *testing.T) {
 		WithDeliberationAgent(deliberator),
 	)
 
-	if _, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先输出一遍"); err != nil {
+	if _, err := service.AppendMessage(context.Background(), session.ID, "详细分析第三个项目为什么显得弱"); err != nil {
 		t.Fatalf("append message: %v", err)
 	}
 
@@ -251,15 +233,16 @@ func TestAppendMessageInvokesWorkflowPlannerOnlyWhenPolicyAllowsPlanning(t *test
 		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我先给你一张任务建议卡。"}},
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
-				RequestKind:         "workflow_command",
-				ResponseMode:        ResponseModePlanThenAnswer,
-				ChatFulfillable:     false,
-				WorkflowCommitment:  true,
-				EvidenceSufficiency: "sufficient",
-				Confidence:          0.86,
-				Reasons:             []string{"用户已经进入执行语义"},
-			},
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请把第三个项目改成产品经理版本"),
+				Confidence:               0.86,
+				Reasons:                  []string{"用户已经进入执行语义"},
+			}),
 		}),
 		WithWorkflowPlanner(planner),
 	)
@@ -355,7 +338,7 @@ func TestAppendMessageUsesWorkflowPlannerInstructionForTaskSuggestion(t *testing
 		&fakeChatResponder{result: &ChatCompletionResult{Reply: "这件事适合进入任务流。"}},
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
 				RequestKind:              "workflow_command",
 				ResponseMode:             ResponseModePlanThenAnswer,
 				ChatFulfillable:          false,
@@ -364,7 +347,7 @@ func TestAppendMessageUsesWorkflowPlannerInstructionForTaskSuggestion(t *testing
 				CandidateTaskInstruction: stringPointer("deliberation 初版 instruction"),
 				Confidence:               0.88,
 				Reasons:                  []string{"用户明确要求开始执行"},
-			},
+			}),
 		}),
 		WithWorkflowPlanner(&fakeWorkflowPlanner{
 			result: &WorkflowPlanDecision{
@@ -569,15 +552,16 @@ func TestAppendMessageInvokesVerifierOnlyAfterPlannerPromotesWorkflow(t *testing
 		&fakeChatResponder{result: &ChatCompletionResult{Reply: "这件事适合进入任务流。"}},
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
-				RequestKind:         "workflow_command",
-				ResponseMode:        ResponseModePlanThenAnswer,
-				ChatFulfillable:     false,
-				WorkflowCommitment:  true,
-				EvidenceSufficiency: "sufficient",
-				Confidence:          0.88,
-				Reasons:             []string{"用户明确要求开始执行"},
-			},
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请把第三个项目改成产品经理版本"),
+				Confidence:               0.88,
+				Reasons:                  []string{"用户明确要求开始执行"},
+			}),
 		}),
 		WithWorkflowPlanner(planner),
 		WithWorkflowVerifier(verifier),
@@ -831,15 +815,16 @@ func TestAppendMessageUsesVerifierRevisedInstructionWhenApproved(t *testing.T) {
 		&fakeChatResponder{result: &ChatCompletionResult{Reply: "这件事适合进入任务流。"}},
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
-				RequestKind:         "workflow_command",
-				ResponseMode:        ResponseModePlanThenAnswer,
-				ChatFulfillable:     false,
-				WorkflowCommitment:  true,
-				EvidenceSufficiency: "sufficient",
-				Confidence:          0.89,
-				Reasons:             []string{"用户明确要求开始执行"},
-			},
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请直接开始整理第二章"),
+				Confidence:               0.89,
+				Reasons:                  []string{"用户明确要求开始执行"},
+			}),
 		}),
 		WithWorkflowPlanner(&fakeWorkflowPlanner{
 			result: &WorkflowPlanDecision{
@@ -1058,15 +1043,16 @@ func TestAppendMessageStreamInvokesWorkflowPlannerForWorkflowCandidate(t *testin
 		},
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
-				RequestKind:         "workflow_command",
-				ResponseMode:        ResponseModePlanThenAnswer,
-				ChatFulfillable:     false,
-				WorkflowCommitment:  true,
-				EvidenceSufficiency: "sufficient",
-				Confidence:          0.88,
-				Reasons:             []string{"用户明确要求直接开始修改"},
-			},
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请直接开始整理第二章"),
+				Confidence:               0.88,
+				Reasons:                  []string{"用户明确要求直接开始修改"},
+			}),
 		}),
 		WithWorkflowPlanner(planner),
 	)
@@ -1115,15 +1101,16 @@ func TestAppendMessageStreamDoesNotEmitTaskSuggestionWhenPlannerKeepsChatFulfill
 		},
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
-				RequestKind:         "workflow_command",
-				ResponseMode:        ResponseModePlanThenAnswer,
-				ChatFulfillable:     false,
-				WorkflowCommitment:  true,
-				EvidenceSufficiency: "sufficient",
-				Confidence:          0.76,
-				Reasons:             []string{"先让 planner 判断是否真的需要 workflow"},
-			},
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请把第二章整理成任务"),
+				Confidence:               0.76,
+				Reasons:                  []string{"先让 planner 判断是否真的需要 workflow"},
+			}),
 		}),
 		WithWorkflowPlanner(&fakeWorkflowPlanner{
 			result: &WorkflowPlanDecision{
@@ -1184,15 +1171,16 @@ func TestAppendMessageStreamEmitsTaskSuggestionWhenPlannerPromotesWorkflow(t *te
 		},
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
-				RequestKind:         "workflow_command",
-				ResponseMode:        ResponseModePlanThenAnswer,
-				ChatFulfillable:     false,
-				WorkflowCommitment:  true,
-				EvidenceSufficiency: "sufficient",
-				Confidence:          0.91,
-				Reasons:             []string{"用户明确要求直接开始修改"},
-			},
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请直接开始整理第二章"),
+				Confidence:               0.91,
+				Reasons:                  []string{"用户明确要求直接开始修改"},
+			}),
 		}),
 		WithWorkflowPlanner(&fakeWorkflowPlanner{
 			result: &WorkflowPlanDecision{
@@ -1267,15 +1255,16 @@ func TestAppendMessageStreamInvokesVerifierAfterWorkflowPlanner(t *testing.T) {
 		},
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
-				RequestKind:         "workflow_command",
-				ResponseMode:        ResponseModePlanThenAnswer,
-				ChatFulfillable:     false,
-				WorkflowCommitment:  true,
-				EvidenceSufficiency: "sufficient",
-				Confidence:          0.88,
-				Reasons:             []string{"用户明确要求直接开始修改"},
-			},
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请直接开始整理第二章"),
+				Confidence:               0.88,
+				Reasons:                  []string{"用户明确要求直接开始修改"},
+			}),
 		}),
 		WithWorkflowPlanner(planner),
 		WithWorkflowVerifier(verifier),
@@ -1328,15 +1317,16 @@ func TestAppendMessageStreamDoesNotEmitTaskSuggestionWhenVerifierDowngrades(t *t
 		},
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
-				RequestKind:         "workflow_command",
-				ResponseMode:        ResponseModePlanThenAnswer,
-				ChatFulfillable:     false,
-				WorkflowCommitment:  true,
-				EvidenceSufficiency: "sufficient",
-				Confidence:          0.77,
-				Reasons:             []string{"先让 planner 判断是否真的需要 workflow"},
-			},
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请把第二章整理成任务"),
+				Confidence:               0.77,
+				Reasons:                  []string{"先让 planner 判断是否真的需要 workflow"},
+			}),
 		}),
 		WithWorkflowPlanner(&fakeWorkflowPlanner{
 			result: &WorkflowPlanDecision{
@@ -1405,15 +1395,16 @@ func TestAppendMessageStreamEmitsTaskSuggestionWhenVerifierApproves(t *testing.T
 		},
 		nil,
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
-				RequestKind:         "workflow_command",
-				ResponseMode:        ResponseModePlanThenAnswer,
-				ChatFulfillable:     false,
-				WorkflowCommitment:  true,
-				EvidenceSufficiency: "sufficient",
-				Confidence:          0.91,
-				Reasons:             []string{"用户明确要求直接开始修改"},
-			},
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请直接开始整理第二章"),
+				Confidence:               0.91,
+				Reasons:                  []string{"用户明确要求直接开始修改"},
+			}),
 		}),
 		WithWorkflowPlanner(&fakeWorkflowPlanner{
 			result: &WorkflowPlanDecision{
@@ -1843,12 +1834,30 @@ func TestAppendMessageInlineMaterialAndExecutionCreatesTaskSuggestionInSameTurn(
 		},
 	}
 	instruction := "请把这份简历改成产品经理版本"
-	service := NewService(repo, importer, &fakeTaskCreator{}, &fakeChatResponder{
-		result: &ChatCompletionResult{
-			Reply:           "这轮已经满足执行条件，我先给你任务建议。",
-			TaskInstruction: &instruction,
+	service := NewService(
+		repo,
+		importer,
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			result: &ChatCompletionResult{
+				Reply: "这轮已经满足执行条件，我先给你任务建议。",
+			},
 		},
-	}, nil)
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: &instruction,
+				CandidatePlanGoal:        stringPointer("把简历改成产品经理版本"),
+				Confidence:               0.9,
+				Reasons:                  []string{"同轮内联材料已经足以进入执行"},
+			}),
+		}),
+	)
 
 	result, err := service.AppendMessage(context.Background(), session.ID, strings.TrimSpace(`
 项目经历
@@ -2356,6 +2365,63 @@ func TestAppendMessageBuildsGroundedAnalysisContextFromCanonicalSectionContent(t
 	}
 }
 
+// TestAppendMessageAnalyzeNaturalQuestionDoesNotDependOnTopKCitations 验证自然分析问法在当前文件 ready 时会直接走 canonical 文档，而不是先依赖 topK citations。
+func TestAppendMessageAnalyzeNaturalQuestionDoesNotDependOnTopKCitations(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("当前文件分析")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "resume.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "产品经理简历",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+	currentFileReader := &fakeCurrentFileSectionReader{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-1",
+			ResourceID: "resource-1",
+			Content:    "整份简历正文",
+		},
+		allSections: []postgres.ResourceSection{
+			{ID: "section-3", ResourceID: "resource-1", VersionID: "version-1", SectionType: "project", SectionOrder: 3, Title: "慢跑计划", Content: "这是第三个项目的完整正文"},
+		},
+	}
+	retriever := &fakeResourceCitationRetriever{}
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "这个项目的主要问题是结果表达偏弱。"},
+		onReply: func(input ChatCompletionInput) {
+			if !strings.Contains(input.CanonicalAnalysisContext, "这是第三个项目的完整正文") {
+				t.Fatalf("expected canonical analysis context, got %q", input.CanonicalAnalysisContext)
+			}
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		retriever,
+		WithCurrentDocumentLoader(NewCurrentDocumentLoader(currentFileReader)),
+		WithSectionLocator(NewSectionLocator(currentFileReader)),
+		WithSectionReader(NewSectionReader(currentFileReader)),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "结合我刚上传的简历，详细分析第三个项目的问题"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if retriever.calls != 0 {
+		t.Fatalf("expected natural analysis question to avoid eager topK retrieval, got %d calls", retriever.calls)
+	}
+}
+
 // TestAppendMessageFallsBackOnlyWithinCurrentFile 验证分析型请求定位失败后只会在当前文件内做一次 fallback，并继续收敛到 canonical section。
 func TestAppendMessageFallsBackOnlyWithinCurrentFile(t *testing.T) {
 	repo := newFakeSessionRepo()
@@ -2477,6 +2543,497 @@ func TestAppendMessageReturnsExplicitFailureWhenCurrentFileTargetCannotBeLocated
 	}
 }
 
+// TestAppendMessageListsAllProjectItemsFromOutlineWhenSemanticProjectSectionsMissing 验证当前文件缺少 project sections 时，仍会从 outline 列出全部项目。
+func TestAppendMessageListsAllProjectItemsFromOutlineWhenSemanticProjectSectionsMissing(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("outline 项目列表")
+	currentDocument := mustLoadCurrentDocumentForServiceTest(t, &fakeCurrentFileSectionReader{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-outline-1",
+			ResourceID: "resource-outline-1",
+			Content:    "## 项目经历\n### 1. CampusHub\n负责活动报名。\n### 2. 选课助手\n负责排课推荐。\n### 3. 慢跑计划\n负责路线分析。",
+		},
+		versionStructure: &postgres.ResourceVersionStructure{
+			VersionID: "version-outline-1",
+			DocumentJSON: mustMarshalOutlineDocumentJSON(t, documentparser.ParsedDocument{
+				SourceFormat: "markdown",
+				Blocks: []documentparser.Block{
+					{Type: documentparser.BlockHeading, Level: 2, Text: "项目经历"},
+					{Type: documentparser.BlockHeading, Level: 3, Text: "1. CampusHub"},
+					{Type: documentparser.BlockParagraph, Text: "负责活动报名。"},
+					{Type: documentparser.BlockHeading, Level: 3, Text: "2. 选课助手"},
+					{Type: documentparser.BlockParagraph, Text: "负责排课推荐。"},
+					{Type: documentparser.BlockHeading, Level: 3, Text: "3. 慢跑计划"},
+					{Type: documentparser.BlockParagraph, Text: "负责路线分析。"},
+				},
+			}),
+		},
+	})
+	responder := &fakeChatResponder{
+		onReply: func(ChatCompletionInput) {
+			t.Fatal("outline deterministic list should not call chat responder")
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource:  &resourceContext{ID: "resource-outline-1", Title: "简历", Source: "upload"},
+				CurrentDocument: currentDocument,
+				Snapshot:        &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前请求属于当前文件直接阅读"},
+			},
+		}),
+		WithDeterministicReadResponder(NewDeterministicReadResponder()),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "这份简历里有哪些项目")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if reply.Content != "1. CampusHub\n2. 选课助手\n3. 慢跑计划" {
+		t.Fatalf("expected outline-backed project list, got %q", reply.Content)
+	}
+}
+
+// TestAppendMessageListsProjectsFromMarkdownFallbackOutlineForSmokePrompt 验证 live-like markdown 简历在缺少 structure_json 时仍能稳定列出项目。
+func TestAppendMessageListsProjectsFromMarkdownFallbackOutlineForSmokePrompt(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("markdown fallback list")
+	currentDocument := buildLiveLikeResumeCurrentDocumentWithoutStructure()
+	responder := &fakeChatResponder{
+		onReply: func(ChatCompletionInput) {
+			t.Fatal("markdown fallback project list should not call chat responder")
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource:  &resourceContext{ID: currentDocument.ResourceID, Title: currentDocument.Title, Source: currentDocument.SourceType},
+				CurrentDocument: currentDocument,
+				Snapshot:        &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前请求属于当前文件直接阅读"},
+			},
+		}),
+		WithDeterministicReadResponder(NewDeterministicReadResponder()),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "这份简历里有哪些项目？请按顺序列出来。")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if reply.Content != "1. Alpha 内容中台\n2. Beta 协作系统\n3. Gamma 风险引擎" {
+		t.Fatalf("expected markdown fallback project list, got %q", reply.Content)
+	}
+}
+
+// TestAppendMessageReadsThirdProjectFromOutlineNode 验证读取第三个项目时会直接命中 outline node，而不是依赖 section。
+func TestAppendMessageReadsThirdProjectFromOutlineNode(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("outline 项目读取")
+	currentDocument := &CurrentDocument{
+		ResourceID: "resource-outline-2",
+		VersionID:  "version-outline-2",
+		Title:      "简历",
+		SourceType: "upload",
+		FullText:   "项目经历全文",
+		Ready:      true,
+		Outline: []OutlineNode{
+			{NodeID: "document:version-outline-2", NodeKind: OutlineNodeDocument, Title: "全文", CanonicalContent: "项目经历全文"},
+			{NodeID: "heading-projects", NodeKind: OutlineNodeHeadingSection, Title: "项目经历", CanonicalContent: "项目经历"},
+			{NodeID: "project-1", NodeKind: OutlineNodeProjectItem, Title: "CampusHub", Ordinal: 1, ParentNodeID: "heading-projects", CanonicalContent: "CampusHub 正文"},
+			{NodeID: "project-2", NodeKind: OutlineNodeProjectItem, Title: "选课助手", Ordinal: 2, ParentNodeID: "heading-projects", CanonicalContent: "选课助手 正文"},
+			{NodeID: "project-3", NodeKind: OutlineNodeProjectItem, Title: "慢跑计划", Ordinal: 3, ParentNodeID: "heading-projects", CanonicalContent: "慢跑计划的完整正文"},
+		},
+	}
+	responder := &fakeChatResponder{
+		onReply: func(ChatCompletionInput) {
+			t.Fatal("outline deterministic read should not call chat responder")
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource:  &resourceContext{ID: "resource-outline-2", Title: "简历", Source: "upload"},
+				CurrentDocument: currentDocument,
+				Snapshot:        &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前请求属于当前文件直接阅读"},
+			},
+		}),
+		WithDeterministicReadResponder(NewDeterministicReadResponder()),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先输出一遍")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if reply.Content != "慢跑计划的完整正文" {
+		t.Fatalf("expected outline-backed third project content, got %q", reply.Content)
+	}
+}
+
+// TestAppendMessageReadsThirdProjectFromMarkdownFallbackOutline 验证 live-like markdown 简历在缺少 structure_json 时也能稳定读取第三个项目。
+func TestAppendMessageReadsThirdProjectFromMarkdownFallbackOutline(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("markdown fallback third project")
+	currentDocument := buildLiveLikeResumeCurrentDocumentWithoutStructure()
+	responder := &fakeChatResponder{
+		onReply: func(ChatCompletionInput) {
+			t.Fatal("markdown fallback excerpt should not call chat responder")
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource:  &resourceContext{ID: currentDocument.ResourceID, Title: currentDocument.Title, Source: currentDocument.SourceType},
+				CurrentDocument: currentDocument,
+				Snapshot:        &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "readback",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前请求属于当前文件直接阅读"},
+			},
+		}),
+		WithDeterministicReadResponder(NewDeterministicReadResponder()),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先完整输出一遍。")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if !strings.Contains(reply.Content, "Gamma 风险引擎") || !strings.Contains(reply.Content, "把风险规则上线周期从 7 天缩短到 1 天") {
+		t.Fatalf("expected markdown fallback third project content, got %q", reply.Content)
+	}
+}
+
+// TestAppendMessageAnalyzeUsesResolvedNodeCanonicalContent 验证分析链会使用 resolved node 的 canonical 内容，而不是退回 section/citation 猜测。
+func TestAppendMessageAnalyzeUsesResolvedNodeCanonicalContent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("outline 项目分析")
+	currentDocument := testCurrentDocumentWithProjects()
+	currentDocument.ResourceID = "resource-outline-3"
+	currentDocument.VersionID = "version-outline-3"
+	currentDocument.Outline[4].CanonicalContent = "慢跑计划的完整正文，包含问题、动作和结果。"
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "第三个项目的问题是结果表达偏弱。"},
+		onReply: func(input ChatCompletionInput) {
+			if !strings.Contains(input.CanonicalAnalysisContext, "慢跑计划的完整正文，包含问题、动作和结果。") {
+				t.Fatalf("expected node canonical content in analysis context, got %q", input.CanonicalAnalysisContext)
+			}
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource:  &resourceContext{ID: "resource-outline-3", Title: "简历", Source: "upload"},
+				CurrentDocument: currentDocument,
+				Snapshot:        &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "analysis",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.9,
+				Reasons:             []string{"当前请求需要先读 node 再分析"},
+			},
+		}),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "结合这份简历，详细分析第三个项目的问题"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+}
+
+// TestAppendMessageReturnsExplicitFailureWhenProjectOrdinalMissing 验证缺少第三个项目时会直接返回显式失败，而不是继续 fallback。
+func TestAppendMessageReturnsExplicitFailureWhenProjectOrdinalMissing(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("outline 缺失第三项目")
+	currentDocument := testCurrentDocumentWithProjects()
+	currentDocument.ResourceID = "resource-outline-4"
+	currentDocument.VersionID = "version-outline-4"
+	currentDocument.Outline = currentDocument.Outline[:4]
+	retriever := &fakeResourceCitationRetriever{}
+	responder := &fakeChatResponder{
+		onReply: func(ChatCompletionInput) {
+			t.Fatal("missing ordinal should return explicit failure before chat responder")
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		retriever,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource:  &resourceContext{ID: "resource-outline-4", Title: "简历", Source: "upload"},
+				CurrentDocument: currentDocument,
+				Snapshot:        &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "analysis",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "partial",
+				Confidence:          0.7,
+				Reasons:             []string{"当前请求需要先定位 project_item"},
+			},
+		}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "把第三个项目先输出一遍")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if retriever.calls != 0 {
+		t.Fatalf("expected node-aware failure to skip retrieval fallback, got %d calls", retriever.calls)
+	}
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if reply.Content != buildCurrentFileFailureReply("把第三个项目先输出一遍") {
+		t.Fatalf("expected explicit current-file failure, got %q", reply.Content)
+	}
+}
+
+// TestAppendMessageDoesNotFallbackToSecondProjectWhenThirdProjectMissing 验证缺少第三个项目时不会把第二个项目当成第三个项目。
+func TestAppendMessageDoesNotFallbackToSecondProjectWhenThirdProjectMissing(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("outline 不回落到第二项目")
+	currentDocument := testCurrentDocumentWithProjects()
+	currentDocument.ResourceID = "resource-outline-5"
+	currentDocument.VersionID = "version-outline-5"
+	currentDocument.Outline = currentDocument.Outline[:4]
+	retriever := &fakeResourceCitationRetriever{
+		result: []citation.Citation{
+			{SectionID: "project-2", SectionType: string(OutlineNodeProjectItem), SectionTitle: "选课助手", Snippet: "选课助手的片段"},
+		},
+	}
+	responder := &fakeChatResponder{
+		onReply: func(ChatCompletionInput) {
+			t.Fatal("missing ordinal should not fall back to another project")
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		retriever,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource:  &resourceContext{ID: "resource-outline-5", Title: "简历", Source: "upload"},
+				CurrentDocument: currentDocument,
+				Snapshot:        &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "analysis",
+				ResponseMode:        ResponseModeAnswerWithGrounding,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "partial",
+				Confidence:          0.7,
+				Reasons:             []string{"当前请求需要先定位 project_item"},
+			},
+		}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "结合简历分析第三个项目的问题")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if retriever.calls != 0 {
+		t.Fatalf("expected node-aware miss to skip retrieval fallback, got %d calls", retriever.calls)
+	}
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if reply.Content != buildCurrentFileFailureReply("结合简历分析第三个项目的问题") {
+		t.Fatalf("expected explicit current-file failure, got %q", reply.Content)
+	}
+}
+
+// TestAppendMessageWorkflowProposalDoesNotClaimMutationBeforeTaskCreation 验证 proposal 阶段不会声称已经修改完成。
+func TestAppendMessageWorkflowProposalDoesNotClaimMutationBeforeTaskCreation(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("workflow proposal")
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			result: &ChatCompletionResult{
+				Reply: "我已经帮你修改第三个项目，并更新到文件中了。",
+			},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot:       &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModeAnswerThenTaskCard,
+				ConversationMode:         "execute",
+				WorkflowCommitment:       true,
+				ProposalReady:            true,
+				CandidateTaskInstruction: stringPointer("把第三个项目改成问题-动作-结果结构"),
+				Confidence:               0.9,
+				Reasons:                  []string{"当前请求应先进入 proposal 阶段"},
+			}),
+		}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "直接帮我改第三个项目，开始执行")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected user + assistant + task_suggestion, got %d", len(result.Messages))
+	}
+
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if strings.Contains(reply.Content, "更新到文件") || strings.Contains(reply.Content, "已经帮你修改") {
+		t.Fatalf("expected proposal reply to avoid completion claim, got %q", reply.Content)
+	}
+	if !strings.Contains(reply.Content, "尚未写回原文件") {
+		t.Fatalf("expected proposal reply to stay in proposal phase, got %q", reply.Content)
+	}
+	if result.Messages[2].Kind != KindTaskSuggestion {
+		t.Fatalf("expected task suggestion after proposal reply, got %#v", result.Messages[2])
+	}
+}
+
+// TestAppendMessageStreamWorkflowProposalDoesNotClaimMutationBeforeTaskCreation 验证流式 proposal 阶段也不会声称已经修改完成。
+func TestAppendMessageStreamWorkflowProposalDoesNotClaimMutationBeforeTaskCreation(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("workflow proposal stream")
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{
+				chunks: []string{"我已经帮你修改第三个项目，并更新到文件中了。"},
+			},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot:       &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModeAnswerThenTaskCard,
+				ConversationMode:         "execute",
+				WorkflowCommitment:       true,
+				ProposalReady:            true,
+				CandidateTaskInstruction: stringPointer("把第三个项目改成问题-动作-结果结构"),
+				Confidence:               0.9,
+				Reasons:                  []string{"当前请求应先进入 proposal 阶段"},
+			}),
+		}),
+	)
+
+	if err := service.AppendMessageStream(context.Background(), session.ID, "直接帮我改第三个项目，开始执行", func(StreamEvent) error { return nil }); err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+
+	messages, err := repo.ListMessages(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) < 3 {
+		t.Fatalf("expected persisted assistant reply + task suggestion, got %d messages", len(messages))
+	}
+
+	reply := decodeTextPayload(t, messages[len(messages)-2].Payload)
+	if strings.Contains(reply.Content, "更新到文件") || strings.Contains(reply.Content, "已经帮你修改") {
+		t.Fatalf("expected stream proposal reply to avoid completion claim, got %q", reply.Content)
+	}
+	if !strings.Contains(reply.Content, "尚未写回原文件") {
+		t.Fatalf("expected stream proposal reply to stay in proposal phase, got %q", reply.Content)
+	}
+	if messages[len(messages)-1].Kind != KindTaskSuggestion {
+		t.Fatalf("expected trailing task suggestion, got %#v", messages[len(messages)-1])
+	}
+}
+
 // TestAppendMessageCreatesTaskSuggestionForExecutionRequestWithReadyResource 验证`appendMessage`在写入或副作用路径下的行为，防止同类回归。
 func TestAppendMessageCreatesTaskSuggestionForExecutionRequestWithReadyResource(t *testing.T) {
 	repo := newFakeSessionRepo()
@@ -2499,11 +3056,30 @@ func TestAppendMessageCreatesTaskSuggestionForExecutionRequestWithReadyResource(
 		CreatedAt: time.Now(),
 	})
 
-	service := NewService(repo, &fakeDocumentImporter{}, &fakeTaskCreator{}, &fakeChatResponder{
-		result: &ChatCompletionResult{
-			Reply: "我先基于当前资料看第二章，再帮你收敛成任务。",
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			result: &ChatCompletionResult{
+				Reply: "我先基于当前资料看第二章，再帮你收敛成任务。",
+			},
 		},
-	}, nil)
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请帮我检查并修订第二章"),
+				CandidatePlanGoal:        stringPointer("产出第二章修订任务"),
+				Confidence:               0.9,
+				Reasons:                  []string{"当前请求已经明确要求进入执行"},
+			}),
+		}),
+	)
 	result, err := service.AppendMessage(context.Background(), session.ID, "请帮我检查并修订第二章")
 	if err != nil {
 		t.Fatalf("append message: %v", err)
@@ -2520,6 +3096,390 @@ func TestAppendMessageCreatesTaskSuggestionForExecutionRequestWithReadyResource(
 
 	if suggestion.ResourceID == nil || *suggestion.ResourceID != resourceID {
 		t.Fatalf("expected suggestion resource id %q, got %#v", resourceID, suggestion.ResourceID)
+	}
+}
+
+// TestAppendMessageDeterministicallyPromotesExplicitExecutionWhenDeliberationStaysAdvice 验证显式执行请求不会因为 deliberation 偏向聊天稿而丢失任务卡。
+func TestAppendMessageDeterministicallyPromotesExplicitExecutionWhenDeliberationStaysAdvice(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历改写")
+	currentDocument := buildLiveLikeResumeCurrentDocumentWithoutStructure()
+	planner := &fakeWorkflowPlanner{
+		result: &WorkflowPlanDecision{
+			ShouldEnterWorkflow:  true,
+			CandidateInstruction: stringPointer("planner 收敛后的 instruction"),
+			CandidatePlanGoal:    stringPointer("强化第三个项目说服力"),
+			Confidence:           0.9,
+			Reasons:              []string{"显式执行请求不应停留在聊天改写"},
+		},
+	}
+	verifier := &fakeWorkflowVerifier{
+		result: &WorkflowVerificationDecision{
+			ApproveWorkflow:    true,
+			RevisedInstruction: stringPointer("verifier 收紧后的 instruction"),
+			Confidence:         0.93,
+			Reasons:            []string{"当前材料已足够进入 proposal"},
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			result: &ChatCompletionResult{
+				Reply: "好的，我先整理一版第三个项目的改法。",
+			},
+			onReply: func(input ChatCompletionInput) {
+				if input.Decision == nil || input.Decision.ResponseMode != ResponseModeAnswerThenTaskCard {
+					t.Fatalf("expected responder to receive proposal decision, got %#v", input.Decision)
+				}
+			},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{
+					ID:     currentDocument.ResourceID,
+					Title:  currentDocument.Title,
+					Source: currentDocument.SourceType,
+				},
+				Snapshot:        &SessionContextSnapshot{SessionID: session.ID},
+				CurrentDocument: currentDocument,
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "analysis",
+				ResponseMode:        ResponseModeAnswerOnly,
+				ConversationMode:    "advise",
+				RequestedNextStep:   "answer",
+				ChatFulfillable:     true,
+				WorkflowCommitment:  false,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.64,
+				Reasons:             []string{"模型把请求收成聊天内改写"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+		WithWorkflowVerifier(verifier),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "直接帮我改第三个项目，开始执行。")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if planner.calls != 1 {
+		t.Fatalf("expected planner to run once after deterministic promotion, got %d", planner.calls)
+	}
+	if verifier.calls != 1 {
+		t.Fatalf("expected verifier to run once after deterministic promotion, got %d", verifier.calls)
+	}
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected user + assistant + task_suggestion, got %d", len(result.Messages))
+	}
+
+	reply := decodeTextPayload(t, result.Messages[1].Payload)
+	if !strings.Contains(reply.Content, "尚未写回原文件") {
+		t.Fatalf("expected proposal-phase wording, got %q", reply.Content)
+	}
+	if result.Messages[2].Kind != KindTaskSuggestion {
+		t.Fatalf("expected task suggestion, got %#v", result.Messages[2])
+	}
+	suggestion := decodeTaskSuggestionPayload(t, result.Messages[2].Payload)
+	if suggestion.Instruction != "verifier 收紧后的 instruction" {
+		t.Fatalf("expected verifier instruction, got %q", suggestion.Instruction)
+	}
+}
+
+// TestAppendMessageStreamDeterministicallyPromotesExplicitExecutionWhenDeliberationStaysAdvice 验证流式路径也会对显式执行请求做 deterministic promotion。
+func TestAppendMessageStreamDeterministicallyPromotesExplicitExecutionWhenDeliberationStaysAdvice(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历改写 stream")
+	currentDocument := buildLiveLikeResumeCurrentDocumentWithoutStructure()
+	planner := &fakeWorkflowPlanner{
+		result: &WorkflowPlanDecision{
+			ShouldEnterWorkflow:  true,
+			CandidateInstruction: stringPointer("planner 收敛后的 instruction"),
+			CandidatePlanGoal:    stringPointer("强化第三个项目说服力"),
+			Confidence:           0.9,
+			Reasons:              []string{"显式执行请求不应停留在聊天改写"},
+		},
+	}
+	verifier := &fakeWorkflowVerifier{
+		result: &WorkflowVerificationDecision{
+			ApproveWorkflow:    true,
+			RevisedInstruction: stringPointer("verifier 收紧后的 instruction"),
+			Confidence:         0.92,
+			Reasons:            []string{"当前材料已足够进入 proposal"},
+		},
+	}
+	var events []StreamEvent
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{
+				chunks: []string{"好的，我先整理一版第三个项目的改法。"},
+				result: &ChatCompletionResult{Reply: "好的，我先整理一版第三个项目的改法。"},
+			},
+			onStream: func(input ChatCompletionInput) {
+				if input.Decision == nil || input.Decision.ResponseMode != ResponseModeAnswerThenTaskCard {
+					t.Fatalf("expected stream responder to receive proposal decision, got %#v", input.Decision)
+				}
+			},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{
+					ID:     currentDocument.ResourceID,
+					Title:  currentDocument.Title,
+					Source: currentDocument.SourceType,
+				},
+				Snapshot:        &SessionContextSnapshot{SessionID: session.ID},
+				CurrentDocument: currentDocument,
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "analysis",
+				ResponseMode:        ResponseModeAnswerOnly,
+				ConversationMode:    "advise",
+				RequestedNextStep:   "answer",
+				ChatFulfillable:     true,
+				WorkflowCommitment:  false,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.64,
+				Reasons:             []string{"模型把请求收成聊天内改写"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+		WithWorkflowVerifier(verifier),
+	)
+
+	err := service.AppendMessageStream(context.Background(), session.ID, "直接帮我改第三个项目，开始执行。", func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+	if planner.calls != 1 {
+		t.Fatalf("expected stream planner to run once after deterministic promotion, got %d", planner.calls)
+	}
+	if verifier.calls != 1 {
+		t.Fatalf("expected stream verifier to run once after deterministic promotion, got %d", verifier.calls)
+	}
+	if streamTaskSuggestionCount(events) != 1 {
+		t.Fatalf("expected one task suggestion event, got %#v", events)
+	}
+
+	messages, err := repo.ListMessages(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) < 3 {
+		t.Fatalf("expected persisted assistant reply + task suggestion, got %d messages", len(messages))
+	}
+	reply := decodeTextPayload(t, messages[len(messages)-2].Payload)
+	if !strings.Contains(reply.Content, "尚未写回原文件") {
+		t.Fatalf("expected stream proposal-phase wording, got %q", reply.Content)
+	}
+	if messages[len(messages)-1].Kind != KindTaskSuggestion {
+		t.Fatalf("expected trailing task suggestion, got %#v", messages[len(messages)-1])
+	}
+	suggestion := decodeTaskSuggestionPayload(t, messages[len(messages)-1].Payload)
+	if suggestion.Instruction != "verifier 收紧后的 instruction" {
+		t.Fatalf("expected verifier instruction, got %q", suggestion.Instruction)
+	}
+}
+
+// TestAppendMessageDirectWorkflowPromotionProjectsAuthorizedProposalState 验证单轮直接进入 workflow 时，service 会把 proposal / authorization 真源一并投影回快照。
+func TestAppendMessageDirectWorkflowPromotionProjectsAuthorizedProposalState(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("学生手册优化")
+	repo.seedMessage(session.ID, postgres.AssistantMessage{
+		ID:         "message-file",
+		SessionID:  session.ID,
+		Role:       RoleAssistant,
+		Kind:       KindSessionFile,
+		SequenceNo: 1,
+		Payload: mustJSON(t, SessionFilePayload{
+			FileName:      "学生手册.md",
+			ResourceID:    "resource-1",
+			ResourceTitle: "学生手册",
+			SourceType:    "upload",
+			Status:        "ready",
+		}),
+		CreatedAt: time.Now(),
+	})
+	projector := &fakeSessionContextProjector{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			result: &ChatCompletionResult{
+				Reply: "我先给你一张任务建议卡。",
+			},
+		},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("请把第二章整理成任务"),
+				CandidatePlanGoal:        stringPointer("产出第二章修订任务"),
+				Confidence:               0.9,
+				Reasons:                  []string{"当前请求已经明确要求进入执行"},
+			}),
+		}),
+		WithSessionContextProjector(projector),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "请把第二章整理成任务"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(projector.advisorStateCalls) == 0 {
+		t.Fatal("expected advisor state projection for direct workflow promotion")
+	}
+	lastCall := projector.advisorStateCalls[len(projector.advisorStateCalls)-1]
+	if lastCall.PendingProposal == nil || lastCall.PendingProposal.Instruction != "请把第二章整理成任务" {
+		t.Fatalf("expected projected pending proposal, got %#v", lastCall.PendingProposal)
+	}
+	if lastCall.AuthorizationState == nil || lastCall.AuthorizationState.Status != "granted" {
+		t.Fatalf("expected granted authorization state, got %#v", lastCall.AuthorizationState)
+	}
+	if strings.TrimSpace(lastCall.AuthorizationState.GrantedForProposalID) == "" {
+		t.Fatalf("expected granted authorization state to point at proposal id, got %#v", lastCall.AuthorizationState)
+	}
+}
+
+// TestAppendMessageKeepsTaskSuggestionWhenPlannerTriesToDowngradeGrantedExecution 验证已授权执行不会再被 planner 收回成纯聊天回复。
+func TestAppendMessageKeepsTaskSuggestionWhenPlannerTriesToDowngradeGrantedExecution(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("planner downgrade")
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			result: &ChatCompletionResult{Reply: "好的，我先整理一版第三个项目的改法。"},
+			onReply: func(input ChatCompletionInput) {
+				if input.Decision == nil || input.Decision.ResponseMode != ResponseModeAnswerThenTaskCard {
+					t.Fatalf("expected responder to keep answer_then_task_card, got %#v", input.Decision)
+				}
+			},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot:       &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("把第三个项目改成问题-动作-结果结构"),
+				CandidatePlanGoal:        stringPointer("强化第三个项目说服力"),
+				Confidence:               0.88,
+				Reasons:                  []string{"用户明确要求开始执行"},
+			}),
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				ChatFulfillable: true,
+				Confidence:      0.8,
+				Reasons:         []string{"聊天里也能先给一版草稿"},
+			},
+		}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "直接帮我改第三个项目，开始执行。")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected user + assistant + task_suggestion, got %d", len(result.Messages))
+	}
+	if result.Messages[2].Kind != KindTaskSuggestion {
+		t.Fatalf("expected task suggestion, got %#v", result.Messages[2])
+	}
+}
+
+// TestAppendMessageKeepsTaskSuggestionWhenVerifierTriesToDowngradeGrantedExecution 验证已授权执行不会再被 verifier 收回成纯聊天回复。
+func TestAppendMessageKeepsTaskSuggestionWhenVerifierTriesToDowngradeGrantedExecution(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("verifier downgrade")
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			result: &ChatCompletionResult{Reply: "好的，我先整理一版第三个项目的改法。"},
+			onReply: func(input ChatCompletionInput) {
+				if input.Decision == nil || input.Decision.ResponseMode != ResponseModeAnswerThenTaskCard {
+					t.Fatalf("expected responder to keep answer_then_task_card, got %#v", input.Decision)
+				}
+			},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot:       &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: stringPointer("把第三个项目改成问题-动作-结果结构"),
+				CandidatePlanGoal:        stringPointer("强化第三个项目说服力"),
+				Confidence:               0.88,
+				Reasons:                  []string{"用户明确要求开始执行"},
+			}),
+		}),
+		WithWorkflowPlanner(&fakeWorkflowPlanner{
+			result: &WorkflowPlanDecision{
+				ShouldEnterWorkflow:  true,
+				CandidateInstruction: stringPointer("planner 收敛后的 instruction"),
+				CandidatePlanGoal:    stringPointer("强化第三个项目说服力"),
+				Confidence:           0.9,
+				Reasons:              []string{"planner 已确认进入 workflow"},
+			},
+		}),
+		WithWorkflowVerifier(&fakeWorkflowVerifier{
+			result: &WorkflowVerificationDecision{
+				DowngradeToChat: true,
+				Confidence:      0.84,
+				Reasons:         []string{"聊天里也能先给一版草稿"},
+			},
+		}),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "直接帮我改第三个项目，开始执行。")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected user + assistant + task_suggestion, got %d", len(result.Messages))
+	}
+	if result.Messages[2].Kind != KindTaskSuggestion {
+		t.Fatalf("expected task suggestion, got %#v", result.Messages[2])
 	}
 }
 
@@ -2550,11 +3510,23 @@ func TestAppendMessageProjectsPendingTaskSuggestionIntoSnapshot(t *testing.T) {
 		&fakeTaskCreator{},
 		&fakeChatResponder{
 			result: &ChatCompletionResult{
-				Reply:           "我先给你一张任务建议卡。",
-				TaskInstruction: &instruction,
+				Reply: "我先给你一张任务建议卡。",
 			},
 		},
 		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: &instruction,
+				CandidatePlanGoal:        stringPointer("产出第二章修订任务"),
+				Confidence:               0.9,
+				Reasons:                  []string{"当前请求已经明确要求进入执行"},
+			}),
+		}),
 		WithSessionContextProjector(projector),
 	)
 
@@ -3438,7 +4410,7 @@ func TestAppendMessageStreamRecordsTaskSuggestionCreatedEvent(t *testing.T) {
 			},
 		}),
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
 				RequestKind:              "workflow_command",
 				ResponseMode:             ResponseModePlanThenAnswer,
 				WorkflowCommitment:       true,
@@ -3447,7 +4419,7 @@ func TestAppendMessageStreamRecordsTaskSuggestionCreatedEvent(t *testing.T) {
 				CandidatePlanGoal:        stringPointer("产出可审批的修订方案"),
 				Confidence:               0.91,
 				Reasons:                  []string{"用户明确要求进入执行链路"},
-			},
+			}),
 		}),
 		WithWorkflowPlanner(&fakeWorkflowPlanner{
 			result: &WorkflowPlanDecision{
@@ -3551,6 +4523,57 @@ func TestAppendMessageRecordsPolicyDecisionEvent(t *testing.T) {
 	assertRuntimeEventPayloadField(t, event.Payload, "allow_task_suggestion", false)
 }
 
+// TestAppendMessageRecordsActionGateDecisionEvent 验证`appendMessage`会记录独立的 action gate 事件。
+func TestAppendMessageRecordsActionGateDecisionEvent(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("runtime-action-gate")
+	recorder := &fakeRuntimeEventRecorder{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "这件事适合进入任务流。"}},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{
+					ID:     "resource-1",
+					Title:  "项目资料",
+					Source: "upload",
+				},
+				Snapshot: &SessionContextSnapshot{SessionID: session.ID},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ConversationMode:         "execute",
+				RequestedNextStep:        "promote_to_workflow",
+				ProposalReady:            true,
+				AwaitingAuthorization:    false,
+				WorkflowCommitment:       true,
+				ChatFulfillable:          false,
+				CandidateTaskInstruction: stringPointer("请开始整理第三个项目"),
+				CandidatePlanGoal:        stringPointer("产出可审批的修订方案"),
+				EvidenceSufficiency:      "sufficient",
+				Confidence:               0.91,
+				Reasons:                  []string{"当前已满足进入 action gate 的执行契约"},
+			},
+		}),
+		WithRuntimeLearning(recorder, &fakeRuntimeLearningProjector{}),
+	)
+
+	if _, err := service.AppendMessage(context.Background(), session.ID, "直接开始整理第三个项目"); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	event := recorder.mustFindEvent(t, RuntimeEventTypeActionGateApplied)
+	assertRuntimeEventPayloadField(t, event.Payload, "conversation_mode", "execute")
+	assertRuntimeEventPayloadField(t, event.Payload, "allow_workflow_promotion", true)
+	assertRuntimeEventPayloadField(t, event.Payload, "allow_task_suggestion", true)
+}
+
 // TestAppendMessageRecordsPlannerAndVerifierEventsWhenUsed 验证`appendMessage`在 workflow promotion 时会记录 planner 和 verifier 事件。
 func TestAppendMessageRecordsPlannerAndVerifierEventsWhenUsed(t *testing.T) {
 	repo := newFakeSessionRepo()
@@ -3573,7 +4596,7 @@ func TestAppendMessageRecordsPlannerAndVerifierEventsWhenUsed(t *testing.T) {
 			},
 		}),
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
 				RequestKind:              "workflow_command",
 				ResponseMode:             ResponseModePlanThenAnswer,
 				WorkflowCommitment:       true,
@@ -3582,7 +4605,7 @@ func TestAppendMessageRecordsPlannerAndVerifierEventsWhenUsed(t *testing.T) {
 				CandidatePlanGoal:        stringPointer("产出可审批的修订方案"),
 				Confidence:               0.91,
 				Reasons:                  []string{"用户明确要求进入执行链路"},
-			},
+			}),
 		}),
 		WithWorkflowPlanner(&fakeWorkflowPlanner{
 			result: &WorkflowPlanDecision{
@@ -3611,11 +4634,15 @@ func TestAppendMessageRecordsPlannerAndVerifierEventsWhenUsed(t *testing.T) {
 
 	plannerEvent := recorder.mustFindEvent(t, RuntimeEventTypePlannerUsed)
 	verifierEvent := recorder.mustFindEvent(t, RuntimeEventTypeVerifierUsed)
-	if plannerEvent.MessageID == nil || *plannerEvent.MessageID != result.Messages[2].ID {
-		t.Fatalf("expected planner event message id %q, got %#v", result.Messages[2].ID, plannerEvent.MessageID)
+	expectedMessageID := runtimeDecisionMessageID(result.Messages)
+	if expectedMessageID == nil {
+		t.Fatalf("expected runtime decision message id, got %#v", result.Messages)
 	}
-	if verifierEvent.MessageID == nil || *verifierEvent.MessageID != result.Messages[2].ID {
-		t.Fatalf("expected verifier event message id %q, got %#v", result.Messages[2].ID, verifierEvent.MessageID)
+	if plannerEvent.MessageID == nil || *plannerEvent.MessageID != *expectedMessageID {
+		t.Fatalf("expected planner event message id %q, got %#v", *expectedMessageID, plannerEvent.MessageID)
+	}
+	if verifierEvent.MessageID == nil || *verifierEvent.MessageID != *expectedMessageID {
+		t.Fatalf("expected verifier event message id %q, got %#v", *expectedMessageID, verifierEvent.MessageID)
 	}
 }
 
@@ -3729,7 +4756,7 @@ func TestAppendMessageRecordsClarificationResolvedToWorkflowEvent(t *testing.T) 
 			},
 		}),
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
 				RequestKind:              "workflow_command",
 				ResponseMode:             ResponseModePlanThenAnswer,
 				WorkflowCommitment:       true,
@@ -3738,7 +4765,7 @@ func TestAppendMessageRecordsClarificationResolvedToWorkflowEvent(t *testing.T) 
 				CandidatePlanGoal:        stringPointer("产出可审批的修订方案"),
 				Confidence:               0.9,
 				Reasons:                  []string{"用户已经明确要创建任务"},
-			},
+			}),
 		}),
 		WithWorkflowPlanner(&fakeWorkflowPlanner{
 			result: &WorkflowPlanDecision{
@@ -3793,7 +4820,7 @@ func TestAppendMessageRecordsTaskSuggestionCreatedEvent(t *testing.T) {
 			},
 		}),
 		WithDeliberationAgent(&fakeDeliberationAgent{
-			result: &DeliberationDecision{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
 				RequestKind:              "workflow_command",
 				ResponseMode:             ResponseModePlanThenAnswer,
 				WorkflowCommitment:       true,
@@ -3802,7 +4829,7 @@ func TestAppendMessageRecordsTaskSuggestionCreatedEvent(t *testing.T) {
 				CandidatePlanGoal:        stringPointer("产出可审批的修订方案"),
 				Confidence:               0.9,
 				Reasons:                  []string{"当前已经具备进入任务流的材料"},
-			},
+			}),
 		}),
 		WithWorkflowPlanner(&fakeWorkflowPlanner{
 			result: &WorkflowPlanDecision{
@@ -3830,8 +4857,12 @@ func TestAppendMessageRecordsTaskSuggestionCreatedEvent(t *testing.T) {
 	}
 
 	event := recorder.mustFindEvent(t, RuntimeEventTypeTaskSuggestionCreated)
-	if event.MessageID == nil || *event.MessageID != result.Messages[2].ID {
-		t.Fatalf("expected task suggestion event message id %q, got %#v", result.Messages[2].ID, event.MessageID)
+	expectedMessageID := runtimeDecisionMessageID(result.Messages)
+	if expectedMessageID == nil {
+		t.Fatalf("expected runtime decision message id, got %#v", result.Messages)
+	}
+	if event.MessageID == nil || *event.MessageID != *expectedMessageID {
+		t.Fatalf("expected task suggestion event message id %q, got %#v", *expectedMessageID, event.MessageID)
 	}
 	assertRuntimeEventPayloadField(t, event.Payload, "instruction", "请开始整理第三个项目")
 }
@@ -4230,6 +5261,610 @@ func (r *fakeUploadedFileRepo) UpdateSessionID(_ context.Context, fileID string,
 	return nil
 }
 
+// TestAppendMessageClarificationThenDirectModifyCreatesProposalState 验证澄清后的“直接修改”会先落成 pending proposal，而不是直接弹任务卡。
+func TestAppendMessageClarificationThenDirectModifyCreatesProposalState(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("顾问模式")
+	projector := &fakeSessionContextProjector{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			result: &ChatCompletionResult{Reply: "我建议按结果导向重写第三个项目，并补量化指标。要不要我按这个方案执行？"},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot: &SessionContextSnapshot{
+					SessionID: session.ID,
+					PendingClarification: &SnapshotPendingClarification{
+						Kind:           "workflow_branch",
+						Question:       "你是想先给草案，还是直接修改？",
+						AskedMessageID: "assistant-question-1",
+						Options:        []string{"先给我草案看看", "直接修改"},
+					},
+				},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:           "analysis",
+				ResponseMode:          ResponseModeAnswerOnly,
+				ConversationMode:      "confirm",
+				RequestedNextStep:     "request_authorization",
+				ProposalReady:         true,
+				ProposedInstruction:   stringPointer("把第三个项目改成结果导向版本，并补量化指标"),
+				ProposedPlanGoal:      stringPointer("强化第三个项目说服力"),
+				AwaitingAuthorization: true,
+				ChatFulfillable:       true,
+				EvidenceSufficiency:   "sufficient",
+				Confidence:            0.86,
+				Reasons:               []string{"用户已经在澄清里明确选择直接修改"},
+			},
+		}),
+		WithSessionContextProjector(projector),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "可以，直接修改吧")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected user + assistant messages, got %d", len(result.Messages))
+	}
+	if len(projector.taskSuggestionCalls) != 0 {
+		t.Fatalf("expected no task suggestion projection before authorization, got %#v", projector.taskSuggestionCalls)
+	}
+	if len(projector.advisorStateCalls) != 1 {
+		t.Fatalf("expected 1 advisor state projection, got %d", len(projector.advisorStateCalls))
+	}
+	call := projector.advisorStateCalls[0]
+	if call.PendingProposal == nil || call.PendingProposal.Instruction != "把第三个项目改成结果导向版本，并补量化指标" {
+		t.Fatalf("expected pending proposal to be projected, got %#v", call)
+	}
+	if call.AuthorizationState == nil || call.AuthorizationState.Status != "pending" {
+		t.Fatalf("expected authorization state to stay pending, got %#v", call.AuthorizationState)
+	}
+}
+
+// TestAppendMessageExplicitAuthorizationAfterAdviceProducesTaskSuggestion 验证建议后的明确授权会走 gate -> planner/verifier -> task_suggestion。
+func TestAppendMessageExplicitAuthorizationAfterAdviceProducesTaskSuggestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("顾问模式")
+	projector := &fakeSessionContextProjector{}
+	planner := &fakeWorkflowPlanner{
+		result: &WorkflowPlanDecision{
+			ShouldEnterWorkflow:  true,
+			CandidateInstruction: stringPointer("planner 收敛后的 instruction"),
+			CandidatePlanGoal:    stringPointer("强化第三个项目说服力"),
+			Confidence:           0.91,
+			Reasons:              []string{"用户已明确授权唯一 proposal"},
+		},
+	}
+	verifier := &fakeWorkflowVerifier{
+		result: &WorkflowVerificationDecision{
+			ApproveWorkflow:    true,
+			RevisedInstruction: stringPointer("verifier 收紧后的 instruction"),
+			Confidence:         0.93,
+			Reasons:            []string{"proposal scope 和材料已足够执行"},
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{result: &ChatCompletionResult{Reply: "我来开始处理。"}},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot: &SessionContextSnapshot{
+					SessionID: session.ID,
+					PendingProposal: &SnapshotPendingProposal{
+						ProposalID:        "proposal-1",
+						Instruction:       "把第三个项目改成结果导向版本，并补量化指标",
+						PlanGoal:          "强化第三个项目说服力",
+						ProposedMessageID: "assistant-proposal-1",
+					},
+					AuthorizationState: &SnapshotAuthorizationState{Status: "pending"},
+				},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "analysis",
+				ResponseMode:        ResponseModeAnswerOnly,
+				ConversationMode:    "confirm",
+				RequestedNextStep:   "answer",
+				ProposalReady:       false,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.66,
+				Reasons:             []string{"如果不看 pending state，这只是普通回复"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+		WithWorkflowVerifier(verifier),
+		WithSessionContextProjector(projector),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "按这个方案改")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if planner.calls != 1 {
+		t.Fatalf("expected planner to run once after authorization, got %d", planner.calls)
+	}
+	if verifier.calls != 1 {
+		t.Fatalf("expected verifier to run once after planner promotion, got %d", verifier.calls)
+	}
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected user + assistant + task_suggestion, got %d", len(result.Messages))
+	}
+	if result.Messages[2].Kind != KindTaskSuggestion {
+		t.Fatalf("expected task suggestion message, got %s", result.Messages[2].Kind)
+	}
+	suggestion := decodeTaskSuggestionPayload(t, result.Messages[2].Payload)
+	if suggestion.Instruction != "verifier 收紧后的 instruction" {
+		t.Fatalf("expected verifier instruction, got %q", suggestion.Instruction)
+	}
+	if len(projector.advisorStateCalls) == 0 {
+		t.Fatal("expected advisor state projection after authorization")
+	}
+	lastProjection := projector.advisorStateCalls[len(projector.advisorStateCalls)-1]
+	if lastProjection.AuthorizationState == nil || lastProjection.AuthorizationState.Status != "granted" {
+		t.Fatalf("expected granted authorization state, got %#v", lastProjection.AuthorizationState)
+	}
+}
+
+// TestAppendMessageKeepsAdviceModeWhenUserRequestsDraftInsteadOfExecution 验证“先给我草案看看”会把流程收回 advice，不允许 promotion。
+func TestAppendMessageKeepsAdviceModeWhenUserRequestsDraftInsteadOfExecution(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("顾问模式")
+	planner := &fakeWorkflowPlanner{
+		result: &WorkflowPlanDecision{
+			ShouldEnterWorkflow:  true,
+			CandidateInstruction: stringPointer("planner 不该被调用"),
+			Confidence:           0.8,
+			Reasons:              []string{"不应进入"},
+		},
+	}
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "我先给你一个草案。"},
+		onReply: func(input ChatCompletionInput) {
+			if input.Decision == nil || input.Decision.ResponseMode != ResponseModeAnswerOnly {
+				t.Fatalf("expected advice lane to stay answer_only, got %#v", input.Decision)
+			}
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot: &SessionContextSnapshot{
+					SessionID: session.ID,
+					PendingProposal: &SnapshotPendingProposal{
+						ProposalID:        "proposal-1",
+						Instruction:       "把第三个项目改成结果导向版本，并补量化指标",
+						PlanGoal:          "强化第三个项目说服力",
+						ProposedMessageID: "assistant-proposal-1",
+					},
+					AuthorizationState: &SnapshotAuthorizationState{Status: "pending"},
+				},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:           "workflow_command",
+				ResponseMode:          ResponseModePlanThenAnswer,
+				ConversationMode:      "confirm",
+				RequestedNextStep:     "promote_to_workflow",
+				ProposalReady:         true,
+				ProposedInstruction:   stringPointer("把第三个项目改成结果导向版本，并补量化指标"),
+				AwaitingAuthorization: true,
+				WorkflowCommitment:    true,
+				ChatFulfillable:       false,
+				EvidenceSufficiency:   "sufficient",
+				Confidence:            0.8,
+				Reasons:               []string{"旧链路会错误继续 promotion"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "先给我草案看看")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if planner.calls != 0 {
+		t.Fatalf("expected draft request to skip planner, got %d", planner.calls)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected user + assistant messages, got %d", len(result.Messages))
+	}
+}
+
+// TestAppendMessageRequiresDisambiguationWhenMultipleProposalsExist 验证多建议待选时，“按你的建议改”会继续澄清，不会误授权。
+func TestAppendMessageRequiresDisambiguationWhenMultipleProposalsExist(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("顾问模式")
+	planner := &fakeWorkflowPlanner{
+		result: &WorkflowPlanDecision{
+			ShouldEnterWorkflow:  true,
+			CandidateInstruction: stringPointer("planner 不该被调用"),
+			Confidence:           0.8,
+			Reasons:              []string{"不应进入"},
+		},
+	}
+	responder := &fakeChatResponder{
+		result: &ChatCompletionResult{Reply: "你是想按哪条建议改？"},
+		onReply: func(input ChatCompletionInput) {
+			if input.Decision == nil || !input.Decision.NeedsClarification {
+				t.Fatalf("expected clarification decision, got %#v", input.Decision)
+			}
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot: &SessionContextSnapshot{
+					SessionID: session.ID,
+					PendingClarification: &SnapshotPendingClarification{
+						Kind:           "proposal_selection",
+						Question:       "按哪条建议改？",
+						AskedMessageID: "assistant-clarification-1",
+						Options:        []string{"按结果导向版本改", "按技术深度版本改"},
+					},
+				},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:           "workflow_command",
+				ResponseMode:          ResponseModePlanThenAnswer,
+				ConversationMode:      "confirm",
+				RequestedNextStep:     "promote_to_workflow",
+				ProposalReady:         true,
+				ProposedInstruction:   stringPointer("把第三个项目改成结果导向版本，并补量化指标"),
+				AwaitingAuthorization: true,
+				WorkflowCommitment:    true,
+				ChatFulfillable:       false,
+				EvidenceSufficiency:   "sufficient",
+				Confidence:            0.81,
+				Reasons:               []string{"旧链路会错误把模糊授权升级"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+	)
+
+	result, err := service.AppendMessage(context.Background(), session.ID, "按你的建议改")
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if planner.calls != 0 {
+		t.Fatalf("expected ambiguous authorization to skip planner, got %d", planner.calls)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected user + assistant messages, got %d", len(result.Messages))
+	}
+}
+
+// TestAppendMessageStreamClarificationThenDirectModifyCreatesProposalState 验证流式路径也会先形成 pending proposal，而不是直接发任务卡。
+func TestAppendMessageStreamClarificationThenDirectModifyCreatesProposalState(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("顾问模式")
+	projector := &fakeSessionContextProjector{}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{
+				chunks: []string{"我建议按结果导向重写第三个项目，并补量化指标。要不要我按这个方案执行？"},
+				result: &ChatCompletionResult{Reply: "我建议按结果导向重写第三个项目，并补量化指标。要不要我按这个方案执行？"},
+			},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot: &SessionContextSnapshot{
+					SessionID: session.ID,
+					PendingClarification: &SnapshotPendingClarification{
+						Kind:           "workflow_branch",
+						Question:       "你是想先给草案，还是直接修改？",
+						AskedMessageID: "assistant-question-1",
+						Options:        []string{"先给我草案看看", "直接修改"},
+					},
+				},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:           "analysis",
+				ResponseMode:          ResponseModeAnswerOnly,
+				ConversationMode:      "confirm",
+				RequestedNextStep:     "request_authorization",
+				ProposalReady:         true,
+				ProposedInstruction:   stringPointer("把第三个项目改成结果导向版本，并补量化指标"),
+				ProposedPlanGoal:      stringPointer("强化第三个项目说服力"),
+				AwaitingAuthorization: true,
+				ChatFulfillable:       true,
+				EvidenceSufficiency:   "sufficient",
+				Confidence:            0.86,
+				Reasons:               []string{"用户已经在澄清里明确选择直接修改"},
+			},
+		}),
+		WithSessionContextProjector(projector),
+	)
+
+	var events []StreamEvent
+	if err := service.AppendMessageStream(context.Background(), session.ID, "可以，直接修改吧", func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+
+	if streamTaskSuggestionCount(events) != 0 {
+		t.Fatalf("expected no task suggestion event before authorization, got %#v", events)
+	}
+	if len(projector.advisorStateCalls) != 1 {
+		t.Fatalf("expected 1 advisor state projection, got %d", len(projector.advisorStateCalls))
+	}
+}
+
+// TestAppendMessageStreamExplicitAuthorizationEmitsTaskSuggestion 验证流式路径在建议后授权时也会发 task_suggestion。
+func TestAppendMessageStreamExplicitAuthorizationEmitsTaskSuggestion(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("顾问模式")
+	planner := &fakeWorkflowPlanner{
+		result: &WorkflowPlanDecision{
+			ShouldEnterWorkflow:  true,
+			CandidateInstruction: stringPointer("planner 收敛后的 instruction"),
+			CandidatePlanGoal:    stringPointer("强化第三个项目说服力"),
+			Confidence:           0.91,
+			Reasons:              []string{"用户已明确授权唯一 proposal"},
+		},
+	}
+	verifier := &fakeWorkflowVerifier{
+		result: &WorkflowVerificationDecision{
+			ApproveWorkflow:    true,
+			RevisedInstruction: stringPointer("verifier 收紧后的 instruction"),
+			Confidence:         0.93,
+			Reasons:            []string{"proposal scope 和材料已足够执行"},
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{
+				chunks: []string{"我来开始处理。"},
+				result: &ChatCompletionResult{Reply: "我来开始处理。"},
+			},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot: &SessionContextSnapshot{
+					SessionID: session.ID,
+					PendingProposal: &SnapshotPendingProposal{
+						ProposalID:        "proposal-1",
+						Instruction:       "把第三个项目改成结果导向版本，并补量化指标",
+						PlanGoal:          "强化第三个项目说服力",
+						ProposedMessageID: "assistant-proposal-1",
+					},
+					AuthorizationState: &SnapshotAuthorizationState{Status: "pending"},
+				},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:         "analysis",
+				ResponseMode:        ResponseModeAnswerOnly,
+				ConversationMode:    "confirm",
+				RequestedNextStep:   "answer",
+				ProposalReady:       false,
+				ChatFulfillable:     true,
+				EvidenceSufficiency: "sufficient",
+				Confidence:          0.66,
+				Reasons:             []string{"如果不看 pending state，这只是普通回复"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+		WithWorkflowVerifier(verifier),
+	)
+
+	var events []StreamEvent
+	if err := service.AppendMessageStream(context.Background(), session.ID, "按这个方案改", func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+
+	if planner.calls != 1 {
+		t.Fatalf("expected planner to run once after authorization, got %d", planner.calls)
+	}
+	if verifier.calls != 1 {
+		t.Fatalf("expected verifier to run once after planner promotion, got %d", verifier.calls)
+	}
+	if streamTaskSuggestionCount(events) != 1 {
+		t.Fatalf("expected exactly 1 task suggestion event, got %#v", events)
+	}
+}
+
+// TestAppendMessageStreamKeepsAdviceModeWhenUserRequestsDraftInsteadOfExecution 验证流式路径里的草案请求同样会阻断 promotion。
+func TestAppendMessageStreamKeepsAdviceModeWhenUserRequestsDraftInsteadOfExecution(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("顾问模式")
+	planner := &fakeWorkflowPlanner{
+		result: &WorkflowPlanDecision{
+			ShouldEnterWorkflow:  true,
+			CandidateInstruction: stringPointer("planner 不该被调用"),
+			Confidence:           0.8,
+			Reasons:              []string{"不应进入"},
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			stream: &fakeChatStream{
+				chunks: []string{"我先给你一个草案。"},
+				result: &ChatCompletionResult{Reply: "我先给你一个草案。"},
+			},
+		},
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot: &SessionContextSnapshot{
+					SessionID: session.ID,
+					PendingProposal: &SnapshotPendingProposal{
+						ProposalID:        "proposal-1",
+						Instruction:       "把第三个项目改成结果导向版本，并补量化指标",
+						PlanGoal:          "强化第三个项目说服力",
+						ProposedMessageID: "assistant-proposal-1",
+					},
+					AuthorizationState: &SnapshotAuthorizationState{Status: "pending"},
+				},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:           "workflow_command",
+				ResponseMode:          ResponseModePlanThenAnswer,
+				ConversationMode:      "confirm",
+				RequestedNextStep:     "promote_to_workflow",
+				ProposalReady:         true,
+				ProposedInstruction:   stringPointer("把第三个项目改成结果导向版本，并补量化指标"),
+				AwaitingAuthorization: true,
+				WorkflowCommitment:    true,
+				ChatFulfillable:       false,
+				EvidenceSufficiency:   "sufficient",
+				Confidence:            0.8,
+				Reasons:               []string{"旧链路会错误继续 promotion"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+	)
+
+	var events []StreamEvent
+	if err := service.AppendMessageStream(context.Background(), session.ID, "先给我草案看看", func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+
+	if planner.calls != 0 {
+		t.Fatalf("expected draft request to skip planner, got %d", planner.calls)
+	}
+	if streamTaskSuggestionCount(events) != 0 {
+		t.Fatalf("expected no task suggestion event, got %#v", events)
+	}
+}
+
+// TestAppendMessageStreamRequiresDisambiguationWhenMultipleProposalsExist 验证流式路径遇到多建议歧义时也会继续澄清。
+func TestAppendMessageStreamRequiresDisambiguationWhenMultipleProposalsExist(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("顾问模式")
+	planner := &fakeWorkflowPlanner{
+		result: &WorkflowPlanDecision{
+			ShouldEnterWorkflow:  true,
+			CandidateInstruction: stringPointer("planner 不该被调用"),
+			Confidence:           0.8,
+			Reasons:              []string{"不应进入"},
+		},
+	}
+	responder := &fakeChatResponder{
+		stream: &fakeChatStream{
+			chunks: []string{"你是想按哪条建议改？"},
+			result: &ChatCompletionResult{Reply: "你是想按哪条建议改？"},
+		},
+		onStream: func(input ChatCompletionInput) {
+			if input.Decision == nil || !input.Decision.NeedsClarification {
+				t.Fatalf("expected clarification decision, got %#v", input.Decision)
+			}
+		},
+	}
+	service := NewService(
+		repo,
+		&fakeDocumentImporter{},
+		&fakeTaskCreator{},
+		responder,
+		nil,
+		WithReplyContextLoader(&fakeReplyContextLoader{
+			result: &ReplyContext{
+				ActiveResource: &resourceContext{ID: "resource-1", Title: "简历", Source: "upload"},
+				Snapshot: &SessionContextSnapshot{
+					SessionID: session.ID,
+					PendingClarification: &SnapshotPendingClarification{
+						Kind:           "proposal_selection",
+						Question:       "按哪条建议改？",
+						AskedMessageID: "assistant-clarification-1",
+						Options:        []string{"按结果导向版本改", "按技术深度版本改"},
+					},
+				},
+			},
+		}),
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: &DeliberationDecision{
+				RequestKind:           "workflow_command",
+				ResponseMode:          ResponseModePlanThenAnswer,
+				ConversationMode:      "confirm",
+				RequestedNextStep:     "promote_to_workflow",
+				ProposalReady:         true,
+				ProposedInstruction:   stringPointer("把第三个项目改成结果导向版本，并补量化指标"),
+				AwaitingAuthorization: true,
+				WorkflowCommitment:    true,
+				ChatFulfillable:       false,
+				EvidenceSufficiency:   "sufficient",
+				Confidence:            0.81,
+				Reasons:               []string{"旧链路会错误把模糊授权升级"},
+			},
+		}),
+		WithWorkflowPlanner(planner),
+	)
+
+	var events []StreamEvent
+	if err := service.AppendMessageStream(context.Background(), session.ID, "按你的建议改", func(event StreamEvent) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("append message stream: %v", err)
+	}
+
+	if planner.calls != 0 {
+		t.Fatalf("expected ambiguous authorization to skip planner, got %d", planner.calls)
+	}
+	if streamTaskSuggestionCount(events) != 0 {
+		t.Fatalf("expected no task suggestion event, got %#v", events)
+	}
+}
+
 // fakeTaskCreator 作为任务Creator的测试替身，用于在用例里提供可控的依赖行为。
 type fakeTaskCreator struct {
 	result *postgres.Task
@@ -4275,6 +5910,8 @@ func (r *fakeChatResponder) Reply(_ context.Context, input ChatCompletionInput) 
 	copied := input
 	copied.History = append([]postgres.AssistantMessage(nil), input.History...)
 	copied.Citations = append([]citation.Citation(nil), input.Citations...)
+	copied.CurrentDocument = cloneCurrentDocument(input.CurrentDocument)
+	copied.RuntimeState.CurrentDocument = cloneCurrentDocument(input.RuntimeState.CurrentDocument)
 	r.lastInput = &copied
 	if r.onReply != nil {
 		r.onReply(copied)
@@ -4297,6 +5934,8 @@ func (r *fakeChatResponder) Stream(_ context.Context, input ChatCompletionInput)
 	copied := input
 	copied.History = append([]postgres.AssistantMessage(nil), input.History...)
 	copied.Citations = append([]citation.Citation(nil), input.Citations...)
+	copied.CurrentDocument = cloneCurrentDocument(input.CurrentDocument)
+	copied.RuntimeState.CurrentDocument = cloneCurrentDocument(input.RuntimeState.CurrentDocument)
 	r.lastInput = &copied
 	if r.onStream != nil {
 		r.onStream(copied)
@@ -4336,6 +5975,7 @@ func (l *fakeReplyContextLoader) LoadForReply(_ context.Context, _ string, _ []p
 	cloned.CanonicalRead = cloneCanonicalReadResult(l.result.CanonicalRead)
 	cloned.CanonicalAnalysisContext = l.result.CanonicalAnalysisContext
 	cloned.CurrentFileFailureReply = l.result.CurrentFileFailureReply
+	cloned.CurrentDocument = cloneCurrentDocument(l.result.CurrentDocument)
 	return &cloned, nil
 }
 
@@ -4457,6 +6097,7 @@ func (a *fakeDeliberationAgent) Deliberate(_ context.Context, state RuntimeState
 	cloned := state
 	cloned.Citations = append([]citation.Citation(nil), state.Citations...)
 	cloned.History = append([]postgres.AssistantMessage(nil), state.History...)
+	cloned.CurrentDocument = cloneCurrentDocument(state.CurrentDocument)
 	a.lastState = &cloned
 	if a.onDeliberate != nil {
 		a.onDeliberate(cloned)
@@ -4722,6 +6363,7 @@ type fakeSessionContextProjector struct {
 	taskSuggestionCalls []TaskSuggestionProjection
 	taskCreatedCalls    []TaskCreatedProjection
 	groundingCalls      []GroundingStateProjection
+	advisorStateCalls   []AdvisorStateProjection
 }
 
 // InitSession 实现测试替身需要的 `InitSession` 接口方法，为用例分支提供可控返回。
@@ -4774,6 +6416,23 @@ func (p *fakeSessionContextProjector) ProjectGroundingState(_ context.Context, p
 	return nil
 }
 
+// ProjectAdvisorState 实现测试替身需要的 `ProjectAdvisorState` 接口方法，为用例分支记录 advisor state 投影。
+func (p *fakeSessionContextProjector) ProjectAdvisorState(_ context.Context, projection AdvisorStateProjection) error {
+	if p.err != nil {
+		return p.err
+	}
+
+	p.advisorStateCalls = append(p.advisorStateCalls, AdvisorStateProjection{
+		SessionID:            projection.SessionID,
+		PendingClarification: clonePendingClarification(projection.PendingClarification),
+		AdvisoryContext:      cloneAdvisoryContext(projection.AdvisoryContext),
+		PendingProposal:      clonePendingProposal(projection.PendingProposal),
+		AuthorizationState:   cloneAuthorizationState(projection.AuthorizationState),
+		ExecutionState:       cloneExecutionState(projection.ExecutionState),
+	})
+	return nil
+}
+
 // decodeTaskSuggestionPayload 在测试里解码 `任务建议载荷`，便于直接断言结构化内容。
 func decodeTaskSuggestionPayload(t *testing.T, payload []byte) TaskSuggestionPayload {
 	t.Helper()
@@ -4822,6 +6481,40 @@ func decodeTextPayload(t *testing.T, payload []byte) TextPayload {
 	return value
 }
 
+func streamTaskSuggestionCount(events []StreamEvent) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == StreamEventTaskSuggestion {
+			count++
+		}
+	}
+
+	return count
+}
+
+// withExplicitWorkflowPromotion 把旧测试里的 workflow 候选 decision 归一成 advisor runtime 认可的显式 promotion 契约。
+func withExplicitWorkflowPromotion(decision DeliberationDecision) *DeliberationDecision {
+	normalized := decision
+	if strings.TrimSpace(normalized.ConversationMode) == "" {
+		normalized.ConversationMode = "execute"
+	}
+	if strings.TrimSpace(normalized.RequestedNextStep) == "" {
+		normalized.RequestedNextStep = "promote_to_workflow"
+	}
+	if !normalized.ProposalReady {
+		normalized.ProposalReady = true
+	}
+	normalized.AwaitingAuthorization = false
+	if normalized.ProposedInstruction == nil {
+		normalized.ProposedInstruction = normalizeOptionalText(normalized.CandidateTaskInstruction)
+	}
+	if normalized.ProposedPlanGoal == nil {
+		normalized.ProposedPlanGoal = normalizeOptionalText(normalized.CandidatePlanGoal)
+	}
+
+	return &normalized
+}
+
 // mustJSON 在测试里强制构造 `JSON`，失败时立即终止当前用例。
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
@@ -4851,6 +6544,11 @@ func cloneSessionContextSnapshot(snapshot *SessionContextSnapshot) *SessionConte
 		cloned.ActiveSection = &activeSection
 	}
 	cloned.ActiveEntityName = cloneOptionalString(snapshot.ActiveEntityName)
+	cloned.PendingClarification = clonePendingClarification(snapshot.PendingClarification)
+	cloned.AdvisoryContext = cloneAdvisoryContext(snapshot.AdvisoryContext)
+	cloned.PendingProposal = clonePendingProposal(snapshot.PendingProposal)
+	cloned.AuthorizationState = cloneAuthorizationState(snapshot.AuthorizationState)
+	cloned.ExecutionState = cloneExecutionState(snapshot.ExecutionState)
 	cloned.PendingTaskSuggestion = clonePendingTaskSuggestion(snapshot.PendingTaskSuggestion)
 	cloned.LatestTask = cloneLatestTask(snapshot.LatestTask)
 	cloned.ConfirmedConstraints = cloneConfirmedConstraints(snapshot.ConfirmedConstraints)
@@ -4869,6 +6567,80 @@ func cloneCanonicalReadResult(result *CanonicalReadResult) *CanonicalReadResult 
 	cloned := *result
 	cloned.Sections = append([]CanonicalReadSectionItem(nil), result.Sections...)
 	return &cloned
+}
+
+func mustLoadCurrentDocumentForServiceTest(t *testing.T, reader *fakeCurrentFileSectionReader) *CurrentDocument {
+	t.Helper()
+
+	document, err := NewCurrentDocumentLoader(reader).Load(context.Background(), &resourceContext{
+		ID:     reader.currentVersion.ResourceID,
+		Title:  "简历",
+		Source: "upload",
+	})
+	if err != nil {
+		t.Fatalf("load current document from reader: %v", err)
+	}
+	if document == nil {
+		t.Fatal("expected current document from reader")
+	}
+
+	return document
+}
+
+func buildLiveLikeResumeCurrentDocumentWithoutStructure() *CurrentDocument {
+	fullText := strings.TrimSpace(`
+# 张三简历
+
+## 个人简介
+五年前端与平台工程经验，负责过内容平台、协作系统和质量工程。
+
+## 项目经历
+
+### 1. Alpha 内容中台
+时间：2024
+角色：前端负责人
+背景：负责搭建统一内容配置平台。
+结果：将页面搭建效率提升 40%。
+问题：描述偏结果，缺少具体技术难点与取舍。
+
+### 2. Beta 协作系统
+时间：2025
+角色：全栈工程师
+背景：负责评论、权限和审计模块。
+结果：把跨部门协作延迟从 2 天缩短到 4 小时。
+问题：缺少个人贡献边界。
+
+### 3. Gamma 风险引擎
+时间：2026
+角色：架构与工程效率负责人
+背景：负责规则编排、回放调试、灰度校验和告警收敛。
+技术：Go、PostgreSQL、Redis、React、异步任务队列。
+结果：把风险规则上线周期从 7 天缩短到 1 天。
+问题：现在这段写法像职责清单，缺少业务价值、复杂性和关键决策的展开。
+`)
+
+	sections := []postgres.ResourceSection{
+		{ID: "section-profile", VersionID: "version-live-like-resume", SectionType: "section", SectionOrder: 1, Title: "个人简介", Content: "五年前端与平台工程经验，负责过内容平台、协作系统和质量工程。"},
+		{ID: "section-projects", VersionID: "version-live-like-resume", SectionType: "section", SectionOrder: 2, Title: "项目经历", Content: "项目经历"},
+		{ID: "section-alpha", VersionID: "version-live-like-resume", SectionType: "section", SectionOrder: 3, Title: "1. Alpha 内容中台", Content: "1. Alpha 内容中台\n时间：2024\n角色：前端负责人\n背景：负责搭建统一内容配置平台。\n结果：将页面搭建效率提升 40%。\n问题：描述偏结果，缺少具体技术难点与取舍。"},
+		{ID: "section-beta", VersionID: "version-live-like-resume", SectionType: "section", SectionOrder: 4, Title: "2. Beta 协作系统", Content: "2. Beta 协作系统\n时间：2025\n角色：全栈工程师\n背景：负责评论、权限和审计模块。\n结果：把跨部门协作延迟从 2 天缩短到 4 小时。\n问题：缺少个人贡献边界。"},
+		{ID: "section-gamma", VersionID: "version-live-like-resume", SectionType: "section", SectionOrder: 5, Title: "3. Gamma 风险引擎", Content: "3. Gamma 风险引擎\n时间：2026\n角色：架构与工程效率负责人\n背景：负责规则编排、回放调试、灰度校验和告警收敛。\n技术：Go、PostgreSQL、Redis、React、异步任务队列。\n结果：把风险规则上线周期从 7 天缩短到 1 天。\n问题：现在这段写法像职责清单，缺少业务价值、复杂性和关键决策的展开。"},
+	}
+
+	return &CurrentDocument{
+		ResourceID: "resource-live-like-resume",
+		VersionID:  "version-live-like-resume",
+		Title:      "张三简历",
+		SourceType: "upload",
+		FullText:   fullText,
+		Sections:   append([]postgres.ResourceSection(nil), sections...),
+		Outline: NewDocumentOutlineBuilder().Build(BuildDocumentOutlineInput{
+			VersionID: "version-live-like-resume",
+			FullText:  fullText,
+			Sections:  sections,
+		}),
+		Ready: true,
+	}
 }
 
 func assertRuntimeEventPayloadField(t *testing.T, payload []byte, field string, expected any) {

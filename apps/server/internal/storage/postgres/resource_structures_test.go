@@ -329,6 +329,48 @@ func TestStructuredDocumentRepoReplaceVersionChunksPreservesGroundedMetadata(t *
 	}
 }
 
+// TestResourceRepoGetVersionStructureByVersionIDForwardsStructuredDocument 验证 ResourceRepo 会转发结构化文档读取，避免 loader 依赖双 repo。
+func TestResourceRepoGetVersionStructureByVersionIDForwardsStructuredDocument(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	structureRepo := NewResourceStructureRepo(pool)
+	ctx := testContext(t)
+
+	resource, version := seedResourceVersion(t, resourceRepo, ctx, "资源仓储结构转发测试-"+uniqueSuffix())
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	documentJSON := mustMarshalJSON(t, map[string]any{
+		"source_format": "markdown",
+		"blocks": []map[string]any{
+			{"type": "heading", "level": 2, "text": "项目经历"},
+			{"type": "heading", "level": 3, "text": "1. CampusHub"},
+		},
+	})
+	if _, err := structureRepo.CreateVersionStructure(ctx, CreateVersionStructureParams{
+		ResourceID:    resource.ID,
+		VersionID:     version.ID,
+		SourceFormat:  "markdown",
+		ParserName:    "text",
+		DocumentJSON:  documentJSON,
+		ParserVersion: "1.0.0",
+	}); err != nil {
+		t.Fatalf("create version structure: %v", err)
+	}
+
+	loaded, err := resourceRepo.GetVersionStructureByVersionID(ctx, version.ID)
+	if err != nil {
+		t.Fatalf("resource repo get version structure: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected forwarded version structure, got nil")
+	}
+	if !jsonBodiesEqual(documentJSON, loaded.DocumentJSON) {
+		t.Fatalf("expected forwarded document json %s, got %s", string(documentJSON), string(loaded.DocumentJSON))
+	}
+}
+
 // TestResourceStructureRepoGetsSectionByID 验证`resourceStructureRepoGetsSectionByID`在特定边界条件下的行为，防止同类回归。
 func TestResourceStructureRepoGetsSectionByID(t *testing.T) {
 	pool := newTestPool(t)

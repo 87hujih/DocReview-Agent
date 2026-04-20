@@ -191,6 +191,22 @@ func buildSummarySnapshotContextSection(snapshot *SessionContextSnapshot) string
 	if snapshot.PendingTaskSuggestion != nil && strings.TrimSpace(snapshot.PendingTaskSuggestion.Instruction) != "" {
 		lines = append(lines, "- 待确认任务："+strings.TrimSpace(snapshot.PendingTaskSuggestion.Instruction))
 	}
+	if snapshot.PendingClarification != nil && strings.TrimSpace(snapshot.PendingClarification.Question) != "" {
+		lines = append(lines, "- 待确认澄清："+strings.TrimSpace(snapshot.PendingClarification.Question))
+	}
+	if snapshot.PendingProposal != nil && strings.TrimSpace(snapshot.PendingProposal.Instruction) != "" {
+		lines = append(lines, "- 待确认 proposal："+strings.TrimSpace(snapshot.PendingProposal.Instruction))
+	}
+	if snapshot.AuthorizationState != nil && strings.TrimSpace(snapshot.AuthorizationState.Status) != "" {
+		lines = append(lines, "- 授权状态："+strings.TrimSpace(snapshot.AuthorizationState.Status))
+	}
+	if snapshot.ExecutionState != nil && strings.TrimSpace(snapshot.ExecutionState.TaskID) != "" {
+		lines = append(lines, fmt.Sprintf(
+			"- 顾问执行状态：task_id=%s，status=%s",
+			strings.TrimSpace(snapshot.ExecutionState.TaskID),
+			strings.TrimSpace(snapshot.ExecutionState.TaskStatus),
+		))
+	}
 
 	if snapshot.LatestTask != nil {
 		lines = append(lines, fmt.Sprintf(

@@ -534,6 +534,52 @@ func TestAssistantHandlerStreamStillEmitsTaskSuggestionForWorkflowDecision(t *te
 	}
 }
 
+// TestAssistantHandlerStreamDoesNotEmitTaskSuggestionBeforeAuthorization 验证确认态流式响应在未授权前不会透传 task_suggestion。
+func TestAssistantHandlerStreamDoesNotEmitTaskSuggestionBeforeAuthorization(t *testing.T) {
+	handler := NewAssistantHandler(fakeAssistantService{
+		getConversationResult: &assistant.ConversationResult{
+			Session: postgres.AssistantSession{ID: "session-1"},
+		},
+		appendMessageStreamEvents: []assistant.StreamEvent{
+			{Type: assistant.StreamEventMessageStarted},
+			{Type: assistant.StreamEventMessageDelta, Delta: "我建议先按结果导向重写第三个项目，要不要我按这个方案继续执行？"},
+			{
+				Type: assistant.StreamEventMessageCompleted,
+				Message: &postgres.AssistantMessage{
+					ID:        "message-confirm",
+					SessionID: "session-1",
+					Role:      assistant.RoleAssistant,
+					Kind:      assistant.KindText,
+					Payload: mustMarshalHandlerJSON(t, assistant.TextPayload{
+						Content: "我建议先按结果导向重写第三个项目，要不要我按这个方案继续执行？",
+					}),
+				},
+			},
+		},
+	})
+
+	engine := server.New()
+	engine.POST("/api/assistant/sessions/:id/messages/stream", handler.AppendMessageStream)
+
+	response := ut.PerformRequest(
+		engine.Engine,
+		"POST",
+		"/api/assistant/sessions/"+testAssistantSessionUUID+"/messages/stream",
+		&ut.Body{
+			Body: bytes.NewBufferString(`{"message":"先说说你建议怎么改"}`),
+			Len:  len(`{"message":"先说说你建议怎么改"}`),
+		},
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+	).Result()
+
+	events := parseSSEEvents(t, string(response.Body()))
+	for _, event := range events {
+		if event.Type == assistant.StreamEventTaskSuggestion {
+			t.Fatalf("expected no task_suggestion event before authorization, got %#v", events)
+		}
+	}
+}
+
 // TestAssistantHandlerStreamKeepsProtocolStableWithVerifier 验证接入 verifier 后 SSE 协议顺序保持不变。
 func TestAssistantHandlerStreamKeepsProtocolStableWithVerifier(t *testing.T) {
 	handler := NewAssistantHandler(fakeAssistantService{

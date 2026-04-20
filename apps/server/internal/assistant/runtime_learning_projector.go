@@ -83,6 +83,8 @@ func buildRuntimeSamplePatch(event *postgres.AssistantRuntimeEvent) (postgres.As
 			params.PromotedToWorkflow = boolPointer(true)
 		}
 		return params, true, nil
+	case RuntimeEventTypeActionGateApplied:
+		return params, true, nil
 	case RuntimeEventTypeVerifierUsed:
 		var payload runtimeVerifierEventPayload
 		if err := decodeRuntimeEventPayload(event.Payload, &payload); err != nil {

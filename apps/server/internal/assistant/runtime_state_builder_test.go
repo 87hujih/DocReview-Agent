@@ -90,7 +90,7 @@ func TestRuntimeStateBuilderCarriesConfirmedConstraintsAndRollingSummary(t *test
 	builder := RuntimeStateBuilder{}
 	replyContext := &ReplyContext{
 		Snapshot: &SessionContextSnapshot{
-			SessionID: "session-3",
+			SessionID:      "session-3",
 			RollingSummary: stringPointer("用户已经确认要保留校园项目经历，并强调表达要更偏产品。"),
 			ConfirmedConstraints: []ConfirmedConstraint{
 				{Label: "目标岗位", Value: "产品经理"},
@@ -153,5 +153,113 @@ func TestRuntimeStateBuilderKeepsCurrentMessageSeparateFromRecentHistory(t *test
 	}
 	if lastPayload.Content != "可以，我先按项目经历来读。" {
 		t.Fatalf("expected history to remain unchanged, got %q", lastPayload.Content)
+	}
+}
+
+// TestRuntimeStateBuilderCarriesCurrentDocument 验证 builder 会把 current document 一并带入运行时状态。
+func TestRuntimeStateBuilderCarriesCurrentDocument(t *testing.T) {
+	builder := RuntimeStateBuilder{}
+	replyContext := &ReplyContext{
+		CurrentDocument: &CurrentDocument{
+			ResourceID: "resource-1",
+			VersionID:  "version-3",
+			Title:      "产品经理简历",
+			SourceType: "upload",
+			FullText:   "这是当前文件全文。",
+			Sections: []postgres.ResourceSection{
+				{ID: "section-1", ResourceID: "resource-1", VersionID: "version-3", SectionType: "project", SectionOrder: 1, Title: "CampusHub"},
+			},
+			Ready: true,
+		},
+	}
+
+	state := builder.Build("结合全文分析第三个项目", replyContext)
+
+	if state.CurrentDocument == nil {
+		t.Fatal("expected current document to be carried")
+	}
+	if !state.CurrentDocument.Ready {
+		t.Fatal("expected current document ready flag to be preserved")
+	}
+	if state.CurrentDocument.FullText != "这是当前文件全文。" {
+		t.Fatalf("expected current document full text to be carried, got %q", state.CurrentDocument.FullText)
+	}
+	if len(state.CurrentDocument.Sections) != 1 || state.CurrentDocument.Sections[0].ID != "section-1" {
+		t.Fatalf("expected current document sections to be carried, got %#v", state.CurrentDocument.Sections)
+	}
+}
+
+// TestRuntimeStateBuilderCarriesAdvisorState 验证 builder 会把 advisor state 一并带入运行时状态。
+func TestRuntimeStateBuilderCarriesAdvisorState(t *testing.T) {
+	builder := RuntimeStateBuilder{}
+	replyContext := &ReplyContext{
+		Snapshot: &SessionContextSnapshot{
+			SessionID: "session-5",
+		},
+	}
+	mustSetPointerStructField(t, replyContext.Snapshot, "PendingClarification", map[string]any{
+		"Kind":           "execution_confirmation",
+		"Question":       "要不要按这个方向直接改？",
+		"AskedMessageID": "message-clarify-1",
+		"Options":        []string{"先分析", "直接修改"},
+	})
+	mustSetPointerStructField(t, replyContext.Snapshot, "AdvisoryContext", map[string]any{
+		"Diagnosis":          "第三个项目缺少结果。",
+		"Recommendations":    []string{"补结果", "补指标"},
+		"PreferredDirection": "按结果导向重写",
+		"SourceMessageID":    "message-advice-1",
+	})
+	mustSetPointerStructField(t, replyContext.Snapshot, "PendingProposal", map[string]any{
+		"ProposalID":                    "proposal-1",
+		"Instruction":                   "把第三个项目改成问题-动作-结果结构",
+		"PlanGoal":                      "产出可执行的简历改写任务",
+		"ProposedMessageID":             "message-proposal-1",
+		"RequiresExplicitAuthorization": true,
+	})
+	mustSetPointerStructField(t, replyContext.Snapshot, "AuthorizationState", map[string]any{
+		"Status":               "pending",
+		"GrantedForProposalID": "proposal-1",
+		"GrantedByMessageID":   "message-authorize-1",
+	})
+
+	state := builder.Build("按你的建议改", replyContext)
+
+	if got := mustReadStringField(t, mustReadPointerStructField(t, &state, "PendingClarification"), "Question"); got != "要不要按这个方向直接改？" {
+		t.Fatalf("expected pending clarification on runtime state, got %q", got)
+	}
+	if got := mustReadStringField(t, mustReadPointerStructField(t, &state, "AdvisoryContext"), "Diagnosis"); got != "第三个项目缺少结果。" {
+		t.Fatalf("expected advisory context on runtime state, got %q", got)
+	}
+	if got := mustReadStringField(t, mustReadPointerStructField(t, &state, "PendingProposal"), "ProposalID"); got != "proposal-1" {
+		t.Fatalf("expected pending proposal on runtime state, got %q", got)
+	}
+	if got := mustReadStringField(t, mustReadPointerStructField(t, &state, "AuthorizationState"), "Status"); got != "pending" {
+		t.Fatalf("expected authorization state on runtime state, got %q", got)
+	}
+}
+
+// TestRuntimeStateBuilderCarriesNodeAwareSnapshotState 验证 builder 会把 node-aware 快照字段显式带入运行时状态。
+func TestRuntimeStateBuilderCarriesNodeAwareSnapshotState(t *testing.T) {
+	builder := RuntimeStateBuilder{}
+	replyContext := &ReplyContext{
+		Snapshot: &SessionContextSnapshot{
+			SessionID: "session-node-1",
+			ActiveNode: &SnapshotActiveNode{
+				ID:   "project-3",
+				Kind: string(OutlineNodeProjectItem),
+			},
+			NodeReferenceFrame: []NodeReference{
+				{Ordinal: 3, NodeID: "project-3", NodeKind: string(OutlineNodeProjectItem), EntityName: "慢跑计划"},
+			},
+		},
+	}
+
+	state := builder.Build("这个项目的问题是什么", replyContext)
+
+	if state.ActiveNode == nil || state.ActiveNode.ID != "project-3" || state.ActiveNode.Kind != string(OutlineNodeProjectItem) {
+		t.Fatalf("expected active node on runtime state, got %#v", state.ActiveNode)
+	}
+	if len(state.NodeReferenceFrame) != 1 || state.NodeReferenceFrame[0].NodeID != "project-3" {
+		t.Fatalf("expected node reference frame on runtime state, got %#v", state.NodeReferenceFrame)
 	}
 }

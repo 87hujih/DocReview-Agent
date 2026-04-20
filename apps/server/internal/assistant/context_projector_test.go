@@ -3,6 +3,7 @@ package assistant
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"agent_project/apps/server/internal/storage/postgres"
@@ -198,6 +199,98 @@ func TestSessionContextProjectorProjectsGroundingState(t *testing.T) {
 	}
 }
 
+// TestSessionContextProjectorProjectsNodeAwareGroundingState 验证 node-aware grounding 会被回写到现有快照持久化容器。
+func TestSessionContextProjectorProjectsNodeAwareGroundingState(t *testing.T) {
+	repo := newFakeSessionContextSnapshotProjectorRepo()
+	projector := NewSessionContextProjector(repo)
+	ctx := context.Background()
+
+	if err := projector.InitSession(ctx, "session-node-1"); err != nil {
+		t.Fatalf("init session: %v", err)
+	}
+
+	if err := projector.ProjectGroundingState(ctx, GroundingStateProjection{
+		SessionID:      "session-node-1",
+		ActiveNodeID:   "project-3",
+		ActiveNodeKind: string(OutlineNodeProjectItem),
+		NodeReferenceFrame: []NodeReference{
+			{Ordinal: 3, NodeID: "project-3", NodeKind: string(OutlineNodeProjectItem), EntityName: "慢跑计划"},
+		},
+	}); err != nil {
+		t.Fatalf("project node-aware grounding state: %v", err)
+	}
+
+	snapshot := repo.mustGet("session-node-1")
+	if snapshot.ActiveSectionID != nil {
+		t.Fatalf("expected node-only grounding to avoid writing non-section id into active section, got %#v", snapshot.ActiveSectionID)
+	}
+	if snapshot.ActiveSectionType != nil {
+		t.Fatalf("expected node-only grounding to avoid writing synthetic node kind into active section type, got %#v", snapshot.ActiveSectionType)
+	}
+	if string(snapshot.OrdinalReferenceFrameJSON) == "[]" {
+		t.Fatalf("expected node reference frame to be persisted through legacy json container, got %s", string(snapshot.OrdinalReferenceFrameJSON))
+	}
+}
+
+// TestSessionContextProjectorProjectsAdvisorState 验证投影器会把 advisor state 折叠进会话快照。
+func TestSessionContextProjectorProjectsAdvisorState(t *testing.T) {
+	repo := newFakeSessionContextSnapshotProjectorRepo()
+	projector := NewSessionContextProjector(repo)
+	ctx := context.Background()
+
+	if err := projector.InitSession(ctx, "session-1"); err != nil {
+		t.Fatalf("init session: %v", err)
+	}
+
+	method := reflect.ValueOf(projector).MethodByName("ProjectAdvisorState")
+	if !method.IsValid() {
+		t.Fatal("expected projector to expose ProjectAdvisorState")
+	}
+
+	projection := reflect.New(method.Type().In(1)).Elem()
+	fillStructFields(t, projection, map[string]any{
+		"SessionID": "session-1",
+	})
+	mustSetPointerStructFieldValue(t, projection, "PendingClarification", map[string]any{
+		"Kind":           "execution_confirmation",
+		"Question":       "要不要按这个方向直接改？",
+		"AskedMessageID": "message-clarify-1",
+		"Options":        []string{"先分析", "直接修改"},
+	})
+	mustSetPointerStructFieldValue(t, projection, "AdvisoryContext", map[string]any{
+		"Diagnosis":          "第三个项目缺少结果。",
+		"Recommendations":    []string{"补结果", "补指标"},
+		"PreferredDirection": "按结果导向重写",
+		"SourceMessageID":    "message-advice-1",
+	})
+	mustSetPointerStructFieldValue(t, projection, "PendingProposal", map[string]any{
+		"ProposalID":                    "proposal-1",
+		"Instruction":                   "把第三个项目改成问题-动作-结果结构",
+		"PlanGoal":                      "产出可执行的简历改写任务",
+		"ProposedMessageID":             "message-proposal-1",
+		"RequiresExplicitAuthorization": true,
+	})
+
+	results := method.Call([]reflect.Value{reflect.ValueOf(ctx), projection})
+	if len(results) != 1 {
+		t.Fatalf("expected one return value from ProjectAdvisorState, got %d", len(results))
+	}
+	if !results[0].IsNil() {
+		t.Fatalf("project advisor state: %v", results[0].Interface())
+	}
+
+	snapshot := repo.mustGet("session-1")
+	if got := mustReadJSONFieldString(t, snapshot, "PendingClarificationJSON", "question"); got != "要不要按这个方向直接改？" {
+		t.Fatalf("expected pending clarification json to be persisted, got %q", got)
+	}
+	if got := mustReadJSONFieldString(t, snapshot, "PendingProposalJSON", "proposal_id"); got != "proposal-1" {
+		t.Fatalf("expected pending proposal json to be persisted, got %q", got)
+	}
+	if got := mustReadJSONFieldString(t, snapshot, "AdvisoryContextJSON", "diagnosis"); got != "第三个项目缺少结果。" {
+		t.Fatalf("expected advisory context json to be persisted, got %q", got)
+	}
+}
+
 // fakeSessionContextSnapshotProjectorRepo 作为会话上下文快照投影器仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeSessionContextSnapshotProjectorRepo struct {
 	changeCount int
@@ -328,6 +421,57 @@ func (r *fakeSessionContextSnapshotProjectorRepo) UpdateGroundingState(_ context
 	return nil
 }
 
+// UpdateAdvisorState 实现测试替身需要的 `UpdateAdvisorState` 接口方法，为用例分支提供可控返回。
+func (r *fakeSessionContextSnapshotProjectorRepo) UpdateAdvisorState(_ context.Context, params postgres.UpdateAdvisorStateParams) error {
+	record := r.ensureRecord(params.SessionID)
+	copySnapshotJSONField(record, "PendingClarificationJSON", params.PendingClarificationJSON)
+	copySnapshotJSONField(record, "AdvisoryContextJSON", params.AdvisoryContextJSON)
+	copySnapshotJSONField(record, "PendingProposalJSON", params.PendingProposalJSON)
+	copySnapshotJSONField(record, "AuthorizationStateJSON", params.AuthorizationStateJSON)
+	copySnapshotJSONField(record, "ExecutionStateJSON", params.ExecutionStateJSON)
+	r.changeCount++
+	return nil
+}
+
+// mustSetPointerStructFieldValue 为反射构造出的结构体字段填充嵌套指针结构，供测试动态调用新增方法。
+func mustSetPointerStructFieldValue(t *testing.T, target reflect.Value, fieldName string, fields map[string]any) {
+	t.Helper()
+
+	field := target.FieldByName(fieldName)
+	if !field.IsValid() {
+		t.Fatalf("expected field %s on %s", fieldName, target.Type())
+	}
+	if field.Kind() != reflect.Pointer || field.Type().Elem().Kind() != reflect.Struct {
+		t.Fatalf("expected field %s to be pointer to struct, got %s", fieldName, field.Type())
+	}
+
+	nested := reflect.New(field.Type().Elem())
+	fillStructFields(t, nested.Elem(), fields)
+	field.Set(nested)
+}
+
+// mustReadJSONFieldString 读取快照 JSON 字段中的指定字符串值。
+func mustReadJSONFieldString(t *testing.T, target any, fieldName string, jsonKey string) string {
+	t.Helper()
+
+	field := mustStructFieldValue(t, target, fieldName)
+	if field.Kind() != reflect.Slice || field.Type().Elem().Kind() != reflect.Uint8 {
+		t.Fatalf("expected field %s to be []byte, got %s", fieldName, field.Type())
+	}
+
+	payload := make(map[string]any)
+	if err := json.Unmarshal(field.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal %s: %v", fieldName, err)
+	}
+
+	value, ok := payload[jsonKey].(string)
+	if !ok {
+		t.Fatalf("expected json key %s in field %s, got %#v", jsonKey, fieldName, payload[jsonKey])
+	}
+
+	return value
+}
+
 // ensureRecord 实现测试替身需要的 `ensureRecord` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionContextSnapshotProjectorRepo) ensureRecord(sessionID string) *postgres.SessionContextSnapshotRecord {
 	if existing, ok := r.records[sessionID]; ok {
@@ -383,6 +527,11 @@ func cloneSnapshotRecord(record *postgres.SessionContextSnapshotRecord) *postgre
 	if record.OrdinalReferenceFrameJSON != nil {
 		cloned.OrdinalReferenceFrameJSON = append([]byte(nil), record.OrdinalReferenceFrameJSON...)
 	}
+	copySnapshotJSONField(&cloned, "PendingClarificationJSON", readSnapshotJSONField(record, "PendingClarificationJSON"))
+	copySnapshotJSONField(&cloned, "AdvisoryContextJSON", readSnapshotJSONField(record, "AdvisoryContextJSON"))
+	copySnapshotJSONField(&cloned, "PendingProposalJSON", readSnapshotJSONField(record, "PendingProposalJSON"))
+	copySnapshotJSONField(&cloned, "AuthorizationStateJSON", readSnapshotJSONField(record, "AuthorizationStateJSON"))
+	copySnapshotJSONField(&cloned, "ExecutionStateJSON", readSnapshotJSONField(record, "ExecutionStateJSON"))
 	cloned.RollingSummary = cloneStringPointer(record.RollingSummary)
 	return &cloned
 }
@@ -422,4 +571,38 @@ func mustMarshalGroundingJSON(value any) []byte {
 		panic(err)
 	}
 	return body
+}
+
+// copySnapshotJSONField 按字段名复制快照上的 JSON 字段，减少测试替身样板。
+func copySnapshotJSONField(target any, fieldName string, body []byte) {
+	if len(body) == 0 {
+		return
+	}
+
+	field := reflect.ValueOf(target)
+	for field.Kind() == reflect.Pointer {
+		field = field.Elem()
+	}
+
+	targetField := field.FieldByName(fieldName)
+	if !targetField.IsValid() || targetField.Kind() != reflect.Slice || targetField.Type().Elem().Kind() != reflect.Uint8 {
+		return
+	}
+
+	targetField.SetBytes(append([]byte(nil), body...))
+}
+
+// readSnapshotJSONField 按字段名读取快照上的 JSON 字段。
+func readSnapshotJSONField(target any, fieldName string) []byte {
+	field := reflect.ValueOf(target)
+	for field.Kind() == reflect.Pointer {
+		field = field.Elem()
+	}
+
+	targetField := field.FieldByName(fieldName)
+	if !targetField.IsValid() || targetField.Kind() != reflect.Slice || targetField.Type().Elem().Kind() != reflect.Uint8 {
+		return nil
+	}
+
+	return append([]byte(nil), targetField.Bytes()...)
 }

@@ -40,6 +40,7 @@ const (
 const (
 	RuntimeEventTypeDeliberationDecided       = "deliberation.decided"
 	RuntimeEventTypePolicyApplied             = "policy.applied"
+	RuntimeEventTypeActionGateApplied         = "action_gate.applied"
 	RuntimeEventTypePlannerUsed               = "planner.used"
 	RuntimeEventTypeVerifierUsed              = "verifier.used"
 	RuntimeEventTypeClarificationPrompted     = "clarification.prompted"

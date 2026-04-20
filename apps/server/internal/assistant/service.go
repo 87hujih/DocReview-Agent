@@ -95,6 +95,14 @@ type canonicalSectionReader interface {
 	Read(ctx context.Context, input CanonicalReadInput) (*CanonicalReadResult, error)
 }
 
+type targetResolver interface {
+	Resolve(input ResolveTargetInput) (*ResolvedNode, error)
+}
+
+type nodeReader interface {
+	Read(input NodeReadInput) (*NodeReadResult, error)
+}
+
 type deterministicReadResponder interface {
 	Respond(ctx context.Context, input DeterministicReadInput) (*DeterministicReadResult, error)
 }
@@ -105,6 +113,7 @@ type sessionContextProjector interface {
 	ProjectTaskSuggestionCreated(ctx context.Context, projection TaskSuggestionProjection) error
 	ProjectTaskCreated(ctx context.Context, projection TaskCreatedProjection) error
 	ProjectGroundingState(ctx context.Context, projection GroundingStateProjection) error
+	ProjectAdvisorState(ctx context.Context, projection AdvisorStateProjection) error
 }
 
 type runtimeEventRecorder interface {
@@ -140,6 +149,9 @@ type Service struct {
 	asyncRunner       func(task func())
 	sectionLocator    sectionLocator
 	sectionReader     canonicalSectionReader
+	targetResolver    targetResolver
+	nodeReader        nodeReader
+	currentDocuments  currentDocumentLoader
 	directReader      deterministicReadResponder
 }
 
@@ -171,7 +183,8 @@ func NewService(
 	}
 
 	if service.contextLoader == nil {
-		service.contextLoader = NewContextLoader(snapshotReaderFromProjector(service.projector), service.retriever, service.repo)
+		service.contextLoader = NewContextLoader(snapshotReaderFromProjector(service.projector), service.retriever, service.repo).
+			WithCurrentDocumentLoader(service.currentDocuments)
 	}
 	if service.deliberator == nil {
 		service.deliberator = heuristicDeliberationAgent{}
@@ -181,6 +194,12 @@ func NewService(
 	}
 	if service.workflowVerifier == nil {
 		service.workflowVerifier = passthroughWorkflowVerifier{}
+	}
+	if service.targetResolver == nil {
+		service.targetResolver = NewTargetResolver()
+	}
+	if service.nodeReader == nil {
+		service.nodeReader = NewNodeReader()
 	}
 
 	return service
@@ -248,6 +267,13 @@ func WithSectionLocator(locator sectionLocator) ServiceOption {
 func WithSectionReader(reader canonicalSectionReader) ServiceOption {
 	return func(service *Service) {
 		service.sectionReader = reader
+	}
+}
+
+// WithCurrentDocumentLoader 为 assistant service 注入当前文件 canonical 文档装载器。
+func WithCurrentDocumentLoader(loader currentDocumentLoader) ServiceOption {
+	return func(service *Service) {
+		service.currentDocuments = loader
 	}
 }
 
@@ -322,6 +348,9 @@ func (s *Service) StartConversation(ctx context.Context, content string) (*Conve
 		return nil, err
 	}
 	if err := s.projectReplyGrounding(ctx, session.ID, replyBuild.ReplyContext); err != nil {
+		return nil, err
+	}
+	if err := s.projectReplyAdvisorState(ctx, session.ID, replyBuild, messages); err != nil {
 		return nil, err
 	}
 
@@ -413,6 +442,9 @@ func (s *Service) AppendMessage(ctx context.Context, sessionID string, content s
 		return nil, err
 	}
 	if err := s.projectReplyGrounding(ctx, sessionID, replyBuild.ReplyContext); err != nil {
+		return nil, err
+	}
+	if err := s.projectReplyAdvisorState(ctx, sessionID, replyBuild, messages); err != nil {
 		return nil, err
 	}
 	if err := s.recordRuntimeLearningForTurn(ctx, replyBuild, messages); err != nil {
@@ -523,7 +555,7 @@ func (s *Service) UploadFile(ctx context.Context, sessionID string, fileName str
 		return nil, ErrSessionNotFound
 	}
 
-	uploadedFile, err := s.persistUploadedFile(ctx, session.ID, fileName, content)
+	uploadedFile, err := s.persistUploadedFile(ctx, stringPointer(session.ID), fileName, content)
 	if err != nil {
 		return nil, err
 	}
@@ -724,6 +756,8 @@ type replyBuildResult struct {
 	RuntimeState                   RuntimeState
 	Decision                       *DeliberationDecision
 	Policy                         PolicyDecision
+	PendingResolution              PendingResolution
+	ActionGate                     ActionGateDecision
 	PlanDecision                   *WorkflowPlanDecision
 	VerificationDecision           *WorkflowVerificationDecision
 	ReplyDecision                  *DeliberationDecision
@@ -766,19 +800,10 @@ func (s *Service) buildReplyInputs(
 	}
 
 	runtimeState := s.stateBuilder.Build(content, replyContext)
-	decision, policy, err := s.deliberateTurn(ctx, runtimeState)
+	turnEvaluation, err := s.evaluateAdvisorTurn(ctx, runtimeState)
 	if err != nil {
 		return nil, err
 	}
-	planDecision, err := s.planWorkflow(ctx, runtimeState, decision, policy)
-	if err != nil {
-		return nil, err
-	}
-	verificationDecision, err := s.verifyWorkflow(ctx, runtimeState, decision, policy, planDecision)
-	if err != nil {
-		return nil, err
-	}
-	replyDecision := decisionForReply(decision, policy, planDecision, verificationDecision)
 
 	deterministicInputs, usedDeterministicRead, err := s.tryBuildDeterministicReadInputs(ctx, content, replyContext)
 	if err != nil {
@@ -800,11 +825,13 @@ func (s *Service) buildReplyInputs(
 			Inputs:                         inputs,
 			ReplyContext:                   replyContext,
 			RuntimeState:                   runtimeState,
-			Decision:                       decision,
-			Policy:                         policy,
-			PlanDecision:                   planDecision,
-			VerificationDecision:           verificationDecision,
-			ReplyDecision:                  replyDecision,
+			Decision:                       turnEvaluation.Decision,
+			Policy:                         turnEvaluation.Policy,
+			PendingResolution:              turnEvaluation.PendingResolution,
+			ActionGate:                     turnEvaluation.ActionGate,
+			PlanDecision:                   turnEvaluation.PlanDecision,
+			VerificationDecision:           turnEvaluation.VerificationDecision,
+			ReplyDecision:                  turnEvaluation.ReplyDecision,
 			PendingSuggestion:              clonePendingTaskSuggestion(runtimeState.PendingTaskSuggestion),
 			PreviousClarificationMessageID: latestClarificationPromptMessageID(replyHistory),
 			CorrectionSignal:               correctionSignal,
@@ -831,11 +858,13 @@ func (s *Service) buildReplyInputs(
 			Inputs:                         inputs,
 			ReplyContext:                   replyContext,
 			RuntimeState:                   runtimeState,
-			Decision:                       decision,
-			Policy:                         policy,
-			PlanDecision:                   planDecision,
-			VerificationDecision:           verificationDecision,
-			ReplyDecision:                  replyDecision,
+			Decision:                       turnEvaluation.Decision,
+			Policy:                         turnEvaluation.Policy,
+			PendingResolution:              turnEvaluation.PendingResolution,
+			ActionGate:                     turnEvaluation.ActionGate,
+			PlanDecision:                   turnEvaluation.PlanDecision,
+			VerificationDecision:           turnEvaluation.VerificationDecision,
+			ReplyDecision:                  turnEvaluation.ReplyDecision,
 			PendingSuggestion:              clonePendingTaskSuggestion(runtimeState.PendingTaskSuggestion),
 			PreviousClarificationMessageID: latestClarificationPromptMessageID(replyHistory),
 			CorrectionSignal:               correctionSignal,
@@ -851,13 +880,17 @@ func (s *Service) buildReplyInputs(
 		History:                  replyContext.History,
 		Message:                  content,
 		Resource:                 replyContext.ActiveResource,
-		Decision:                 replyDecision,
+		CurrentDocument:          replyContext.CurrentDocument,
+		Decision:                 turnEvaluation.ReplyDecision,
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	assistantInputs, err := buildAssistantReplyInputsFromPolicy(reply, replyDecision, policy, runtimeState.ActiveResource)
+	outcome, err := BuildAssistantOutcome(reply, turnEvaluation.ReplyDecision, turnEvaluation.ActionGate, runtimeState.ActiveResource)
+	if err != nil {
+		return nil, err
+	}
+	assistantInputs, err := RenderAssistantOutcome(outcome, replyContext.CurrentDocument != nil && replyContext.CurrentDocument.Ready)
 	if err != nil {
 		return nil, err
 	}
@@ -877,11 +910,13 @@ func (s *Service) buildReplyInputs(
 		Inputs:                         inputs,
 		ReplyContext:                   replyContext,
 		RuntimeState:                   runtimeState,
-		Decision:                       decision,
-		Policy:                         policy,
-		PlanDecision:                   planDecision,
-		VerificationDecision:           verificationDecision,
-		ReplyDecision:                  replyDecision,
+		Decision:                       turnEvaluation.Decision,
+		Policy:                         turnEvaluation.Policy,
+		PendingResolution:              turnEvaluation.PendingResolution,
+		ActionGate:                     turnEvaluation.ActionGate,
+		PlanDecision:                   turnEvaluation.PlanDecision,
+		VerificationDecision:           turnEvaluation.VerificationDecision,
+		ReplyDecision:                  turnEvaluation.ReplyDecision,
 		PendingSuggestion:              clonePendingTaskSuggestion(runtimeState.PendingTaskSuggestion),
 		PreviousClarificationMessageID: latestClarificationPromptMessageID(replyHistory),
 		CorrectionSignal:               correctionSignal,
@@ -894,7 +929,7 @@ func (s *Service) tryBuildDeterministicReadInputs(
 	content string,
 	replyContext *ReplyContext,
 ) ([]postgres.AssistantMessageInput, bool, error) {
-	if s == nil || s.sectionLocator == nil || s.sectionReader == nil || s.directReader == nil || replyContext == nil || replyContext.ActiveResource == nil {
+	if s == nil || s.directReader == nil || replyContext == nil || replyContext.ActiveResource == nil {
 		return nil, false, nil
 	}
 
@@ -903,42 +938,53 @@ func (s *Service) tryBuildDeterministicReadInputs(
 		return nil, false, nil
 	}
 
-	located, err := s.sectionLocator.Locate(ctx, LocateSectionInput{
-		ResourceID:      replyContext.ActiveResource.ID,
-		Message:         content,
-		Intent:          intent,
-		ActiveSectionID: activeSectionIDFromSnapshot(replyContext.Snapshot),
-	})
-	if err != nil {
-		return nil, false, err
+	readInput := DeterministicReadInput{
+		Message:        content,
+		Intent:         intent,
+		Resource:       replyContext.ActiveResource,
+		ResolvedNode:   replyContext.ResolvedNode,
+		NodeReadResult: replyContext.NodeRead,
+		ReadResult:     replyContext.CanonicalRead,
 	}
-	if located == nil {
-		return nil, false, nil
-	}
-
-	readResult, err := s.sectionReader.Read(ctx, CanonicalReadInput{
-		ResourceID: replyContext.ActiveResource.ID,
-		VersionID:  located.VersionID,
-		Located:    located,
-	})
-	if err != nil {
-		if errors.Is(err, ErrCanonicalReadUnavailable) {
+	if replyContext.NodeRead == nil {
+		if s.sectionLocator == nil || s.sectionReader == nil {
 			return nil, false, nil
 		}
 
-		return nil, false, err
-	}
-	if readResult == nil {
-		return nil, false, nil
+		located, err := s.sectionLocator.Locate(ctx, LocateSectionInput{
+			ResourceID:      replyContext.ActiveResource.ID,
+			Message:         content,
+			Intent:          intent,
+			ActiveSectionID: activeSectionIDFromSnapshot(replyContext.Snapshot),
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		if located == nil {
+			return nil, false, nil
+		}
+
+		readResult, err := s.sectionReader.Read(ctx, CanonicalReadInput{
+			ResourceID: replyContext.ActiveResource.ID,
+			VersionID:  located.VersionID,
+			Located:    located,
+		})
+		if err != nil {
+			if errors.Is(err, ErrCanonicalReadUnavailable) {
+				return nil, false, nil
+			}
+
+			return nil, false, err
+		}
+		if readResult == nil {
+			return nil, false, nil
+		}
+
+		readInput.Located = located
+		readInput.ReadResult = readResult
 	}
 
-	directReply, err := s.directReader.Respond(ctx, DeterministicReadInput{
-		Message:    content,
-		Intent:     intent,
-		Resource:   replyContext.ActiveResource,
-		Located:    located,
-		ReadResult: readResult,
-	})
+	directReply, err := s.directReader.Respond(ctx, readInput)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1056,6 +1102,24 @@ func (s *Service) recordRuntimeLearningForTurn(
 			"allow_workflow_planning": build.Policy.AllowWorkflowPlanning,
 			"require_verifier":        build.Policy.RequireVerifier,
 			"blocked_reason":          build.Policy.BlockedReason,
+		},
+	}); err != nil {
+		return err
+	}
+
+	if err := s.recordRuntimeEvent(ctx, RuntimeRecordInput{
+		SessionID: sessionID,
+		MessageID: decisionMessageID,
+		Source:    "action_gate",
+		EventType: RuntimeEventTypeActionGateApplied,
+		Payload: map[string]any{
+			"conversation_mode":         build.ActionGate.ConversationMode,
+			"allow_workflow_promotion":  build.ActionGate.AllowWorkflowPromotion,
+			"allow_task_suggestion":     build.ActionGate.AllowTaskSuggestion,
+			"blocked_reason":            build.ActionGate.BlockedReason,
+			"has_pending_clarification": build.ActionGate.PendingClarification != nil,
+			"has_pending_proposal":      build.ActionGate.PendingProposal != nil,
+			"authorization_status":      authorizationStatusForEvent(build.ActionGate.AuthorizationState),
 		},
 	}); err != nil {
 		return err
@@ -1289,6 +1353,15 @@ func runtimeSessionID(build *replyBuildResult, messages []postgres.AssistantMess
 	return ""
 }
 
+// authorizationStatusForEvent 统一抽取 authorization status，避免 runtime event payload 分散判空。
+func authorizationStatusForEvent(state *SnapshotAuthorizationState) string {
+	if state == nil {
+		return ""
+	}
+
+	return strings.TrimSpace(state.Status)
+}
+
 // deliberateTurn 执行当前轮的 deliberation 与 policy 裁决。
 func (s *Service) deliberateTurn(ctx context.Context, state RuntimeState) (*DeliberationDecision, PolicyDecision, error) {
 	if s.deliberator == nil {
@@ -1299,43 +1372,182 @@ func (s *Service) deliberateTurn(ctx context.Context, state RuntimeState) (*Deli
 	if err != nil {
 		return nil, PolicyDecision{}, err
 	}
+	decision = deterministicallyPromoteExplicitExecution(state, decision)
 
 	return decision, ApplyPolicy(state, decision), nil
 }
 
-// planWorkflow 在 policy 允许时执行 workflow planner，收敛最终 workflow 入口结论。
+// deterministicallyPromoteExplicitExecution 在显式执行请求被误判成聊天时，补齐稳定的 workflow promotion 契约。
+func deterministicallyPromoteExplicitExecution(
+	state RuntimeState,
+	decision *DeliberationDecision,
+) *DeliberationDecision {
+	if state.PendingProposal != nil {
+		return decision
+	}
+
+	taskDecision := EvaluateTaskSuggestion(TaskSuggestionEvaluationInput{
+		CurrentMessage: state.Message,
+		ActiveResource: state.ActiveResource,
+	})
+	if taskDecision.ReadinessState != ReadinessStateReadyForTask {
+		return decision
+	}
+	if requestsImmediateWorkflowPromotion(decision) {
+		return decision
+	}
+	if decision != nil && decision.NeedsClarification {
+		return decision
+	}
+
+	instruction := strings.TrimSpace(taskDecision.NormalizedInstruction)
+	if proposed := derefOptionalString(optionalDecisionString(decision, func(value *DeliberationDecision) *string {
+		return value.ProposedInstruction
+	})); proposed != "" {
+		instruction = proposed
+	} else if candidate := derefOptionalString(optionalDecisionString(decision, func(value *DeliberationDecision) *string {
+		return value.CandidateTaskInstruction
+	})); candidate != "" {
+		instruction = candidate
+	}
+	if instruction == "" {
+		return decision
+	}
+
+	planGoal := normalizeOptionalText(optionalDecisionString(decision, func(value *DeliberationDecision) *string {
+		if value.ProposedPlanGoal != nil {
+			return value.ProposedPlanGoal
+		}
+		return value.CandidatePlanGoal
+	}))
+	reasons := append([]string(nil), normalizeDecisionReasons(optionalDecisionReasons(decision))...)
+	reasons = append(reasons, "显式执行请求命中 deterministic promotion")
+
+	promoted := &DeliberationDecision{
+		RequestKind:              "workflow_command",
+		ResponseMode:             ResponseModePlanThenAnswer,
+		ConversationMode:         "execute",
+		RequestedNextStep:        "promote_to_workflow",
+		ProposalReady:            true,
+		ProposedInstruction:      stringPointer(instruction),
+		ProposedPlanGoal:         planGoal,
+		AwaitingAuthorization:    false,
+		ChatFulfillable:          false,
+		WorkflowCommitment:       true,
+		NeedsClarification:       false,
+		EvidenceSufficiency:      "sufficient",
+		CandidateTaskInstruction: stringPointer(instruction),
+		CandidatePlanGoal:        planGoal,
+		Confidence:               optionalDecisionConfidence(decision),
+		Reasons:                  normalizeDecisionReasons(reasons),
+	}
+
+	return promoted
+}
+
+// optionalDecisionString 安全读取可选决策字段，避免调用点散落判空。
+func optionalDecisionString(
+	decision *DeliberationDecision,
+	pick func(*DeliberationDecision) *string,
+) *string {
+	if decision == nil || pick == nil {
+		return nil
+	}
+
+	return normalizeOptionalText(pick(decision))
+}
+
+// optionalDecisionReasons 安全读取决策理由，避免调用点散落判空。
+func optionalDecisionReasons(decision *DeliberationDecision) []string {
+	if decision == nil {
+		return nil
+	}
+
+	return decision.Reasons
+}
+
+// optionalDecisionConfidence 返回已有 deliberation confidence，缺省时给 deterministic promotion 一个稳定值。
+func optionalDecisionConfidence(decision *DeliberationDecision) float64 {
+	if decision == nil || decision.Confidence <= 0 {
+		return 0.8
+	}
+
+	return decision.Confidence
+}
+
+// advisorTurnEvaluation 描述一轮 advisor 编排阶段的共享结果，供流式与非流式共用。
+type advisorTurnEvaluation struct {
+	Decision             *DeliberationDecision
+	Policy               PolicyDecision
+	PendingResolution    PendingResolution
+	ActionGate           ActionGateDecision
+	PlanDecision         *WorkflowPlanDecision
+	VerificationDecision *WorkflowVerificationDecision
+	ReplyDecision        *DeliberationDecision
+}
+
+// evaluateAdvisorTurn 执行 advisor runtime 的共享编排顺序，避免流式与非流式路径继续分叉。
+func (s *Service) evaluateAdvisorTurn(ctx context.Context, state RuntimeState) (*advisorTurnEvaluation, error) {
+	decision, policy, err := s.deliberateTurn(ctx, state)
+	if err != nil {
+		return nil, err
+	}
+
+	pendingResolution := ResolvePendingState(state)
+	actionGate := DecideActionGate(state, decision, pendingResolution, policy)
+	planDecision, err := s.planWorkflow(ctx, state, decision, actionGate)
+	if err != nil {
+		return nil, err
+	}
+	verificationDecision, err := s.verifyWorkflow(ctx, state, decision, actionGate, planDecision)
+	if err != nil {
+		return nil, err
+	}
+
+	return &advisorTurnEvaluation{
+		Decision:             decision,
+		Policy:               policy,
+		PendingResolution:    pendingResolution,
+		ActionGate:           actionGate,
+		PlanDecision:         planDecision,
+		VerificationDecision: verificationDecision,
+		ReplyDecision:        decisionForReply(state, pendingResolution, decision, actionGate, planDecision, verificationDecision),
+	}, nil
+}
+
+// planWorkflow 在 action gate 允许 workflow promotion 时执行 workflow planner。
 func (s *Service) planWorkflow(
 	ctx context.Context,
 	state RuntimeState,
 	decision *DeliberationDecision,
-	policy PolicyDecision,
+	gate ActionGateDecision,
 ) (*WorkflowPlanDecision, error) {
-	if !policy.AllowWorkflowPlanning {
+	if !gate.AllowWorkflowPromotion {
 		return nil, nil
 	}
 	if s.workflowPlanner == nil {
 		s.workflowPlanner = passthroughWorkflowPlanner{}
 	}
 
-	return s.workflowPlanner.Plan(ctx, state, decision)
+	return s.workflowPlanner.Plan(ctx, state, decisionForWorkflowPlanner(decision, gate))
 }
 
-// verifyWorkflow 在 policy 与 planner 共同允许时执行 verifier，收敛最终 workflow promotion 结论。
+// verifyWorkflow 在 gate 与 planner 共同允许时执行 verifier，收敛最终 workflow promotion 结论。
 func (s *Service) verifyWorkflow(
 	ctx context.Context,
 	state RuntimeState,
 	decision *DeliberationDecision,
-	policy PolicyDecision,
+	gate ActionGateDecision,
 	plan *WorkflowPlanDecision,
 ) (*WorkflowVerificationDecision, error) {
-	if !policy.RequireVerifier || plan == nil || !plan.ShouldEnterWorkflow {
+	if !gate.AllowWorkflowPromotion || plan == nil || !plan.ShouldEnterWorkflow {
 		return nil, nil
 	}
 	if s.workflowVerifier == nil {
 		s.workflowVerifier = passthroughWorkflowVerifier{}
 	}
 
-	return s.workflowVerifier.Verify(ctx, state, decision, plan)
+	return s.workflowVerifier.Verify(ctx, state, decisionForWorkflowPlanner(decision, gate), plan)
 }
 
 // buildUploadMessages 组装 `上传消息`，统一接收者返回结果的结构形态。
@@ -1450,48 +1662,12 @@ func buildAssistantReplyInputs(
 	return append(inputs, suggestionInput), nil
 }
 
-// buildAssistantReplyInputsFromPolicy 根据 deliberation 与 policy 结果组装最终 assistant 输出。
-func buildAssistantReplyInputsFromPolicy(
-	reply *ChatCompletionResult,
-	decision *DeliberationDecision,
-	policy PolicyDecision,
-	resource *resourceContext,
-) ([]postgres.AssistantMessageInput, error) {
-	if reply == nil || strings.TrimSpace(reply.Reply) == "" {
-		return nil, errors.New("助手模型返回了空回复")
-	}
-
-	assistantInput, err := buildMessageInput(RoleAssistant, KindText, TextPayload{
-		Content: strings.TrimSpace(reply.Reply),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	inputs := []postgres.AssistantMessageInput{assistantInput}
-	if !policy.AllowTaskSuggestion || decision == nil || resource == nil {
-		return inputs, nil
-	}
-	if decision.ResponseMode != ResponseModeAnswerThenTaskCard || decision.CandidateTaskInstruction == nil || strings.TrimSpace(*decision.CandidateTaskInstruction) == "" {
-		return inputs, nil
-	}
-
-	suggestionInput, err := buildMessageInput(
-		RoleAssistant,
-		KindTaskSuggestion,
-		buildTaskSuggestion(strings.TrimSpace(*decision.CandidateTaskInstruction), resource),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return append(inputs, suggestionInput), nil
-}
-
-// decisionForReply 根据 policy 结果收窄 responder 可见的回复模式，避免 reply 误导后续体验。
+// decisionForReply 根据 action gate、planner 与 verifier 收窄 responder 可见的回复模式。
 func decisionForReply(
+	state RuntimeState,
+	resolution PendingResolution,
 	decision *DeliberationDecision,
-	policy PolicyDecision,
+	gate ActionGateDecision,
 	plan *WorkflowPlanDecision,
 	verification *WorkflowVerificationDecision,
 ) *DeliberationDecision {
@@ -1504,47 +1680,77 @@ func decisionForReply(
 	cloned.CandidateTaskInstruction = normalizeOptionalText(decision.CandidateTaskInstruction)
 	cloned.CandidatePlanGoal = normalizeOptionalText(decision.CandidatePlanGoal)
 	cloned.Reasons = normalizeDecisionReasons(decision.Reasons)
+	grantedWorkflowAuthorization := shouldPreserveGrantedWorkflowReply(state, resolution, gate)
 
 	switch {
-	case policy.AllowClarification:
+	case gate.PendingClarification != nil:
 		cloned.ResponseMode = ResponseModeClarifyFirst
+		cloned.ConversationMode = "confirm"
+		cloned.ChatFulfillable = true
+		cloned.WorkflowCommitment = false
 		cloned.NeedsClarification = true
+		cloned.ClarificationQuestion = normalizeOptionalText(stringPointer(strings.TrimSpace(gate.PendingClarification.Question)))
+		cloned.CandidateTaskInstruction = nil
+		cloned.CandidatePlanGoal = nil
+	case gate.PendingProposal != nil && !gate.AllowWorkflowPromotion:
+		cloned.ResponseMode = ResponseModeClarifyFirst
+		cloned.ConversationMode = "confirm"
+		cloned.ChatFulfillable = true
+		cloned.WorkflowCommitment = false
+		cloned.NeedsClarification = true
+		cloned.ClarificationQuestion = stringPointer(buildProposalAuthorizationQuestion(gate.PendingProposal))
+		cloned.CandidateTaskInstruction = nil
+		cloned.CandidatePlanGoal = nil
 	case verification != nil && verification.NeedsClarification:
 		cloned.ResponseMode = ResponseModeClarifyFirst
+		cloned.ConversationMode = "confirm"
 		cloned.ChatFulfillable = false
 		cloned.WorkflowCommitment = false
 		cloned.NeedsClarification = true
 		cloned.ClarificationQuestion = normalizeOptionalText(verification.ClarificationQuestion)
 		cloned.CandidateTaskInstruction = nil
 		cloned.CandidatePlanGoal = nil
+	case grantedWorkflowAuthorization && verification != nil && verification.DowngradeToChat:
+		applyGrantedWorkflowReplyDecision(&cloned, gate, plan, nil)
 	case verification != nil && verification.DowngradeToChat:
 		cloned.ResponseMode = ResponseModeAnswerOnly
+		cloned.ConversationMode = "advise"
 		cloned.ChatFulfillable = true
 		cloned.WorkflowCommitment = false
+		cloned.ProposalReady = false
+		cloned.AwaitingAuthorization = false
 		cloned.NeedsClarification = false
 		cloned.ClarificationQuestion = nil
 		cloned.CandidateTaskInstruction = nil
 		cloned.CandidatePlanGoal = nil
 	case plan != nil && plan.NeedsClarification:
 		cloned.ResponseMode = ResponseModeClarifyFirst
+		cloned.ConversationMode = "confirm"
 		cloned.ChatFulfillable = false
 		cloned.WorkflowCommitment = false
 		cloned.NeedsClarification = true
 		cloned.ClarificationQuestion = normalizeOptionalText(plan.ClarificationQuestion)
 		cloned.CandidateTaskInstruction = nil
 		cloned.CandidatePlanGoal = nil
+	case grantedWorkflowAuthorization && plan != nil && plan.ChatFulfillable:
+		applyGrantedWorkflowReplyDecision(&cloned, gate, plan, nil)
 	case plan != nil && plan.ChatFulfillable:
 		cloned.ResponseMode = ResponseModeAnswerOnly
+		cloned.ConversationMode = "advise"
 		cloned.ChatFulfillable = true
 		cloned.WorkflowCommitment = false
+		cloned.ProposalReady = false
+		cloned.AwaitingAuthorization = false
 		cloned.NeedsClarification = false
 		cloned.ClarificationQuestion = nil
 		cloned.CandidateTaskInstruction = nil
 		cloned.CandidatePlanGoal = nil
 	case verification != nil && verification.ApproveWorkflow:
 		cloned.ResponseMode = ResponseModeAnswerThenTaskCard
+		cloned.ConversationMode = "execute"
 		cloned.ChatFulfillable = false
 		cloned.WorkflowCommitment = true
+		cloned.AwaitingAuthorization = false
 		cloned.NeedsClarification = false
 		cloned.ClarificationQuestion = nil
 		if verification.RevisedInstruction != nil {
@@ -1559,17 +1765,145 @@ func decisionForReply(
 		}
 	case plan != nil && plan.ShouldEnterWorkflow:
 		cloned.ResponseMode = ResponseModeAnswerThenTaskCard
+		cloned.ConversationMode = "execute"
 		cloned.ChatFulfillable = false
 		cloned.WorkflowCommitment = true
+		cloned.AwaitingAuthorization = false
 		cloned.NeedsClarification = false
 		cloned.ClarificationQuestion = nil
 		cloned.CandidateTaskInstruction = normalizeOptionalText(plan.CandidateInstruction)
 		cloned.CandidatePlanGoal = normalizeOptionalText(plan.CandidatePlanGoal)
-	case !policy.AllowTaskSuggestion && (cloned.ResponseMode == ResponseModeAnswerThenTaskCard || cloned.ResponseMode == ResponseModePlanThenAnswer):
+	case gate.ConversationMode == "advise":
 		cloned.ResponseMode = ResponseModeAnswerOnly
+		cloned.ChatFulfillable = true
+		cloned.WorkflowCommitment = false
+		cloned.ProposalReady = false
+		cloned.AwaitingAuthorization = false
+		cloned.NeedsClarification = false
+		cloned.ClarificationQuestion = nil
+		cloned.CandidateTaskInstruction = nil
+		cloned.CandidatePlanGoal = nil
 	}
 
 	return &cloned
+}
+
+// shouldPreserveGrantedWorkflowReply 判断当前轮是否应该保住已授权 workflow 的提案态输出。
+func shouldPreserveGrantedWorkflowReply(
+	state RuntimeState,
+	resolution PendingResolution,
+	gate ActionGateDecision,
+) bool {
+	if !hasGrantedWorkflowAuthorization(gate) {
+		return false
+	}
+	if resolution.ExplicitAuthorization {
+		return true
+	}
+
+	return ClassifyReadIntent(strings.TrimSpace(state.Message)).ShouldEnterTaskFlow
+}
+
+// hasGrantedWorkflowAuthorization 判断当前 gate 是否已经形成可落卡的授权态真源。
+func hasGrantedWorkflowAuthorization(gate ActionGateDecision) bool {
+	if !gate.AllowTaskSuggestion || gate.PendingProposal == nil || gate.AuthorizationState == nil {
+		return false
+	}
+
+	return strings.TrimSpace(gate.AuthorizationState.Status) == "granted"
+}
+
+// applyGrantedWorkflowReplyDecision 在已授权执行的前提下，收敛最终 reply contract，避免再回退成纯聊天。
+func applyGrantedWorkflowReplyDecision(
+	decision *DeliberationDecision,
+	gate ActionGateDecision,
+	plan *WorkflowPlanDecision,
+	revisedInstruction *string,
+) {
+	if decision == nil {
+		return
+	}
+
+	decision.ResponseMode = ResponseModeAnswerThenTaskCard
+	decision.ConversationMode = "execute"
+	decision.ChatFulfillable = false
+	decision.WorkflowCommitment = true
+	decision.ProposalReady = true
+	decision.AwaitingAuthorization = false
+	decision.NeedsClarification = false
+	decision.ClarificationQuestion = nil
+
+	instruction := ""
+	if revised := derefOptionalString(revisedInstruction); revised != "" {
+		instruction = revised
+	} else if plan != nil && plan.CandidateInstruction != nil {
+		instruction = strings.TrimSpace(*plan.CandidateInstruction)
+	} else if gate.PendingProposal != nil {
+		instruction = strings.TrimSpace(gate.PendingProposal.Instruction)
+	}
+	if instruction != "" {
+		decision.CandidateTaskInstruction = stringPointer(instruction)
+		decision.ProposedInstruction = stringPointer(instruction)
+	}
+
+	planGoal := ""
+	if plan != nil && plan.CandidatePlanGoal != nil {
+		planGoal = strings.TrimSpace(*plan.CandidatePlanGoal)
+	} else if gate.PendingProposal != nil {
+		planGoal = strings.TrimSpace(gate.PendingProposal.PlanGoal)
+	}
+	if planGoal != "" {
+		decision.CandidatePlanGoal = stringPointer(planGoal)
+		decision.ProposedPlanGoal = stringPointer(planGoal)
+	}
+}
+
+// decisionForWorkflowPlanner 基于 action gate 归一化 planner 可见的 workflow promotion 输入。
+func decisionForWorkflowPlanner(decision *DeliberationDecision, gate ActionGateDecision) *DeliberationDecision {
+	cloned := &DeliberationDecision{
+		RequestKind:         "workflow_command",
+		ResponseMode:        ResponseModePlanThenAnswer,
+		ConversationMode:    "execute",
+		RequestedNextStep:   "promote_to_workflow",
+		ProposalReady:       true,
+		ChatFulfillable:     false,
+		WorkflowCommitment:  true,
+		EvidenceSufficiency: "sufficient",
+		Confidence:          1,
+		Reasons:             []string{"action gate allowed workflow promotion"},
+	}
+	if decision != nil {
+		*cloned = *decision
+		cloned.ClarificationQuestion = normalizeOptionalText(decision.ClarificationQuestion)
+		cloned.CandidateTaskInstruction = normalizeOptionalText(decision.CandidateTaskInstruction)
+		cloned.CandidatePlanGoal = normalizeOptionalText(decision.CandidatePlanGoal)
+		cloned.ProposedInstruction = normalizeOptionalText(decision.ProposedInstruction)
+		cloned.ProposedPlanGoal = normalizeOptionalText(decision.ProposedPlanGoal)
+		cloned.Reasons = normalizeDecisionReasons(decision.Reasons)
+		cloned.ResponseMode = ResponseModePlanThenAnswer
+		cloned.ConversationMode = "execute"
+		cloned.RequestedNextStep = "promote_to_workflow"
+		cloned.ProposalReady = true
+		cloned.ChatFulfillable = false
+		cloned.WorkflowCommitment = true
+		cloned.AwaitingAuthorization = false
+	}
+	if gate.PendingProposal != nil {
+		cloned.CandidateTaskInstruction = stringPointer(strings.TrimSpace(gate.PendingProposal.Instruction))
+		cloned.CandidatePlanGoal = normalizeOptionalText(stringPointer(strings.TrimSpace(gate.PendingProposal.PlanGoal)))
+		cloned.ProposedInstruction = normalizeOptionalText(stringPointer(strings.TrimSpace(gate.PendingProposal.Instruction)))
+		cloned.ProposedPlanGoal = normalizeOptionalText(stringPointer(strings.TrimSpace(gate.PendingProposal.PlanGoal)))
+	}
+	return cloned
+}
+
+// buildProposalAuthorizationQuestion 根据 pending proposal 生成统一的确认问题，避免 responder 再猜一遍当前该确认什么。
+func buildProposalAuthorizationQuestion(proposal *SnapshotPendingProposal) string {
+	if proposal == nil || strings.TrimSpace(proposal.Instruction) == "" {
+		return "要不要我按这个方案继续执行？"
+	}
+
+	return "我建议这样处理：" + strings.TrimSpace(proposal.Instruction) + "。要不要我按这个方案执行？"
 }
 
 // preparedTurnContext 归拢preparedTurn所需的上下文依赖，避免调用方手工拼装。
@@ -1881,19 +2215,10 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 	}
 
 	runtimeState := s.stateBuilder.Build(input.content, replyContext)
-	decision, policy, err := s.deliberateTurn(ctx, runtimeState)
+	turnEvaluation, err := s.evaluateAdvisorTurn(ctx, runtimeState)
 	if err != nil {
 		return err
 	}
-	planDecision, err := s.planWorkflow(ctx, runtimeState, decision, policy)
-	if err != nil {
-		return err
-	}
-	verificationDecision, err := s.verifyWorkflow(ctx, runtimeState, decision, policy, planDecision)
-	if err != nil {
-		return err
-	}
-	replyDecision := decisionForReply(decision, policy, planDecision, verificationDecision)
 	var correctionSignal *RuntimeCorrectionSignal
 	if runtimeState.PendingTaskSuggestion != nil {
 		correctionSignal = DetectExplicitWorkflowCorrection(input.content)
@@ -1901,11 +2226,13 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 	turnBuild := &replyBuildResult{
 		ReplyContext:                   replyContext,
 		RuntimeState:                   runtimeState,
-		Decision:                       decision,
-		Policy:                         policy,
-		PlanDecision:                   planDecision,
-		VerificationDecision:           verificationDecision,
-		ReplyDecision:                  replyDecision,
+		Decision:                       turnEvaluation.Decision,
+		Policy:                         turnEvaluation.Policy,
+		PendingResolution:              turnEvaluation.PendingResolution,
+		ActionGate:                     turnEvaluation.ActionGate,
+		PlanDecision:                   turnEvaluation.PlanDecision,
+		VerificationDecision:           turnEvaluation.VerificationDecision,
+		ReplyDecision:                  turnEvaluation.ReplyDecision,
 		PendingSuggestion:              clonePendingTaskSuggestion(runtimeState.PendingTaskSuggestion),
 		PreviousClarificationMessageID: latestClarificationPromptMessageID(replyHistory),
 		CorrectionSignal:               correctionSignal,
@@ -1942,6 +2269,9 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 			return err
 		}
 		if err := s.projectReplyGrounding(ctx, input.sessionID, replyContext); err != nil {
+			return err
+		}
+		if err := s.projectReplyAdvisorState(ctx, input.sessionID, turnBuild, messages); err != nil {
 			return err
 		}
 		if err := s.recordRuntimeLearningForTurn(ctx, turnBuild, messages); err != nil {
@@ -1987,6 +2317,9 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		if err := s.projectReplyGrounding(ctx, input.sessionID, replyContext); err != nil {
 			return err
 		}
+		if err := s.projectReplyAdvisorState(ctx, input.sessionID, turnBuild, messages); err != nil {
+			return err
+		}
 		if err := s.recordRuntimeLearningForTurn(ctx, turnBuild, messages); err != nil {
 			return err
 		}
@@ -2007,7 +2340,8 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		History:                  replyContext.History,
 		Message:                  input.content,
 		Resource:                 replyContext.ActiveResource,
-		Decision:                 replyDecision,
+		CurrentDocument:          replyContext.CurrentDocument,
+		Decision:                 turnEvaluation.ReplyDecision,
 	})
 	if err != nil {
 		return mapAssistantStreamError(err)
@@ -2052,8 +2386,11 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 			result = finalResult
 		}
 	}
-
-	assistantInputs, err := buildAssistantReplyInputsFromPolicy(result, replyDecision, policy, runtimeState.ActiveResource)
+	outcome, err := BuildAssistantOutcome(result, turnEvaluation.ReplyDecision, turnEvaluation.ActionGate, runtimeState.ActiveResource)
+	if err != nil {
+		return NewStreamError(StreamErrorCodeEmptyReply, "本轮没有生成可展示内容。", err)
+	}
+	assistantInputs, err := RenderAssistantOutcome(outcome, replyContext.CurrentDocument != nil && replyContext.CurrentDocument.Ready)
 	if err != nil {
 		return NewStreamError(StreamErrorCodeEmptyReply, "本轮没有生成可展示内容。", err)
 	}
@@ -2069,6 +2406,9 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		return err
 	}
 	if err := s.projectReplyGrounding(ctx, input.sessionID, replyContext); err != nil {
+		return err
+	}
+	if err := s.projectReplyAdvisorState(ctx, input.sessionID, turnBuild, messages); err != nil {
 		return err
 	}
 	if err := s.recordRuntimeLearningForTurn(ctx, turnBuild, messages); err != nil {
@@ -2259,7 +2599,8 @@ func (s *Service) loadReplyContext(
 	currentMessage string,
 ) (*ReplyContext, error) {
 	if s.contextLoader == nil {
-		s.contextLoader = NewContextLoader(snapshotReaderFromProjector(s.projector), s.retriever, s.repo)
+		s.contextLoader = NewContextLoader(snapshotReaderFromProjector(s.projector), s.retriever, s.repo).
+			WithCurrentDocumentLoader(s.currentDocuments)
 	}
 
 	return s.contextLoader.LoadForReply(ctx, sessionID, history, currentMessage)
@@ -2271,9 +2612,18 @@ func (s *Service) repairReplyContext(ctx context.Context, currentMessage string,
 		return nil, nil
 	}
 	intent := ClassifyReadIntent(currentMessage)
-	directAccessEnabled := s != nil && s.sectionLocator != nil && s.sectionReader != nil
+	directAccessEnabled := s != nil && ((s.targetResolver != nil && s.nodeReader != nil) || (s.sectionLocator != nil && s.sectionReader != nil))
 
-	enriched, err := s.enrichReplyContextWithCanonicalRead(ctx, currentMessage, intent, replyContext)
+	enriched, err := s.enrichReplyContextWithNodeRead(currentMessage, intent, replyContext)
+	if err != nil {
+		return nil, err
+	}
+	replyContext = enriched
+	if strings.TrimSpace(replyContext.CurrentFileFailureReply) != "" || replyContext.NodeRead != nil {
+		return replyContext, nil
+	}
+
+	enriched, err = s.enrichReplyContextWithCanonicalRead(ctx, currentMessage, intent, replyContext)
 	if err != nil {
 		return nil, err
 	}
@@ -2293,7 +2643,7 @@ func (s *Service) repairReplyContext(ctx context.Context, currentMessage string,
 		return replyContext, nil
 	}
 	if s.retriever == nil {
-		if directAccessEnabled && shouldReturnCurrentFileFailure(intent, replyContext) {
+		if directAccessEnabled && shouldReturnCurrentFileFailure(currentMessage, intent, replyContext) {
 			replyContext.CurrentFileFailureReply = buildCurrentFileFailureReply(currentMessage)
 		}
 
@@ -2319,7 +2669,7 @@ func (s *Service) repairReplyContext(ctx context.Context, currentMessage string,
 
 	repairQuery := buildCurrentFileFallbackQuery(currentMessage, replyContext)
 	if strings.TrimSpace(repairQuery) == "" {
-		if shouldReturnCurrentFileFailure(intent, replyContext) {
+		if shouldReturnCurrentFileFailure(currentMessage, intent, replyContext) {
 			replyContext.CurrentFileFailureReply = buildCurrentFileFailureReply(currentMessage)
 		}
 
@@ -2331,7 +2681,7 @@ func (s *Service) repairReplyContext(ctx context.Context, currentMessage string,
 		return nil, err
 	}
 	if len(repairedCitations) == 0 {
-		if shouldReturnCurrentFileFailure(intent, replyContext) {
+		if shouldReturnCurrentFileFailure(currentMessage, intent, replyContext) {
 			replyContext.CurrentFileFailureReply = buildCurrentFileFailureReply(currentMessage)
 		}
 
@@ -2351,7 +2701,7 @@ func (s *Service) repairReplyContext(ctx context.Context, currentMessage string,
 		Citations:      replyContext.Citations,
 		CanonicalRead:  replyContext.CanonicalRead,
 	})
-	if !ok && shouldReturnCurrentFileFailure(intent, replyContext) {
+	if !ok && shouldReturnCurrentFileFailure(currentMessage, intent, replyContext) {
 		replyContext.CurrentFileFailureReply = buildCurrentFileFailureReply(currentMessage)
 	}
 
@@ -2389,7 +2739,7 @@ func (s *Service) enrichReplyContextWithCanonicalRead(
 	if s == nil || s.sectionLocator == nil || s.sectionReader == nil || replyContext == nil || replyContext.ActiveResource == nil {
 		return replyContext, nil
 	}
-	if !requiresCanonicalCurrentFileRead(intent) || replyContext.CanonicalRead != nil {
+	if !requiresCanonicalCurrentFileRead(currentMessage, intent, replyContext) || replyContext.CanonicalRead != nil {
 		return replyContext, nil
 	}
 
@@ -2432,7 +2782,7 @@ func (s *Service) enrichReplyContextFromFallbackCitations(
 	intent ReadIntent,
 	replyContext *ReplyContext,
 ) (*ReplyContext, error) {
-	if s == nil || s.sectionReader == nil || replyContext == nil || !requiresCanonicalCurrentFileRead(intent) {
+	if s == nil || s.sectionReader == nil || replyContext == nil || !requiresCanonicalCurrentFileRead(currentMessage, intent, replyContext) {
 		return replyContext, nil
 	}
 	if len(replyContext.Citations) == 0 {
@@ -2472,6 +2822,67 @@ func (s *Service) enrichReplyContextFromFallbackCitations(
 	}, readResult)
 }
 
+func (s *Service) enrichReplyContextWithNodeRead(
+	currentMessage string,
+	intent ReadIntent,
+	replyContext *ReplyContext,
+) (*ReplyContext, error) {
+	if s == nil || s.targetResolver == nil || s.nodeReader == nil || replyContext == nil || replyContext.ActiveResource == nil || replyContext.CurrentDocument == nil || !replyContext.CurrentDocument.Ready {
+		return replyContext, nil
+	}
+	if !requiresCanonicalCurrentFileRead(currentMessage, intent, replyContext) || replyContext.NodeRead != nil {
+		return replyContext, nil
+	}
+
+	resolved, err := s.targetResolver.Resolve(ResolveTargetInput{
+		Message:  currentMessage,
+		Document: replyContext.CurrentDocument,
+		Snapshot: replyContext.Snapshot,
+	})
+	if err != nil {
+		if errors.Is(err, ErrTargetNodeNotFound) {
+			if shouldReturnCurrentFileFailure(currentMessage, intent, replyContext) {
+				replyContext.CurrentFileFailureReply = buildCurrentFileFailureReply(currentMessage)
+			}
+			return replyContext, nil
+		}
+
+		return nil, err
+	}
+	if resolved == nil {
+		return replyContext, nil
+	}
+
+	nodeRead, err := s.nodeReader.Read(NodeReadInput{
+		Document: replyContext.CurrentDocument,
+		Resolved: resolved,
+	})
+	if err != nil {
+		if errors.Is(err, ErrCanonicalReadUnavailable) {
+			if shouldReturnCurrentFileFailure(currentMessage, intent, replyContext) {
+				replyContext.CurrentFileFailureReply = buildCurrentFileFailureReply(currentMessage)
+			}
+			return replyContext, nil
+		}
+
+		return nil, err
+	}
+	if nodeRead == nil {
+		return replyContext, nil
+	}
+
+	replyContext.ResolvedNode = resolved
+	replyContext.NodeRead = nodeRead
+	replyContext.GroundedTarget = &ResolvedReference{
+		SectionID:   strings.TrimSpace(resolved.SectionID),
+		SectionType: strings.TrimSpace(string(resolved.NodeKind)),
+		EntityName:  strings.TrimSpace(resolved.EntityName),
+		Reason:      strings.TrimSpace(resolved.Reason),
+	}
+
+	return applyCanonicalReadToReplyContext(currentMessage, replyContext, nil, canonicalReadResultFromNodeRead(replyContext.ActiveResource, resolved, nodeRead))
+}
+
 // applyCanonicalReadToReplyContext 把 canonical read 结果回填到 reply context，供 responder 和 evidence gate 共用。
 func applyCanonicalReadToReplyContext(
 	currentMessage string,
@@ -2485,6 +2896,14 @@ func applyCanonicalReadToReplyContext(
 
 	replyContext.CanonicalRead = readResult
 	replyContext.CurrentFileFailureReply = ""
+	if replyContext.ResolvedNode != nil && replyContext.GroundedTarget == nil && readResult.Mode == CanonicalReadModeSection {
+		replyContext.GroundedTarget = &ResolvedReference{
+			SectionID:   firstNonEmpty(strings.TrimSpace(replyContext.ResolvedNode.SectionID), strings.TrimSpace(readResult.SectionID)),
+			SectionType: strings.TrimSpace(string(replyContext.ResolvedNode.NodeKind)),
+			EntityName:  strings.TrimSpace(replyContext.ResolvedNode.EntityName),
+			Reason:      strings.TrimSpace(replyContext.ResolvedNode.Reason),
+		}
+	}
 	if located != nil && replyContext.GroundedTarget == nil && readResult.Mode == CanonicalReadModeSection {
 		replyContext.GroundedTarget = &ResolvedReference{
 			SectionID:   strings.TrimSpace(readResult.SectionID),
@@ -2492,10 +2911,11 @@ func applyCanonicalReadToReplyContext(
 			Reason:      strings.TrimSpace(located.Reason),
 		}
 	}
-	if shouldBuildCanonicalAnalysisContext(currentMessage) {
+	if shouldBuildCanonicalAnalysisContext(currentMessage, replyContext) {
 		result, err := BuildGroundedAnalysisInput(GroundedAnalysisInput{
-			Message:    currentMessage,
-			ReadResult: *readResult,
+			Message:      currentMessage,
+			ResolvedNode: replyContext.ResolvedNode,
+			ReadResult:   *readResult,
 		})
 		if err != nil {
 			if errors.Is(err, ErrCanonicalReadUnavailable) {
@@ -2512,6 +2932,69 @@ func applyCanonicalReadToReplyContext(
 	return replyContext, nil
 }
 
+func canonicalReadResultFromNodeRead(
+	resource *resourceContext,
+	resolved *ResolvedNode,
+	result *NodeReadResult,
+) *CanonicalReadResult {
+	if result == nil {
+		return nil
+	}
+
+	resourceID := ""
+	if resource != nil {
+		resourceID = strings.TrimSpace(resource.ID)
+	}
+
+	switch result.Mode {
+	case NodeReadModeNode:
+		sectionID := ""
+		if resolved != nil {
+			sectionID = strings.TrimSpace(resolved.SectionID)
+		}
+		return &CanonicalReadResult{
+			Mode:         CanonicalReadModeSection,
+			ResourceID:   resourceID,
+			SectionID:    sectionID,
+			SectionType:  strings.TrimSpace(string(result.NodeKind)),
+			SectionTitle: strings.TrimSpace(result.Title),
+			Content:      strings.TrimSpace(result.Content),
+		}
+	case NodeReadModeList:
+		items := make([]CanonicalReadSectionItem, 0, len(result.Nodes))
+		for _, node := range result.Nodes {
+			items = append(items, CanonicalReadSectionItem{
+				SectionID:    strings.TrimSpace(node.NodeID),
+				SectionType:  strings.TrimSpace(string(node.NodeKind)),
+				SectionTitle: strings.TrimSpace(node.Title),
+				Ordinal:      node.Ordinal,
+				EntityName:   strings.TrimSpace(node.Title),
+			})
+		}
+		return &CanonicalReadResult{
+			Mode:       CanonicalReadModeSectionList,
+			ResourceID: resourceID,
+			Sections:   items,
+		}
+	case NodeReadModeDocument:
+		sectionID := ""
+		sectionType := string(OutlineNodeDocument)
+		if resolved != nil {
+			sectionID = strings.TrimSpace(resolved.SectionID)
+			sectionType = strings.TrimSpace(string(resolved.NodeKind))
+		}
+		return &CanonicalReadResult{
+			Mode:        CanonicalReadModeDocument,
+			ResourceID:  resourceID,
+			SectionID:   sectionID,
+			SectionType: sectionType,
+			Content:     strings.TrimSpace(result.Content),
+		}
+	default:
+		return nil
+	}
+}
+
 // buildCurrentFileFallbackQuery 组装当前文件内的一次 fallback 检索查询，避免退回全局问答模式。
 func buildCurrentFileFallbackQuery(currentMessage string, replyContext *ReplyContext) string {
 	if query := strings.TrimSpace(buildRepairRetrievalQuery(currentMessage, replyContext)); query != "" {
@@ -2522,7 +3005,17 @@ func buildCurrentFileFallbackQuery(currentMessage string, replyContext *ReplyCon
 }
 
 // requiresCanonicalCurrentFileRead 判断当前 intent 是否需要“先读 canonical 内容再继续”。
-func requiresCanonicalCurrentFileRead(intent ReadIntent) bool {
+func requiresCanonicalCurrentFileRead(currentMessage string, intent ReadIntent, replyContext *ReplyContext) bool {
+	switch documentOperationForReplyContext(currentMessage, replyContext) {
+	case DocumentOperationRead, DocumentOperationAnalyze, DocumentOperationTransformInChat, DocumentOperationWorkflow:
+		return true
+	}
+
+	return requiresCanonicalCurrentFileReadByIntent(intent)
+}
+
+// requiresCanonicalCurrentFileReadByIntent 为旧的 read intent 分支保留最小兼容兜底。
+func requiresCanonicalCurrentFileReadByIntent(intent ReadIntent) bool {
 	switch intent.Kind {
 	case ReadIntentListSections, ReadIntentLocateOrdinal, ReadIntentExcerptSection, ReadIntentAggregateAttribute, ReadIntentAnalyzeSection, ReadIntentTransformSection:
 		return true
@@ -2532,7 +3025,12 @@ func requiresCanonicalCurrentFileRead(intent ReadIntent) bool {
 }
 
 // shouldBuildCanonicalAnalysisContext 判断当前请求是否需要把 canonical 内容进一步包装成分析提示上下文。
-func shouldBuildCanonicalAnalysisContext(currentMessage string) bool {
+func shouldBuildCanonicalAnalysisContext(currentMessage string, replyContext *ReplyContext) bool {
+	switch documentOperationForReplyContext(currentMessage, replyContext) {
+	case DocumentOperationAnalyze, DocumentOperationTransformInChat, DocumentOperationWorkflow:
+		return true
+	}
+
 	intent := ClassifyReadIntent(currentMessage)
 	switch intent.Kind {
 	case ReadIntentAggregateAttribute, ReadIntentAnalyzeSection, ReadIntentTransformSection:
@@ -2543,8 +3041,8 @@ func shouldBuildCanonicalAnalysisContext(currentMessage string) bool {
 }
 
 // shouldReturnCurrentFileFailure 判断当前轮是否应在当前文件 direct access 失败后直接给出显式失败语义。
-func shouldReturnCurrentFileFailure(intent ReadIntent, replyContext *ReplyContext) bool {
-	return replyContext != nil && replyContext.ActiveResource != nil && requiresCanonicalCurrentFileRead(intent)
+func shouldReturnCurrentFileFailure(currentMessage string, intent ReadIntent, replyContext *ReplyContext) bool {
+	return replyContext != nil && replyContext.ActiveResource != nil && requiresCanonicalCurrentFileRead(currentMessage, intent, replyContext)
 }
 
 // buildCurrentFileFailureReply 返回当前文件 direct access 失败时的统一显式失败文案。
@@ -2555,6 +3053,137 @@ func buildCurrentFileFailureReply(currentMessage string) string {
 	}
 
 	return "我还没能在当前文件里稳定定位到你说的目标内容，请直接指出项目名、章节名，或说明是第几个项目。"
+}
+
+// documentOperationForReplyContext 根据当前 reply context 推断本轮如何使用当前文件。
+func documentOperationForReplyContext(currentMessage string, replyContext *ReplyContext) DocumentOperation {
+	if replyContext == nil {
+		return DocumentOperationUnknown
+	}
+
+	return ClassifyDocumentOperation(DocumentOperationInput{
+		Message:         currentMessage,
+		CurrentDocument: replyContext.CurrentDocument,
+	})
+}
+
+// projectReplyAdvisorState 把当前轮 advisor state 投影回快照，确保下一轮 deterministic resolver 有稳定真源可读。
+func (s *Service) projectReplyAdvisorState(
+	ctx context.Context,
+	sessionID string,
+	build *replyBuildResult,
+	messages []postgres.AssistantMessage,
+) error {
+	if s == nil || s.projector == nil || build == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+
+	return s.projector.ProjectAdvisorState(ctx, buildAdvisorStateProjection(sessionID, build, messages))
+}
+
+// buildAdvisorStateProjection 组装当前轮 advisor state 投影，统一非流式与流式的状态落库口径。
+func buildAdvisorStateProjection(
+	sessionID string,
+	build *replyBuildResult,
+	messages []postgres.AssistantMessage,
+) AdvisorStateProjection {
+	projection := AdvisorStateProjection{
+		SessionID:       strings.TrimSpace(sessionID),
+		AdvisoryContext: cloneAdvisoryContext(build.RuntimeState.AdvisoryContext),
+		ExecutionState:  cloneExecutionState(build.RuntimeState.ExecutionState),
+	}
+
+	assistantMessageID := assistantTextMessageID(messages)
+	userMessageID := userTextMessageID(messages)
+
+	if build.ActionGate.PendingClarification != nil {
+		clarification := clonePendingClarification(build.ActionGate.PendingClarification)
+		if clarification != nil {
+			if strings.TrimSpace(clarification.Question) == "" && build.ReplyDecision != nil && build.ReplyDecision.ClarificationQuestion != nil {
+				clarification.Question = strings.TrimSpace(*build.ReplyDecision.ClarificationQuestion)
+			}
+			if strings.TrimSpace(clarification.AskedMessageID) == "" {
+				clarification.AskedMessageID = assistantMessageID
+			}
+			projection.PendingClarification = clarification
+		}
+	} else if build.ReplyDecision != nil && build.ReplyDecision.NeedsClarification && build.ReplyDecision.ClarificationQuestion != nil {
+		projection.PendingClarification = &SnapshotPendingClarification{
+			Kind:           "clarification",
+			Question:       strings.TrimSpace(*build.ReplyDecision.ClarificationQuestion),
+			AskedMessageID: assistantMessageID,
+		}
+	}
+
+	if build.ActionGate.PendingProposal != nil {
+		proposal := clonePendingProposal(build.ActionGate.PendingProposal)
+		if proposal != nil {
+			if build.ReplyDecision != nil && build.ReplyDecision.CandidateTaskInstruction != nil {
+				if revised := strings.TrimSpace(*build.ReplyDecision.CandidateTaskInstruction); revised != "" {
+					proposal.Instruction = revised
+				}
+			}
+			if build.ReplyDecision != nil && build.ReplyDecision.CandidatePlanGoal != nil {
+				if revisedGoal := strings.TrimSpace(*build.ReplyDecision.CandidatePlanGoal); revisedGoal != "" {
+					proposal.PlanGoal = revisedGoal
+				}
+			}
+			if strings.TrimSpace(proposal.ProposalID) == "" {
+				if build.RuntimeState.PendingProposal != nil && strings.TrimSpace(build.RuntimeState.PendingProposal.ProposalID) != "" {
+					proposal.ProposalID = strings.TrimSpace(build.RuntimeState.PendingProposal.ProposalID)
+				} else {
+					proposal.ProposalID = assistantMessageID
+				}
+			}
+			if strings.TrimSpace(proposal.ProposedMessageID) == "" {
+				proposal.ProposedMessageID = assistantMessageID
+			}
+			projection.PendingProposal = proposal
+		}
+	}
+
+	if build.ActionGate.AuthorizationState != nil {
+		authorization := cloneAuthorizationState(build.ActionGate.AuthorizationState)
+		if authorization != nil {
+			if strings.TrimSpace(authorization.GrantedByMessageID) == "" {
+				authorization.GrantedByMessageID = userMessageID
+			}
+			if strings.TrimSpace(authorization.GrantedForProposalID) == "" && projection.PendingProposal != nil {
+				authorization.GrantedForProposalID = strings.TrimSpace(projection.PendingProposal.ProposalID)
+			}
+			projection.AuthorizationState = authorization
+		}
+	}
+
+	if build.ActionGate.ConversationMode == "advise" {
+		projection.PendingClarification = nil
+		projection.PendingProposal = nil
+		projection.AuthorizationState = nil
+	}
+
+	return projection
+}
+
+// assistantTextMessageID 提取本轮新写入 assistant 文本消息的 id，供 advisor state 建立 asked/proposed 关联。
+func assistantTextMessageID(messages []postgres.AssistantMessage) string {
+	for _, message := range messages {
+		if message.Role == RoleAssistant && message.Kind == KindText {
+			return strings.TrimSpace(message.ID)
+		}
+	}
+
+	return ""
+}
+
+// userTextMessageID 提取本轮新写入 user 文本消息的 id；流式路径会返回空串，因为用户消息已提前持久化。
+func userTextMessageID(messages []postgres.AssistantMessage) string {
+	for _, message := range messages {
+		if message.Role == RoleUser && message.Kind == KindText {
+			return strings.TrimSpace(message.ID)
+		}
+	}
+
+	return ""
 }
 
 // projectReplyGrounding 把 `Replygrounding` 投影回助手状态，保持后续读取口径一致。
@@ -2573,12 +3202,15 @@ func buildGroundingProjection(sessionID string, replyContext *ReplyContext) Grou
 		LastCitationWindows:    buildCitationWindows(replyContext.Citations),
 		LastEnumeratedEntities: buildEnumeratedEntities(replyContext),
 		OrdinalReferenceFrame:  buildOrdinalReferenceFrame(replyContext),
+		NodeReferenceFrame:     buildNodeReferenceFrameForReplyContext(replyContext),
 	}
 
 	if replyContext != nil && replyContext.GroundedTarget != nil {
 		projection.ActiveSectionID = strings.TrimSpace(replyContext.GroundedTarget.SectionID)
 		projection.ActiveSectionType = strings.TrimSpace(replyContext.GroundedTarget.SectionType)
 		projection.ActiveEntityName = strings.TrimSpace(replyContext.GroundedTarget.EntityName)
+		projection.ActiveNodeID = strings.TrimSpace(replyContext.GroundedTarget.SectionID)
+		projection.ActiveNodeKind = strings.TrimSpace(replyContext.GroundedTarget.SectionType)
 	}
 	if projection.ActiveSectionID == "" && len(replyContext.Citations) > 0 {
 		first := replyContext.Citations[0]
@@ -2625,6 +3257,19 @@ func buildEnumeratedEntities(replyContext *ReplyContext) []postgres.EnumeratedEn
 	if replyContext == nil {
 		return nil
 	}
+	if replyContext.NodeRead != nil && replyContext.NodeRead.Mode == NodeReadModeList && len(replyContext.NodeRead.Nodes) > 0 {
+		entities := make([]postgres.EnumeratedEntity, 0, len(replyContext.NodeRead.Nodes))
+		for index, node := range replyContext.NodeRead.Nodes {
+			entities = append(entities, postgres.EnumeratedEntity{
+				SectionID:   strings.TrimSpace(node.NodeID),
+				SectionType: strings.TrimSpace(string(node.NodeKind)),
+				EntityName:  strings.TrimSpace(node.Title),
+				Ordinal:     index + 1,
+			})
+		}
+
+		return entities
+	}
 
 	entities := make([]postgres.EnumeratedEntity, 0, len(replyContext.Citations))
 	seen := make(map[string]struct{}, len(replyContext.Citations))
@@ -2663,6 +3308,35 @@ func buildOrdinalReferenceFrame(replyContext *ReplyContext) []postgres.OrdinalRe
 	}
 
 	return frame
+}
+
+func buildNodeReferenceFrameForReplyContext(replyContext *ReplyContext) []NodeReference {
+	if replyContext == nil {
+		return nil
+	}
+	if replyContext.NodeRead != nil && replyContext.NodeRead.Mode == NodeReadModeList && len(replyContext.NodeRead.Nodes) > 0 {
+		frame := make([]NodeReference, 0, len(replyContext.NodeRead.Nodes))
+		for index, node := range replyContext.NodeRead.Nodes {
+			frame = append(frame, NodeReference{
+				Ordinal:    index + 1,
+				NodeID:     strings.TrimSpace(node.NodeID),
+				NodeKind:   strings.TrimSpace(string(node.NodeKind)),
+				EntityName: strings.TrimSpace(node.Title),
+			})
+		}
+
+		return frame
+	}
+	if replyContext.ResolvedNode != nil && replyContext.ResolvedNode.Mode == ResolvedNodeModeNode {
+		return []NodeReference{{
+			Ordinal:    1,
+			NodeID:     strings.TrimSpace(replyContext.ResolvedNode.NodeID),
+			NodeKind:   strings.TrimSpace(string(replyContext.ResolvedNode.NodeKind)),
+			EntityName: strings.TrimSpace(replyContext.ResolvedNode.EntityName),
+		}}
+	}
+
+	return nil
 }
 
 // deriveEntityName 从已有上下文推导 `EntityName`，让后续链路只消费归一化结果。

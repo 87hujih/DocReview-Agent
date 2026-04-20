@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -16,6 +17,7 @@ type sessionContextSnapshotProjectorRepo interface {
 	UpsertLatestTask(ctx context.Context, params postgres.UpsertLatestTaskParams) error
 	ClearPendingTaskSuggestion(ctx context.Context, sessionID string) error
 	UpdateGroundingState(ctx context.Context, params postgres.UpdateGroundingStateParams) error
+	UpdateAdvisorState(ctx context.Context, params postgres.UpdateAdvisorStateParams) error
 }
 
 type sessionContextSnapshotTaskStatusRepo interface {
@@ -51,10 +53,23 @@ type GroundingStateProjection struct {
 	SessionID              string
 	ActiveSectionID        string
 	ActiveSectionType      string
+	ActiveNodeID           string
+	ActiveNodeKind         string
 	ActiveEntityName       string
 	LastCitationWindows    []postgres.CitationWindow
 	LastEnumeratedEntities []postgres.EnumeratedEntity
 	OrdinalReferenceFrame  []postgres.OrdinalReference
+	NodeReferenceFrame     []NodeReference
+}
+
+// AdvisorStateProjection 描述顾问型运行时状态投影。
+type AdvisorStateProjection struct {
+	SessionID            string
+	PendingClarification *SnapshotPendingClarification
+	AdvisoryContext      *SnapshotAdvisoryContext
+	PendingProposal      *SnapshotPendingProposal
+	AuthorizationState   *SnapshotAuthorizationState
+	ExecutionState       *SnapshotExecutionState
 }
 
 // SessionContextProjector 负责把结构化事件折叠为会话上下文快照。
@@ -167,14 +182,67 @@ func (p *SessionContextProjector) ProjectGroundingState(ctx context.Context, pro
 		return fmt.Errorf("session_id 不能为空")
 	}
 
+	activeID := strings.TrimSpace(projection.ActiveSectionID)
+	activeKind := strings.TrimSpace(projection.ActiveSectionType)
+	ordinalFrame := projection.OrdinalReferenceFrame
+	if len(ordinalFrame) == 0 && len(projection.NodeReferenceFrame) > 0 {
+		ordinalFrame = make([]postgres.OrdinalReference, 0, len(projection.NodeReferenceFrame))
+		for _, reference := range projection.NodeReferenceFrame {
+			ordinalFrame = append(ordinalFrame, postgres.OrdinalReference{
+				Ordinal:     reference.Ordinal,
+				SectionID:   strings.TrimSpace(reference.NodeID),
+				SectionType: strings.TrimSpace(reference.NodeKind),
+				EntityName:  strings.TrimSpace(reference.EntityName),
+			})
+		}
+	}
+
 	return p.repo.UpdateGroundingState(ctx, postgres.UpdateGroundingStateParams{
 		SessionID:              trimmedSessionID,
-		ActiveSectionID:        optionalStringPointer(projection.ActiveSectionID),
-		ActiveSectionType:      optionalStringPointer(projection.ActiveSectionType),
+		ActiveSectionID:        optionalStringPointer(activeID),
+		ActiveSectionType:      optionalStringPointer(activeKind),
 		ActiveEntityName:       optionalStringPointer(projection.ActiveEntityName),
 		LastCitationWindows:    projection.LastCitationWindows,
 		LastEnumeratedEntities: projection.LastEnumeratedEntities,
-		OrdinalReferenceFrame:  projection.OrdinalReferenceFrame,
+		OrdinalReferenceFrame:  ordinalFrame,
+	})
+}
+
+// ProjectAdvisorState 折叠顾问型运行时状态，保持会话内待确认语义可恢复。
+func (p *SessionContextProjector) ProjectAdvisorState(ctx context.Context, projection AdvisorStateProjection) error {
+	trimmedSessionID := strings.TrimSpace(projection.SessionID)
+	if trimmedSessionID == "" {
+		return fmt.Errorf("session_id 不能为空")
+	}
+
+	pendingClarificationJSON, err := marshalProjectionJSONObject(projection.PendingClarification)
+	if err != nil {
+		return err
+	}
+	advisoryContextJSON, err := marshalProjectionJSONObject(projection.AdvisoryContext)
+	if err != nil {
+		return err
+	}
+	pendingProposalJSON, err := marshalProjectionJSONObject(projection.PendingProposal)
+	if err != nil {
+		return err
+	}
+	authorizationStateJSON, err := marshalProjectionJSONObject(projection.AuthorizationState)
+	if err != nil {
+		return err
+	}
+	executionStateJSON, err := marshalProjectionJSONObject(projection.ExecutionState)
+	if err != nil {
+		return err
+	}
+
+	return p.repo.UpdateAdvisorState(ctx, postgres.UpdateAdvisorStateParams{
+		SessionID:                trimmedSessionID,
+		PendingClarificationJSON: pendingClarificationJSON,
+		AdvisoryContextJSON:      advisoryContextJSON,
+		PendingProposalJSON:      pendingProposalJSON,
+		AuthorizationStateJSON:   authorizationStateJSON,
+		ExecutionStateJSON:       executionStateJSON,
 	})
 }
 
@@ -186,4 +254,17 @@ func optionalStringPointer(value string) *string {
 	}
 
 	return &trimmed
+}
+
+// marshalProjectionJSONObject 把可选投影对象编码成 JSON，对 nil 统一写成空对象。
+func marshalProjectionJSONObject(value any) ([]byte, error) {
+	body, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(string(body)) == "" || strings.TrimSpace(string(body)) == "null" {
+		return []byte("{}"), nil
+	}
+
+	return body, nil
 }

@@ -223,6 +223,7 @@ func main() {
 		assistant.WithSessionContextProjector(sessionContextProjector),
 		assistant.WithSectionLocator(assistant.NewSectionLocator(resourceRepo)),
 		assistant.WithSectionReader(assistant.NewSectionReader(resourceRepo)),
+		assistant.WithCurrentDocumentLoader(assistant.NewCurrentDocumentLoader(resourceRepo)),
 		assistant.WithDeterministicReadResponder(assistant.NewDeterministicReadResponder()),
 		assistant.WithRuntimeLearning(runtimeLearning.eventService, runtimeLearning.projector),
 	)

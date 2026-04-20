@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -268,6 +269,60 @@ func TestContextLoaderUsesSummaryAwareRetrievalQuery(t *testing.T) {
 	}
 }
 
+// TestContextLoaderCarriesPendingClarificationAndProposal 验证 loader 能把 advisor state 从快照恢复到回复上下文。
+func TestContextLoaderCarriesPendingClarificationAndProposal(t *testing.T) {
+	retriever := &fakeResourceCitationRetriever{}
+	record := &postgres.SessionContextSnapshotRecord{
+		SessionID:                "session-1",
+		ActiveResourceID:         stringPointer("resource-snapshot"),
+		ActiveResourceTitle:      stringPointer("快照资源"),
+		ActiveResourceSourceType: stringPointer("upload"),
+		ConfirmedConstraintsJSON: []byte("[]"),
+	}
+	mustSetBytesField(t, record, "PendingClarificationJSON", mustMarshalJSON(t, map[string]any{
+		"kind":             "execution_confirmation",
+		"question":         "要不要直接修改？",
+		"asked_message_id": "message-clarify-1",
+		"options":          []string{"先分析", "直接修改"},
+	}))
+	mustSetBytesField(t, record, "PendingProposalJSON", mustMarshalJSON(t, map[string]any{
+		"proposal_id":                      "proposal-1",
+		"instruction":                      "把第三个项目改成问题-动作-结果结构",
+		"plan_goal":                        "产出可执行的简历改写任务",
+		"proposed_message_id":              "message-proposal-1",
+		"requires_explicit_authorization":  true,
+	}))
+	mustSetBytesField(t, record, "AuthorizationStateJSON", mustMarshalJSON(t, map[string]any{
+		"status":                  "pending",
+		"granted_for_proposal_id": "proposal-1",
+		"granted_by_message_id":   "message-authorize-1",
+	}))
+	loader := NewContextLoader(&fakeSessionContextSnapshotReader{record: record}, retriever)
+
+	replyContext, err := loader.LoadForReply(context.Background(), "session-1", nil, "按你的建议改")
+	if err != nil {
+		t.Fatalf("load for reply: %v", err)
+	}
+	if replyContext == nil || replyContext.Snapshot == nil {
+		t.Fatalf("expected reply snapshot, got %#v", replyContext)
+	}
+
+	pendingClarification := mustReadPointerStructField(t, replyContext.Snapshot, "PendingClarification")
+	if got := mustReadStringField(t, pendingClarification, "Question"); got != "要不要直接修改？" {
+		t.Fatalf("expected clarification question, got %q", got)
+	}
+
+	pendingProposal := mustReadPointerStructField(t, replyContext.Snapshot, "PendingProposal")
+	if got := mustReadStringField(t, pendingProposal, "Instruction"); got != "把第三个项目改成问题-动作-结果结构" {
+		t.Fatalf("expected proposal instruction, got %q", got)
+	}
+
+	authorizationState := mustReadPointerStructField(t, replyContext.Snapshot, "AuthorizationState")
+	if got := mustReadStringField(t, authorizationState, "Status"); got != "pending" {
+		t.Fatalf("expected authorization status %q, got %q", "pending", got)
+	}
+}
+
 // TestContextLoaderFallsBackWhenSummaryMissing 验证`contextLoader`在回退路径下的行为，防止同类回归。
 func TestContextLoaderFallsBackWhenSummaryMissing(t *testing.T) {
 	retriever := &fakeResourceCitationRetriever{}
@@ -328,6 +383,83 @@ func TestContextLoaderFallsBackWhenSummaryMissing(t *testing.T) {
 	}
 }
 
+// TestContextLoaderLoadsCurrentDocumentFromActiveResource 验证 loader 会把当前活跃资源装载成 current document。
+func TestContextLoaderLoadsCurrentDocumentFromActiveResource(t *testing.T) {
+	retriever := &fakeResourceCitationRetriever{}
+	currentFileReader := &fakeCurrentFileSectionReader{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-1",
+			ResourceID: "resource-snapshot",
+			Content:    "这是当前文件全文。",
+		},
+		allSections: []postgres.ResourceSection{
+			{ID: "section-1", ResourceID: "resource-snapshot", VersionID: "version-1", SectionType: "project", SectionOrder: 1, Title: "CampusHub", Content: "项目一正文"},
+		},
+	}
+	loader := NewContextLoader(&fakeSessionContextSnapshotReader{
+		record: &postgres.SessionContextSnapshotRecord{
+			SessionID:                "session-1",
+			ActiveResourceID:         stringPointer("resource-snapshot"),
+			ActiveResourceTitle:      stringPointer("快照资源"),
+			ActiveResourceSourceType: stringPointer("upload"),
+			ConfirmedConstraintsJSON: []byte("[]"),
+		},
+	}, retriever).WithCurrentDocumentLoader(NewCurrentDocumentLoader(currentFileReader))
+
+	replyContext, err := loader.LoadForReply(context.Background(), "session-1", nil, "结合全文分析第三个项目")
+	if err != nil {
+		t.Fatalf("load for reply: %v", err)
+	}
+	if replyContext.CurrentDocument == nil {
+		t.Fatal("expected current document to be loaded")
+	}
+	if replyContext.CurrentDocument.ResourceID != "resource-snapshot" || replyContext.CurrentDocument.VersionID != "version-1" {
+		t.Fatalf("unexpected current document identity: %#v", replyContext.CurrentDocument)
+	}
+	if replyContext.CurrentDocument.FullText != "这是当前文件全文。" {
+		t.Fatalf("expected current document full text, got %q", replyContext.CurrentDocument.FullText)
+	}
+}
+
+// TestContextLoaderDoesNotEagerLoadCitationsWhenCurrentDocumentReady 验证当前文件 ready 时不会默认先打 citation 检索。
+func TestContextLoaderDoesNotEagerLoadCitationsWhenCurrentDocumentReady(t *testing.T) {
+	retriever := &fakeResourceCitationRetriever{
+		result: []citation.Citation{
+			{CitationID: "cite-1", ResourceID: "resource-snapshot", Snippet: "不应被默认加载"},
+		},
+	}
+	currentFileReader := &fakeCurrentFileSectionReader{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-1",
+			ResourceID: "resource-snapshot",
+			Content:    "这是当前文件全文。",
+		},
+	}
+	loader := NewContextLoader(&fakeSessionContextSnapshotReader{
+		record: &postgres.SessionContextSnapshotRecord{
+			SessionID:                "session-1",
+			ActiveResourceID:         stringPointer("resource-snapshot"),
+			ActiveResourceTitle:      stringPointer("快照资源"),
+			ActiveResourceSourceType: stringPointer("upload"),
+			ConfirmedConstraintsJSON: []byte("[]"),
+		},
+	}, retriever).WithCurrentDocumentLoader(NewCurrentDocumentLoader(currentFileReader))
+
+	replyContext, err := loader.LoadForReply(context.Background(), "session-1", nil, "结合全文分析第三个项目")
+	if err != nil {
+		t.Fatalf("load for reply: %v", err)
+	}
+	if replyContext.CurrentDocument == nil || !replyContext.CurrentDocument.Ready {
+		t.Fatalf("expected ready current document, got %#v", replyContext.CurrentDocument)
+	}
+	if retriever.calls != 0 {
+		t.Fatalf("expected eager retrieval to be skipped, got %d calls", retriever.calls)
+	}
+	if len(replyContext.Citations) != 0 {
+		t.Fatalf("expected no eager citations, got %#v", replyContext.Citations)
+	}
+}
+
 // fakeSessionContextSnapshotReader 作为会话上下文快照读取器的测试替身，用于在用例里提供可控的依赖行为。
 type fakeSessionContextSnapshotReader struct {
 	record    *postgres.SessionContextSnapshotRecord
@@ -348,7 +480,38 @@ func (r *fakeSessionContextSnapshotReader) GetBySessionID(_ context.Context, ses
 	}
 
 	cloned := *r.record
+	copyOptionalBytesField(&cloned, r.record, "PendingClarificationJSON")
+	copyOptionalBytesField(&cloned, r.record, "AdvisoryContextJSON")
+	copyOptionalBytesField(&cloned, r.record, "PendingProposalJSON")
+	copyOptionalBytesField(&cloned, r.record, "AuthorizationStateJSON")
+	copyOptionalBytesField(&cloned, r.record, "ExecutionStateJSON")
 	return &cloned, nil
+}
+
+// copyOptionalBytesField 复制可选 JSON 字段；字段尚未实现时保持静默，交由断言阶段报真红灯。
+func copyOptionalBytesField(target any, source any, fieldName string) {
+	targetValue := reflect.ValueOf(target)
+	sourceValue := reflect.ValueOf(source)
+	for targetValue.Kind() == reflect.Pointer {
+		targetValue = targetValue.Elem()
+	}
+	for sourceValue.Kind() == reflect.Pointer {
+		sourceValue = sourceValue.Elem()
+	}
+
+	targetField := targetValue.FieldByName(fieldName)
+	sourceField := sourceValue.FieldByName(fieldName)
+	if !targetField.IsValid() || !sourceField.IsValid() {
+		return
+	}
+	if targetField.Kind() != reflect.Slice || sourceField.Kind() != reflect.Slice {
+		return
+	}
+	if targetField.Type().Elem().Kind() != reflect.Uint8 || sourceField.Type().Elem().Kind() != reflect.Uint8 {
+		return
+	}
+
+	targetField.SetBytes(append([]byte(nil), sourceField.Bytes()...))
 }
 
 // fakeAssistantMessageWindowReader 作为助手消息窗口读取器的测试替身，用于在用例里提供可控的依赖行为。

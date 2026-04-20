@@ -21,6 +21,9 @@ type assistantMessageWindowReader interface {
 type ReplyContext struct {
 	Snapshot                 *SessionContextSnapshot
 	ActiveResource           *resourceContext
+	CurrentDocument          *CurrentDocument
+	ResolvedNode             *ResolvedNode
+	NodeRead                 *NodeReadResult
 	Citations                []citation.Citation
 	GroundedTarget           *ResolvedReference
 	QueryIntent              string
@@ -35,6 +38,7 @@ type ContextLoader struct {
 	snapshots sessionContextSnapshotReader
 	messages  assistantMessageWindowReader
 	retriever resourceCitationRetriever
+	documents currentDocumentLoader
 	queries   *RetrievalQueryBuilder
 }
 
@@ -55,6 +59,16 @@ func NewContextLoader(
 		retriever: retriever,
 		queries:   &RetrievalQueryBuilder{},
 	}
+}
+
+// WithCurrentDocumentLoader 为上下文装载器补充当前文档装载能力。
+func (l *ContextLoader) WithCurrentDocumentLoader(loader currentDocumentLoader) *ContextLoader {
+	if l == nil {
+		return nil
+	}
+
+	l.documents = loader
+	return l
 }
 
 // LoadForReply 优先读取快照；快照不可用时回退到历史扫描。
@@ -84,6 +98,12 @@ func (l *ContextLoader) LoadForReply(
 	}
 	replyContext.ActiveResource = activeResource
 
+	currentDocument, err := l.loadCurrentDocument(ctx, activeResource)
+	if err != nil {
+		return nil, err
+	}
+	replyContext.CurrentDocument = currentDocument
+
 	resolvedReference := ReferenceResolver{}.Resolve(strings.TrimSpace(currentMessage), snapshot)
 	replyContext.GroundedTarget = resolvedReference
 
@@ -99,7 +119,7 @@ func (l *ContextLoader) LoadForReply(
 	}
 	replyContext.QueryIntent = string(knowledgeRetriever.QueryAnalyzer{}.Analyze(searchQuery).Intent)
 
-	citations, err := l.loadResourceCitations(ctx, activeResource, searchQuery)
+	citations, err := l.loadResourceCitations(ctx, activeResource, currentDocument, searchQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -162,9 +182,13 @@ func (l *ContextLoader) resolveActiveResource(
 func (l *ContextLoader) loadResourceCitations(
 	ctx context.Context,
 	resource *resourceContext,
+	currentDocument *CurrentDocument,
 	query string,
 ) ([]citation.Citation, error) {
 	if l == nil || l.retriever == nil || resource == nil {
+		return nil, nil
+	}
+	if currentDocument != nil && currentDocument.Ready {
 		return nil, nil
 	}
 
@@ -174,6 +198,15 @@ func (l *ContextLoader) loadResourceCitations(
 	}
 
 	return l.retriever.SearchByResource(ctx, resource.ID, trimmedQuery, 4)
+}
+
+// loadCurrentDocument 加载当前文件 canonical 文档对象，统一“当前文件可见性”的来源。
+func (l *ContextLoader) loadCurrentDocument(ctx context.Context, resource *resourceContext) (*CurrentDocument, error) {
+	if l == nil || l.documents == nil || resource == nil {
+		return nil, nil
+	}
+
+	return l.documents.Load(ctx, resource)
 }
 
 // resourceContextFromSnapshot 从会话快照提取当前激活资源的上下文信息，供回复阶段直接注入。

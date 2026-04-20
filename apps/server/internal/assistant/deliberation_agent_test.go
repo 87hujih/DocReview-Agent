@@ -147,3 +147,141 @@ func TestDeliberationAgentPromptDoesNotMentionReplyTextGeneration(t *testing.T) 
 		t.Fatalf("expected deliberation prompt to require structured decision JSON, got %q", systemPrompt)
 	}
 }
+
+// TestBuildDeliberationMessagesUsesDocumentNativeRuntimeContext 验证 deliberation prompt 也会消费 document-native 运行时上下文。
+func TestBuildDeliberationMessagesUsesDocumentNativeRuntimeContext(t *testing.T) {
+	messages := buildDeliberationMessages(RuntimeState{
+		Message: "结合全文分析第三个项目",
+		CurrentDocument: &CurrentDocument{
+			ResourceID: "resource-1",
+			VersionID:  "version-1",
+			Title:      "产品经理简历",
+			SourceType: "upload",
+			FullText:   "这是完整正文。",
+			Ready:      true,
+		},
+	})
+
+	if len(messages) == 0 {
+		t.Fatal("expected deliberation messages")
+	}
+	systemPrompt := messages[0].Content
+	if !strings.Contains(systemPrompt, "当前文件 canonical 内容已可访问") {
+		t.Fatalf("expected deliberation prompt to include document-native runtime context, got %q", systemPrompt)
+	}
+}
+
+// TestDeliberationAgentReturnsAdviseModeForAnalysisQuestion 验证分析型问题会返回 advisor 模式语义。
+func TestDeliberationAgentReturnsAdviseModeForAnalysisQuestion(t *testing.T) {
+	agent := newDeliberationAgentWithClient(fakeAssistantLLMClient{
+		generate: func(_ context.Context, _ []*schema.Message) (*schema.Message, error) {
+			return &schema.Message{Content: `{
+				"request_kind":"analysis",
+				"response_mode":"answer_with_grounding",
+				"conversation_mode":"advise",
+				"requested_next_step":"give_recommendations",
+				"proposal_ready":false,
+				"awaiting_authorization":false,
+				"chat_fulfillable":true,
+				"workflow_commitment":false,
+				"needs_clarification":false,
+				"evidence_sufficiency":"sufficient",
+				"confidence":0.82,
+				"reasons":["用户当前仍在分析阶段"]
+			}`}, nil
+		},
+	}, llmclient.Config{TimeoutMS: 1200})
+
+	decision, err := agent.Deliberate(context.Background(), RuntimeState{
+		Message: "第三个项目的问题是什么",
+	})
+	if err != nil {
+		t.Fatalf("deliberate: %v", err)
+	}
+
+	if got := mustReadStringField(t, decision, "ConversationMode"); got != "advise" {
+		t.Fatalf("expected conversation mode %q, got %q", "advise", got)
+	}
+	if got := mustReadStringField(t, decision, "RequestedNextStep"); got != "give_recommendations" {
+		t.Fatalf("expected requested next step %q, got %q", "give_recommendations", got)
+	}
+}
+
+// TestDeliberationAgentReturnsConfirmModeWhenConcreteProposalReady 验证已有明确 proposal 时会返回 confirm 模式语义。
+func TestDeliberationAgentReturnsConfirmModeWhenConcreteProposalReady(t *testing.T) {
+	agent := newDeliberationAgentWithClient(fakeAssistantLLMClient{
+		generate: func(_ context.Context, _ []*schema.Message) (*schema.Message, error) {
+			return &schema.Message{Content: `{
+				"request_kind":"workflow_command",
+				"response_mode":"answer_then_task_card",
+				"conversation_mode":"confirm",
+				"requested_next_step":"request_authorization",
+				"proposal_ready":true,
+				"proposed_instruction":"把第三个项目改成问题-动作-结果结构",
+				"proposed_plan_goal":"产出可执行的简历改写任务",
+				"awaiting_authorization":true,
+				"chat_fulfillable":false,
+				"workflow_commitment":true,
+				"needs_clarification":false,
+				"evidence_sufficiency":"sufficient",
+				"confidence":0.86,
+				"reasons":["建议已收敛成一句可执行 instruction"]
+			}`}, nil
+		},
+	}, llmclient.Config{TimeoutMS: 1200})
+
+	decision, err := agent.Deliberate(context.Background(), RuntimeState{
+		Message: "那就按这个方向改",
+	})
+	if err != nil {
+		t.Fatalf("deliberate: %v", err)
+	}
+
+	if got := mustReadStringField(t, decision, "ConversationMode"); got != "confirm" {
+		t.Fatalf("expected conversation mode %q, got %q", "confirm", got)
+	}
+	if !mustReadBoolField(t, decision, "ProposalReady") {
+		t.Fatal("expected proposal_ready to be true")
+	}
+	if !mustReadBoolField(t, decision, "AwaitingAuthorization") {
+		t.Fatal("expected awaiting_authorization to be true")
+	}
+}
+
+// TestDeliberationAgentReturnsExecuteIntentOnlyForStrictAuthorization 验证只有明确授权时才会返回 execute 模式语义。
+func TestDeliberationAgentReturnsExecuteIntentOnlyForStrictAuthorization(t *testing.T) {
+	agent := newDeliberationAgentWithClient(fakeAssistantLLMClient{
+		generate: func(_ context.Context, _ []*schema.Message) (*schema.Message, error) {
+			return &schema.Message{Content: `{
+				"request_kind":"workflow_command",
+				"response_mode":"answer_then_task_card",
+				"conversation_mode":"execute",
+				"requested_next_step":"promote_to_workflow",
+				"proposal_ready":true,
+				"proposed_instruction":"把第三个项目改成问题-动作-结果结构",
+				"proposed_plan_goal":"产出可执行的简历改写任务",
+				"awaiting_authorization":false,
+				"chat_fulfillable":false,
+				"workflow_commitment":true,
+				"needs_clarification":false,
+				"evidence_sufficiency":"sufficient",
+				"confidence":0.9,
+				"reasons":["用户明确要求直接开始执行"]
+			}`}, nil
+		},
+	}, llmclient.Config{TimeoutMS: 1200})
+
+	decision, err := agent.Deliberate(context.Background(), RuntimeState{
+		Message: "直接修改吧",
+	})
+	if err != nil {
+		t.Fatalf("deliberate: %v", err)
+	}
+
+	if got := mustReadStringField(t, decision, "ConversationMode"); got != "execute" {
+		t.Fatalf("expected conversation mode %q, got %q", "execute", got)
+	}
+	if mustReadBoolField(t, decision, "AwaitingAuthorization") {
+		t.Fatal("expected execute mode to clear awaiting_authorization")
+	}
+}

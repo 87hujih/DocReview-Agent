@@ -21,6 +21,7 @@ func (b *RuntimeStateBuilder) Build(currentMessage string, replyContext *ReplyCo
 
 	state.Snapshot = replyContext.Snapshot
 	state.ActiveResource = cloneResourceContext(replyContext.ActiveResource)
+	state.CurrentDocument = cloneCurrentDocument(replyContext.CurrentDocument)
 	state.Citations = cloneCitations(replyContext.Citations)
 	state.GroundedTarget = cloneResolvedReference(replyContext.GroundedTarget)
 	state.History = cloneAssistantMessages(replyContext.History)
@@ -29,7 +30,14 @@ func (b *RuntimeStateBuilder) Build(currentMessage string, replyContext *ReplyCo
 		return state
 	}
 
+	state.ActiveNode = cloneActiveNode(replyContext.Snapshot.ActiveNode)
+	state.NodeReferenceFrame = cloneNodeReferences(replyContext.Snapshot.NodeReferenceFrame)
 	state.RollingSummary = cloneOptionalString(replyContext.Snapshot.RollingSummary)
+	state.PendingClarification = clonePendingClarification(replyContext.Snapshot.PendingClarification)
+	state.AdvisoryContext = cloneAdvisoryContext(replyContext.Snapshot.AdvisoryContext)
+	state.PendingProposal = clonePendingProposal(replyContext.Snapshot.PendingProposal)
+	state.AuthorizationState = cloneAuthorizationState(replyContext.Snapshot.AuthorizationState)
+	state.ExecutionState = cloneExecutionState(replyContext.Snapshot.ExecutionState)
 	state.PendingTaskSuggestion = clonePendingTaskSuggestion(replyContext.Snapshot.PendingTaskSuggestion)
 	state.LatestTask = cloneLatestTask(replyContext.Snapshot.LatestTask)
 	state.ConfirmedConstraints = cloneConfirmedConstraints(replyContext.Snapshot.ConfirmedConstraints)
@@ -54,6 +62,79 @@ func cloneResolvedReference(reference *ResolvedReference) *ResolvedReference {
 	}
 
 	cloned := *reference
+	return &cloned
+}
+
+// clonePendingClarification 复制待确认澄清状态，避免后续决策阶段误改原始快照。
+func clonePendingClarification(value *SnapshotPendingClarification) *SnapshotPendingClarification {
+	if value == nil {
+		return nil
+	}
+
+	cloned := *value
+	cloned.Options = append([]string(nil), value.Options...)
+	return &cloned
+}
+
+// cloneActiveNode 复制当前 active node，避免后续决策阶段误改原始快照。
+func cloneActiveNode(value *SnapshotActiveNode) *SnapshotActiveNode {
+	if value == nil {
+		return nil
+	}
+
+	cloned := *value
+	return &cloned
+}
+
+// cloneNodeReferences 复制 node reference frame，避免后续决策阶段误改原始快照切片。
+func cloneNodeReferences(items []NodeReference) []NodeReference {
+	if len(items) == 0 {
+		return nil
+	}
+
+	cloned := make([]NodeReference, len(items))
+	copy(cloned, items)
+	return cloned
+}
+
+// cloneAdvisoryContext 复制顾问结论状态，避免后续决策阶段误改原始快照。
+func cloneAdvisoryContext(value *SnapshotAdvisoryContext) *SnapshotAdvisoryContext {
+	if value == nil {
+		return nil
+	}
+
+	cloned := *value
+	cloned.Recommendations = append([]string(nil), value.Recommendations...)
+	return &cloned
+}
+
+// clonePendingProposal 复制待确认 proposal，避免后续决策阶段误改原始快照。
+func clonePendingProposal(value *SnapshotPendingProposal) *SnapshotPendingProposal {
+	if value == nil {
+		return nil
+	}
+
+	cloned := *value
+	return &cloned
+}
+
+// cloneAuthorizationState 复制授权状态，避免后续决策阶段误改原始快照。
+func cloneAuthorizationState(value *SnapshotAuthorizationState) *SnapshotAuthorizationState {
+	if value == nil {
+		return nil
+	}
+
+	cloned := *value
+	return &cloned
+}
+
+// cloneExecutionState 复制执行状态，避免后续决策阶段误改原始快照。
+func cloneExecutionState(value *SnapshotExecutionState) *SnapshotExecutionState {
+	if value == nil {
+		return nil
+	}
+
+	cloned := *value
 	return &cloned
 }
 

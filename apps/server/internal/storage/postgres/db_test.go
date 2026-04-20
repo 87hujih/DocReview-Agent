@@ -443,6 +443,77 @@ func TestMigrationAlignsResourceVersionStructureColumnsWithDefaults(t *testing.T
 	}
 }
 
+// TestMigrationAddsAssistantAdvisorStateColumns 验证迁移会为 session_context_snapshots 补齐 advisor state 列及默认值。
+func TestMigrationAddsAssistantAdvisorStateColumns(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	type columnInfo struct {
+		ColumnName    string
+		IsNullable    string
+		ColumnDefault *string
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT column_name, is_nullable, column_default
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'session_context_snapshots'
+		  AND column_name = ANY($1)
+		ORDER BY column_name
+	`, []string{
+		"advisory_context_json",
+		"authorization_state_json",
+		"execution_state_json",
+		"pending_clarification_json",
+		"pending_proposal_json",
+	})
+	if err != nil {
+		t.Fatalf("query advisor state columns: %v", err)
+	}
+	defer rows.Close()
+
+	columns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (columnInfo, error) {
+		var info columnInfo
+		err := row.Scan(&info.ColumnName, &info.IsNullable, &info.ColumnDefault)
+		return info, err
+	})
+	if err != nil {
+		t.Fatalf("collect advisor state columns: %v", err)
+	}
+
+	expected := map[string]struct {
+		nullable string
+		def      string
+	}{
+		"advisory_context_json":      {nullable: "NO", def: "'{}'::jsonb"},
+		"authorization_state_json":   {nullable: "NO", def: "'{}'::jsonb"},
+		"execution_state_json":       {nullable: "NO", def: "'{}'::jsonb"},
+		"pending_clarification_json": {nullable: "NO", def: "'{}'::jsonb"},
+		"pending_proposal_json":      {nullable: "NO", def: "'{}'::jsonb"},
+	}
+	if len(columns) != len(expected) {
+		t.Fatalf("expected %d advisor state columns, got %d (%v)", len(expected), len(columns), columns)
+	}
+
+	for _, column := range columns {
+		want, ok := expected[column.ColumnName]
+		if !ok {
+			t.Fatalf("unexpected advisor state column info: %#v", column)
+		}
+		if column.IsNullable != want.nullable {
+			t.Fatalf("expected %s nullable=%s, got %s", column.ColumnName, want.nullable, column.IsNullable)
+		}
+		if column.ColumnDefault == nil || *column.ColumnDefault != want.def {
+			t.Fatalf("expected %s default %q, got %#v", column.ColumnName, want.def, column.ColumnDefault)
+		}
+	}
+}
+
 // TestMigrationAddsAssistantSuggestionSourceColumn 验证`migration`在写入或副作用路径下的行为，防止同类回归。
 func TestMigrationAddsAssistantSuggestionSourceColumn(t *testing.T) {
 	pool := newTestPool(t)

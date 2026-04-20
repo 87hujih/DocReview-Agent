@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -467,6 +468,84 @@ func TestSessionContextSnapshotRepoPersistsOrdinalReferenceFrame(t *testing.T) {
 	}
 }
 
+// TestSessionContextSnapshotRepoPersistsAdvisorState 验证 repo 能写入并读回 advisor runtime state。
+func TestSessionContextSnapshotRepoPersistsAdvisorState(t *testing.T) {
+	pool := newTestPool(t)
+	assistantRepo := NewAssistantRepo(pool)
+	snapshotRepo := NewSessionContextSnapshotRepo(pool)
+	ctx := testContext(t)
+
+	session, _, err := assistantRepo.CreateSessionWithMessages(ctx, "advisor state 持久化", nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup session: %v", err)
+		}
+	})
+
+	method := reflect.ValueOf(snapshotRepo).MethodByName("UpdateAdvisorState")
+	if !method.IsValid() {
+		t.Fatal("expected snapshot repo to expose UpdateAdvisorState")
+	}
+
+	params := reflect.New(method.Type().In(1)).Elem()
+	mustSetReflectStringField(t, params, "SessionID", session.ID)
+	mustSetReflectBytesField(t, params, "PendingClarificationJSON", mustMarshalTestJSON(t, map[string]any{
+		"kind":             "execution_confirmation",
+		"question":         "要不要直接修改？",
+		"asked_message_id": "message-clarify-1",
+		"options":          []string{"先分析", "直接修改"},
+	}))
+	mustSetReflectBytesField(t, params, "AdvisoryContextJSON", mustMarshalTestJSON(t, map[string]any{
+		"diagnosis":           "第三个项目缺少量化结果。",
+		"recommendations":     []string{"补结果", "补指标"},
+		"preferred_direction": "按结果导向重写",
+		"source_message_id":   "message-advice-1",
+	}))
+	mustSetReflectBytesField(t, params, "PendingProposalJSON", mustMarshalTestJSON(t, map[string]any{
+		"proposal_id":                     "proposal-1",
+		"instruction":                     "把第三个项目改成问题-动作-结果结构",
+		"plan_goal":                       "产出可执行的简历改写任务",
+		"proposed_message_id":             "message-proposal-1",
+		"requires_explicit_authorization": true,
+	}))
+	mustSetReflectBytesField(t, params, "AuthorizationStateJSON", mustMarshalTestJSON(t, map[string]any{
+		"status":                  "pending",
+		"granted_for_proposal_id": "proposal-1",
+		"granted_by_message_id":   "message-authorize-1",
+	}))
+
+	results := method.Call([]reflect.Value{reflect.ValueOf(ctx), params})
+	if len(results) != 1 {
+		t.Fatalf("expected UpdateAdvisorState to return one value, got %d", len(results))
+	}
+	if !results[0].IsNil() {
+		t.Fatalf("update advisor state: %v", results[0].Interface())
+	}
+
+	record, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get snapshot: %v", err)
+	}
+	if record == nil {
+		t.Fatal("expected snapshot record")
+	}
+	if got := mustReadJSONTextField(t, record, "PendingClarificationJSON", "question"); got != "要不要直接修改？" {
+		t.Fatalf("expected pending clarification question, got %q", got)
+	}
+	if got := mustReadJSONTextField(t, record, "AdvisoryContextJSON", "diagnosis"); got != "第三个项目缺少量化结果。" {
+		t.Fatalf("expected advisory diagnosis, got %q", got)
+	}
+	if got := mustReadJSONTextField(t, record, "PendingProposalJSON", "proposal_id"); got != "proposal-1" {
+		t.Fatalf("expected proposal id, got %q", got)
+	}
+	if got := mustReadJSONTextField(t, record, "AuthorizationStateJSON", "status"); got != "pending" {
+		t.Fatalf("expected authorization status, got %q", got)
+	}
+}
+
 // appendAssistantMessage 为测试用例处理 `append助手消息`，减少样板搭建和断言前准备步骤。
 func appendAssistantMessage(
 	t *testing.T,
@@ -533,7 +612,105 @@ func assertEmptySessionContextSnapshot(t *testing.T, snapshot *SessionContextSna
 	if string(snapshot.OrdinalReferenceFrameJSON) != "[]" {
 		t.Fatalf("expected ordinal_reference_frame_json to default to [], got %s", string(snapshot.OrdinalReferenceFrameJSON))
 	}
+	if mustReadOptionalJSONField(t, snapshot, "PendingClarificationJSON") != "{}" {
+		t.Fatalf("expected pending_clarification_json to default to {}, got %s", mustReadOptionalJSONField(t, snapshot, "PendingClarificationJSON"))
+	}
+	if mustReadOptionalJSONField(t, snapshot, "AdvisoryContextJSON") != "{}" {
+		t.Fatalf("expected advisory_context_json to default to {}, got %s", mustReadOptionalJSONField(t, snapshot, "AdvisoryContextJSON"))
+	}
+	if mustReadOptionalJSONField(t, snapshot, "PendingProposalJSON") != "{}" {
+		t.Fatalf("expected pending_proposal_json to default to {}, got %s", mustReadOptionalJSONField(t, snapshot, "PendingProposalJSON"))
+	}
+	if mustReadOptionalJSONField(t, snapshot, "AuthorizationStateJSON") != "{}" {
+		t.Fatalf("expected authorization_state_json to default to {}, got %s", mustReadOptionalJSONField(t, snapshot, "AuthorizationStateJSON"))
+	}
+	if mustReadOptionalJSONField(t, snapshot, "ExecutionStateJSON") != "{}" {
+		t.Fatalf("expected execution_state_json to default to {}, got %s", mustReadOptionalJSONField(t, snapshot, "ExecutionStateJSON"))
+	}
 	if snapshot.SummaryBaseSequenceNo != 0 {
 		t.Fatalf("expected summary_base_sequence_no 0, got %d", snapshot.SummaryBaseSequenceNo)
 	}
+}
+
+// mustMarshalTestJSON 在 storage 测试里强制构造 JSON，失败时立即终止当前用例。
+func mustMarshalTestJSON(t *testing.T, value any) []byte {
+	t.Helper()
+
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+
+	return body
+}
+
+// mustSetReflectStringField 通过反射为结构体字段写入字符串。
+func mustSetReflectStringField(t *testing.T, target reflect.Value, fieldName string, value string) {
+	t.Helper()
+
+	field := target.FieldByName(fieldName)
+	if !field.IsValid() {
+		t.Fatalf("expected field %s on %s", fieldName, target.Type())
+	}
+	if field.Kind() != reflect.String {
+		t.Fatalf("expected field %s to be string, got %s", fieldName, field.Type())
+	}
+
+	field.SetString(value)
+}
+
+// mustSetReflectBytesField 通过反射为结构体字段写入字节切片。
+func mustSetReflectBytesField(t *testing.T, target reflect.Value, fieldName string, value []byte) {
+	t.Helper()
+
+	field := target.FieldByName(fieldName)
+	if !field.IsValid() {
+		t.Fatalf("expected field %s on %s", fieldName, target.Type())
+	}
+	if field.Kind() != reflect.Slice || field.Type().Elem().Kind() != reflect.Uint8 {
+		t.Fatalf("expected field %s to be []byte, got %s", fieldName, field.Type())
+	}
+
+	field.SetBytes(value)
+}
+
+// mustReadJSONTextField 读取记录 JSON 字段里的文本值。
+func mustReadJSONTextField(t *testing.T, target any, fieldName string, jsonKey string) string {
+	t.Helper()
+
+	payload := mustReadOptionalJSONField(t, target, fieldName)
+	decoded := make(map[string]any)
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatalf("unmarshal %s: %v", fieldName, err)
+	}
+
+	value, ok := decoded[jsonKey].(string)
+	if !ok {
+		t.Fatalf("expected json key %s in %s, got %#v", jsonKey, fieldName, decoded[jsonKey])
+	}
+
+	return value
+}
+
+// mustReadOptionalJSONField 读取记录上的可选 JSON 字段。
+func mustReadOptionalJSONField(t *testing.T, target any, fieldName string) string {
+	t.Helper()
+
+	value := reflect.ValueOf(target)
+	for value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			t.Fatalf("target for field %s is nil", fieldName)
+		}
+		value = value.Elem()
+	}
+
+	field := value.FieldByName(fieldName)
+	if !field.IsValid() {
+		t.Fatalf("expected field %s on %T", fieldName, target)
+	}
+	if field.Kind() != reflect.Slice || field.Type().Elem().Kind() != reflect.Uint8 {
+		t.Fatalf("expected field %s to be []byte, got %s", fieldName, field.Type())
+	}
+
+	return string(field.Bytes())
 }

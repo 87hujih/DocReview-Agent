@@ -10,10 +10,18 @@ type RuntimeState struct {
 	Message               string
 	Snapshot              *SessionContextSnapshot
 	ActiveResource        *resourceContext
+	CurrentDocument       *CurrentDocument
+	ActiveNode            *SnapshotActiveNode
+	NodeReferenceFrame    []NodeReference
 	Citations             []citation.Citation
 	GroundedTarget        *ResolvedReference
 	History               []postgres.AssistantMessage
 	RollingSummary        *string
+	PendingClarification  *SnapshotPendingClarification
+	AdvisoryContext       *SnapshotAdvisoryContext
+	PendingProposal       *SnapshotPendingProposal
+	AuthorizationState    *SnapshotAuthorizationState
+	ExecutionState        *SnapshotExecutionState
 	PendingTaskSuggestion *SnapshotPendingTaskSuggestion
 	LatestTask            *SnapshotLatestTask
 	ConfirmedConstraints  []ConfirmedConstraint
