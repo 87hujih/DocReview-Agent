@@ -344,7 +344,7 @@ export function AssistantMessageList({
             </div>
 
             {content ? (
-              message.role === "assistant" && !isStreamingAssistant ? (
+              message.role === "assistant" ? (
                 <AssistantMarkdown content={content} />
               ) : (
                 <p className={styles.content}>{content}</p>

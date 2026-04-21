@@ -41,4 +41,17 @@ describe("AssistantMarkdown", () => {
     expect(container.querySelector("b")).toBeNull();
     expect(screen.getByText("普通文本 <b>粗体</b>")).toBeInTheDocument();
   });
+
+  it("renders an unfinished fenced code block at the end of streaming content", () => {
+    render(<AssistantMarkdown content={"```ts\nconst value = 1;"} />);
+
+    expect(screen.getByText("const value = 1;", { selector: "code" }).closest("pre")).not.toBeNull();
+  });
+
+  it("keeps unmatched inline markdown markers literal while streaming", () => {
+    render(<AssistantMarkdown content={"这里有 **未闭合强调"} />);
+
+    expect(screen.getByText("这里有 **未闭合强调")).toBeInTheDocument();
+    expect(screen.queryByText("未闭合强调", { selector: "strong" })).not.toBeInTheDocument();
+  });
 });

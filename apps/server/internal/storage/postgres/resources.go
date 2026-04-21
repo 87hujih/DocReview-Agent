@@ -451,6 +451,55 @@ func (r *ResourceRepo) ReplaceVersionChunks(ctx context.Context, versionID strin
 	return tx.Commit(ctx)
 }
 
+// ReplaceVersionContentAndChunks 在单事务里同时替换版本正文与全部 chunk，避免修复脚本写出“正文已变但检索仍旧”的中间态。
+func (r *ResourceRepo) ReplaceVersionContentAndChunks(ctx context.Context, versionID string, resourceID string, content string, chunks []ResourceChunkInput) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE resource_versions
+		SET content = $2
+		WHERE id = $1
+	`, versionID, strings.TrimSpace(content)); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM resource_chunks
+		WHERE version_id = $1
+	`, versionID); err != nil {
+		return err
+	}
+
+	for _, chunk := range chunks {
+		if err := createChunkTx(ctx, tx, &ResourceChunk{
+			ResourceID:     resourceID,
+			VersionID:      versionID,
+			ChunkIndex:     chunk.ChunkIndex,
+			SectionTitle:   chunk.SectionTitle,
+			Content:        chunk.Content,
+			Embedding:      chunk.Embedding,
+			SectionID:      chunk.SectionID,
+			SectionType:    chunk.SectionType,
+			ChunkRole:      chunk.ChunkRole,
+			WindowGroupID:  chunk.WindowGroupID,
+			OrderInSection: chunk.OrderInSection,
+			PageStart:      chunk.PageStart,
+			PageEnd:        chunk.PageEnd,
+			MetadataJSON:   chunk.MetadataJSON,
+		}); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 // SearchChunks 使用 pgvector 距离排序，在全部资源范围内执行语义检索。
 func (r *ResourceRepo) SearchChunks(ctx context.Context, embedding pgvector.Vector, limit int) ([]ResourceChunk, error) {
 	rows, err := r.pool.Query(ctx, `

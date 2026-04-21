@@ -362,13 +362,13 @@ describe("AssistantShell", () => {
       });
       onEvent?.({ type: "message_started" });
       onEvent?.({
-        delta: "我先继续和你梳理问题",
+        delta: "# 流式梳理中",
         type: "message_delta"
       });
     });
 
     await waitFor(() => {
-      expect(screen.getByText("我先继续和你梳理问题")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 1, name: "流式梳理中" })).toBeInTheDocument();
     });
 
     await act(async () => {

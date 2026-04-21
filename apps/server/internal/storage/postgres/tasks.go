@@ -285,6 +285,16 @@ func (r *TaskRepo) GetArtifacts(ctx context.Context, taskID string) ([]TaskArtif
 	return artifacts, rows.Err()
 }
 
+// UpdateArtifactContent 更新任务产物 JSON，供历史修复脚本回写清洗后的 artifact 内容。
+func (r *TaskRepo) UpdateArtifactContent(ctx context.Context, artifactID string, content []byte) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE task_artifacts
+		SET content = $2::jsonb
+		WHERE id = $1
+	`, artifactID, string(content))
+	return err
+}
+
 // scanTask 把当前数据库行扫描成 `任务`，统一查询结果到领域结构的映射。
 func scanTask(row pgx.Row) (Task, error) {
 	var task Task

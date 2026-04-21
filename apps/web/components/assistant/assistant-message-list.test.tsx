@@ -273,7 +273,7 @@ describe("AssistantMessageList", () => {
     expect(screen.queryByText("不要加粗我", { selector: "strong" })).not.toBeInTheDocument();
   });
 
-  it("keeps streaming assistant messages as plain text", () => {
+  it("renders streaming assistant messages as markdown", () => {
     render(
       <AssistantMessageList
         activeTaskSuggestionId={null}
@@ -283,7 +283,7 @@ describe("AssistantMessageList", () => {
             id: "streaming-assistant",
             kind: "local_text",
             local_state: "streaming",
-            payload: { content: "# 流式标题" },
+            payload: { content: "# 流式标题\n\n- 流式列表项" },
             role: "assistant",
             sequence_no: 1
           }
@@ -292,8 +292,8 @@ describe("AssistantMessageList", () => {
       />
     );
 
-    expect(screen.getByText("# 流式标题")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 1, name: "流式标题" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "流式标题" })).toBeInTheDocument();
+    expect(screen.getByText("流式列表项").closest("li")).not.toBeNull();
   });
 
   it("does not render a user avatar placeholder", () => {

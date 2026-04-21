@@ -143,7 +143,7 @@ function normalizeDiffSection(input: unknown): DiffSection | null {
     citation_ids: Array.isArray(section.citation_ids)
       ? section.citation_ids.filter((item): item is string => typeof item === "string")
       : [],
-    original: typeof section.original === "string" ? section.original : "",
+    original: typeof section.original === "string" ? sanitizeLegacyInlineExecutionSuffix(section.original) : "",
     reason: typeof section.reason === "string" ? section.reason : "",
     revised: typeof section.revised === "string" ? section.revised : "",
     section_occurrence:
@@ -152,4 +152,41 @@ function normalizeDiffSection(input: unknown): DiffSection | null {
         : undefined,
     section_title: sectionTitle
   };
+}
+
+function sanitizeLegacyInlineExecutionSuffix(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return "";
+  }
+
+  for (let index = trimmed.length - 1; index >= 0; index -= 1) {
+    if (!isSentenceBoundary(trimmed[index])) {
+      continue;
+    }
+
+    const suffix = trimmed.slice(index + 1).trim();
+    if (suffix === "" || suffix.length > 32 || !looksLikeLegacyExecutionSuffix(suffix)) {
+      continue;
+    }
+
+    const prefix = trimmed.slice(0, index + 1).trim();
+    return prefix || trimmed;
+  }
+
+  return trimmed;
+}
+
+function isSentenceBoundary(value: string): boolean {
+  return value === "。" || value === "！" || value === "？" || value === "!" || value === "?" || value === "；" || value === ";";
+}
+
+function looksLikeLegacyExecutionSuffix(value: string): boolean {
+  return (
+    value.includes("创建任务") ||
+    value.includes("开始执行") ||
+    value.includes("开始修改") ||
+    value.includes("直接修改") ||
+    value.includes("执行吧")
+  );
 }

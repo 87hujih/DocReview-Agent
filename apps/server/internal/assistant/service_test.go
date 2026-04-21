@@ -1891,6 +1891,62 @@ func TestAppendMessageInlineMaterialAndExecutionCreatesTaskSuggestionInSameTurn(
 	}
 }
 
+// TestAppendMessageInlineMaterialStripsInlineExecutionSuffixBeforeImport 验证同一行尾部执行句不会被导入为资源正文。
+func TestAppendMessageInlineMaterialStripsInlineExecutionSuffixBeforeImport(t *testing.T) {
+	repo := newFakeSessionRepo()
+	session := repo.seedSession("简历对话")
+	importer := &fakeDocumentImporter{
+		result: &ImportDocumentResult{
+			Resource: &postgres.Resource{
+				ID:         "resource-inline",
+				Title:      "对话粘贴正文",
+				SourceType: "inline_text",
+			},
+		},
+	}
+	instruction := "直接按照这个补充，创建任务吧"
+	service := NewService(
+		repo,
+		importer,
+		&fakeTaskCreator{},
+		&fakeChatResponder{
+			result: &ChatCompletionResult{
+				Reply: "这轮已经满足执行条件，我先给你任务建议。",
+			},
+		},
+		nil,
+		WithDeliberationAgent(&fakeDeliberationAgent{
+			result: withExplicitWorkflowPromotion(DeliberationDecision{
+				RequestKind:              "workflow_command",
+				ResponseMode:             ResponseModePlanThenAnswer,
+				ChatFulfillable:          false,
+				WorkflowCommitment:       true,
+				EvidenceSufficiency:      "sufficient",
+				CandidateTaskInstruction: &instruction,
+				CandidatePlanGoal:        stringPointer("按当前补充方案创建任务"),
+				Confidence:               0.9,
+				Reasons:                  []string{"同轮内联材料已经足以进入执行"},
+			}),
+		}),
+	)
+
+	_, err := service.AppendMessage(context.Background(), session.ID, strings.TrimSpace(`
+流程与时间线：原文提到“试用期内应完成基础制度学习”，但未明确完成周期与责任主体。
+资源与路径：原文提到“进阶课程、项目历练、外部培训机会”，但缺少申请路径说明。
+反馈机制：原文说“直属主管与导师应定期跟进学习效果并给予反馈”，但“定期”较为模糊。可以细化，例如“导师需在入职第1个月、第3个月进行正式学习回顾与反馈”。直接按照这个补充，创建任务吧
+`))
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if importer.lastInput == nil {
+		t.Fatal("expected inline material to call importer")
+	}
+	if strings.Contains(string(importer.lastInput.Content), "直接按照这个补充，创建任务吧") {
+		t.Fatalf("expected importer content to strip inline execution suffix, got %q", string(importer.lastInput.Content))
+	}
+}
+
 // TestAppendMessageInlineMaterialWithoutExecutionDoesNotCreateTaskSuggestion 验证`appendMessageInlineMaterialWithoutExecutionDoesNotCreateTaskSuggestion`在特定边界条件下的行为，防止同类回归。
 func TestAppendMessageInlineMaterialWithoutExecutionDoesNotCreateTaskSuggestion(t *testing.T) {
 	repo := newFakeSessionRepo()

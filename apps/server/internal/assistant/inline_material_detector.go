@@ -1,6 +1,9 @@
 package assistant
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 const inlineMaterialSyntheticName = "对话粘贴正文.md"
 
@@ -24,10 +27,7 @@ func DetectInlineMaterial(content string) InlineMaterialCandidate {
 	}
 
 	bodyLines := append([]string(nil), lines...)
-	lastLine := bodyLines[len(bodyLines)-1]
-	if len(bodyLines) >= 3 && utf8RuneLen(lastLine) <= 32 && isExecutionRequest(lastLine) {
-		bodyLines = bodyLines[:len(bodyLines)-1]
-	}
+	bodyLines = trimTrailingExecutionRequest(bodyLines)
 
 	body := strings.TrimSpace(strings.Join(bodyLines, "\n"))
 	if !looksLikeInlineMaterial(bodyLines, body) {
@@ -38,6 +38,68 @@ func DetectInlineMaterial(content string) InlineMaterialCandidate {
 		Body:          body,
 		HasMaterial:   true,
 		SyntheticName: inlineMaterialSyntheticName,
+	}
+}
+
+// trimTrailingExecutionRequest 去掉正文尾部夹带的执行句，避免“正文 + 创建任务”混写时把指令入库成原文。
+func trimTrailingExecutionRequest(lines []string) []string {
+	if len(lines) < 3 {
+		return lines
+	}
+
+	lastLine := lines[len(lines)-1]
+	if utf8RuneLen(lastLine) <= 32 && isExecutionRequest(lastLine) {
+		return lines[:len(lines)-1]
+	}
+
+	trimmedLastLine, stripped := stripTrailingExecutionSuffix(lastLine)
+	if !stripped {
+		return lines
+	}
+
+	lines[len(lines)-1] = trimmedLastLine
+	return lines
+}
+
+// stripTrailingExecutionSuffix 处理“正文句子。创建任务吧”这类同一行尾部执行句，保留正文句子本身。
+func stripTrailingExecutionSuffix(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return "", false
+	}
+
+	splitPoints := make([]int, 0, 4)
+	for index, r := range trimmed {
+		if !isSentenceBoundary(r) {
+			continue
+		}
+
+		splitPoints = append(splitPoints, index+utf8.RuneLen(r))
+	}
+
+	for index := len(splitPoints) - 1; index >= 0; index-- {
+		suffix := strings.TrimSpace(trimmed[splitPoints[index]:])
+		if suffix == "" || utf8RuneLen(suffix) > 32 || !isExecutionRequest(suffix) {
+			continue
+		}
+
+		prefix := strings.TrimSpace(trimmed[:splitPoints[index]])
+		if prefix == "" {
+			return trimmed, false
+		}
+
+		return prefix, true
+	}
+
+	return trimmed, false
+}
+
+func isSentenceBoundary(r rune) bool {
+	switch r {
+	case '。', '！', '？', '!', '?', '；', ';':
+		return true
+	default:
+		return false
 	}
 }
 

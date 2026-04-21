@@ -39,8 +39,9 @@ const systemPrompt = `你是一个文档修订编辑代理。你必须只输出 
 2. 否则只返回需要修改的章节，no_change 设为 false。
 3. 每个 section 必须输出 section_occurrence，表示同名章节第几次出现；若全文没有任何 ## 二级标题，则 section_title 固定写“全文”，section_occurrence 固定写 1。
 4. 每个 section 的 citation_ids 至少包含 1 个引用 ID。
-5. revised 必须是可直接替换到文档中的文本，且与 original 不同。
-6. reason 解释修改原因，不要做程序化校验说明。`
+5. original 必须与该章节当前正文逐字一致，不得只截取局部片段；若文档存在 ## 章节标题，original 不得包含标题行本身。
+6. revised 必须是替换该章节正文后的完整正文，且与 original 不同；若文档存在 ## 章节标题，revised 不得包含标题行本身。
+7. reason 解释修改原因，不要做程序化校验说明。`
 
 // Agent 封装 Editor 所需的 LLM 客户端和重试配置。
 type Agent struct {
@@ -181,6 +182,15 @@ func normalizePreviewForResourceContent(preview *DiffPreview, resourceContent st
 
 	parsedSections := sections.ParseMarkdown(resourceContent)
 	if len(parsedSections) != 1 || parsedSections[0].Heading != "" {
+		for index := range preview.Sections {
+			matchedSection, ok := matchPreviewSection(parsedSections, preview.Sections[index])
+			if !ok || strings.TrimSpace(matchedSection.Heading) == "" {
+				continue
+			}
+
+			preview.Sections[index].Original = stripRepeatedSectionHeading(preview.Sections[index].Original, matchedSection.Heading)
+			preview.Sections[index].Revised = stripRepeatedSectionHeading(preview.Sections[index].Revised, matchedSection.Heading)
+		}
 		return
 	}
 
@@ -188,4 +198,43 @@ func normalizePreviewForResourceContent(preview *DiffPreview, resourceContent st
 		preview.Sections[index].SectionTitle = sections.WholeDocumentTitle
 		preview.Sections[index].SectionOccurrence = 1
 	}
+}
+
+// matchPreviewSection 用 editor 侧已有章节信息定位资源 scope 中的真实 section，便于做最小归一化修正。
+func matchPreviewSection(parsedSections []sections.Section, diff DiffSection) (sections.Section, bool) {
+	title := strings.TrimSpace(diff.SectionTitle)
+	if title == "" {
+		return sections.Section{}, false
+	}
+
+	for _, section := range parsedSections {
+		if section.Title != title {
+			continue
+		}
+		if diff.SectionOccurrence > 0 && section.Occurrence != diff.SectionOccurrence {
+			continue
+		}
+
+		return section, true
+	}
+
+	return sections.Section{}, false
+}
+
+// stripRepeatedSectionHeading 去掉模型重复写进正文字段里的 heading，收口 editor 输出与 workflow section body 的契约。
+func stripRepeatedSectionHeading(content string, heading string) string {
+	normalized := strings.TrimSpace(strings.ReplaceAll(content, "\r\n", "\n"))
+	if normalized == "" || strings.TrimSpace(heading) == "" {
+		return normalized
+	}
+
+	lines := strings.Split(normalized, "\n")
+	if len(lines) == 0 {
+		return normalized
+	}
+	if strings.TrimSpace(lines[0]) == strings.TrimSpace(heading) {
+		lines = lines[1:]
+	}
+
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }

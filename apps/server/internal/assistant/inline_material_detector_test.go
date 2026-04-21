@@ -55,3 +55,22 @@ func TestDetectInlineMaterialSplitsTrailingExecutionSentenceFromBody(t *testing.
 		t.Fatalf("expected body content to stay intact, got %q", candidate.Body)
 	}
 }
+
+// TestDetectInlineMaterialStripsInlineExecutionSuffix 验证尾部执行句与正文处于同一行时也会被剥离。
+func TestDetectInlineMaterialStripsInlineExecutionSuffix(t *testing.T) {
+	candidate := DetectInlineMaterial(strings.TrimSpace(`
+流程与时间线：原文提到“试用期内应完成基础制度学习”，但未明确完成周期与责任主体。
+资源与路径：原文提到“进阶课程、项目历练、外部培训机会”，但缺少申请路径说明。
+反馈机制：原文说“直属主管与导师应定期跟进学习效果并给予反馈”，但“定期”较为模糊。可以细化，例如“导师需在入职第1个月、第3个月进行正式学习回顾与反馈”。直接按照这个补充，创建任务吧
+`))
+
+	if !candidate.HasMaterial {
+		t.Fatal("expected mixed inline body and execution suffix to be detected as material")
+	}
+	if strings.Contains(candidate.Body, "直接按照这个补充，创建任务吧") {
+		t.Fatalf("expected inline execution suffix to be stripped from body, got %q", candidate.Body)
+	}
+	if !strings.Contains(candidate.Body, "反馈机制") {
+		t.Fatalf("expected body content to stay intact, got %q", candidate.Body)
+	}
+}
