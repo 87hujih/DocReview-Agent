@@ -10,6 +10,7 @@ import (
 func RenderAssistantOutcome(
 	outcome *AssistantOutcome,
 	currentDocumentReady bool,
+	webSearch ...*WebSearchState,
 ) ([]postgres.AssistantMessageInput, error) {
 	if outcome == nil {
 		return nil, errors.New("assistant outcome 不能为空")
@@ -28,7 +29,11 @@ func RenderAssistantOutcome(
 			ExecutionCommitted:   outcome.EffectState.ExecutionCommitted,
 			Reply:                outcome.ReplyText,
 		})
-		input, err := buildMessageInput(RoleAssistant, KindText, TextPayload{Content: sanitizedReply})
+		var wsSummary *WebSearchSummary
+		if len(webSearch) > 0 && webSearch[0] != nil {
+			wsSummary = webSearchStateToSummary(webSearch[0])
+		}
+		input, err := buildMessageInput(RoleAssistant, KindText, TextPayload{Content: sanitizedReply, WebSearch: wsSummary})
 		if err != nil {
 			return nil, err
 		}
