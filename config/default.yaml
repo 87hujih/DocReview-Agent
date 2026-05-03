@@ -3,7 +3,7 @@ server:
 
 ai:
   siliconflow_base_url: "https://api.siliconflow.cn/v1"
-  llm_model: "Qwen/Qwen3.5-35B-A3B"
+  llm_model: "Pro/deepseek-ai/DeepSeek-V3.2"
   embedding_model: "Qwen/Qwen3-Embedding-8B"
   embedding_dim: 1024
   reranker_model: "Qwen/Qwen3-Reranker-8B"

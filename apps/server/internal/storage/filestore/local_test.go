@@ -10,6 +10,7 @@ import (
 	"testing"
 )
 
+// TestLocalStoreSaveWritesContentAddressedFile 验证`localStoreSave`在写入或副作用路径下的行为，防止同类回归。
 func TestLocalStoreSaveWritesContentAddressedFile(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewLocalStore(root)
@@ -42,6 +43,7 @@ func TestLocalStoreSaveWritesContentAddressedFile(t *testing.T) {
 	}
 }
 
+// TestLocalStoreOpenReadsStoredFile 验证`localStoreOpenReadsStoredFile`在特定边界条件下的行为，防止同类回归。
 func TestLocalStoreOpenReadsStoredFile(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewLocalStore(root)
@@ -69,12 +71,14 @@ func TestLocalStoreOpenReadsStoredFile(t *testing.T) {
 	}
 }
 
+// TestNewLocalStoreRejectsEmptyRoot 验证`newLocalStore`在非法输入或失败路径下的行为，防止同类回归。
 func TestNewLocalStoreRejectsEmptyRoot(t *testing.T) {
 	if _, err := NewLocalStore(" "); err == nil {
 		t.Fatal("expected empty root to fail")
 	}
 }
 
+// TestLocalStoreOpenRejectsPathTraversal 验证`localStoreOpen`在非法输入或失败路径下的行为，防止同类回归。
 func TestLocalStoreOpenRejectsPathTraversal(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewLocalStore(root)
@@ -99,6 +103,7 @@ func TestLocalStoreOpenRejectsPathTraversal(t *testing.T) {
 	}
 }
 
+// TestLocalStoreOpenCannotEscapeRoot 验证`localStoreOpenCannotEscapeRoot`在特定边界条件下的行为，防止同类回归。
 func TestLocalStoreOpenCannotEscapeRoot(t *testing.T) {
 	root := t.TempDir()
 	// 在 root 的父目录写入一个文件，验证无法通过 ../ 读取
@@ -120,6 +125,7 @@ func TestLocalStoreOpenCannotEscapeRoot(t *testing.T) {
 	}
 }
 
+// TestLocalStoreStatReturnsSizeAfterSave 验证`localStoreStat`在返回值分支下的行为，防止同类回归。
 func TestLocalStoreStatReturnsSizeAfterSave(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewLocalStore(root)
@@ -142,6 +148,7 @@ func TestLocalStoreStatReturnsSizeAfterSave(t *testing.T) {
 	}
 }
 
+// TestLocalStoreStatRejectsPathTraversal 验证`localStoreStat`在非法输入或失败路径下的行为，防止同类回归。
 func TestLocalStoreStatRejectsPathTraversal(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewLocalStore(root)

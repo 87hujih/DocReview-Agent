@@ -5,6 +5,7 @@ export interface Task {
   id: string;
   resource_id: string;
   instruction: string;
+  source_session_id?: string | null;
   status: string;
   error_message?: string | null;
   created_at: string;
@@ -22,6 +23,7 @@ export interface TaskStep {
 
 export interface DiffSection {
   section_title: string;
+  section_occurrence?: number;
   original: string;
   revised: string;
   reason: string;
@@ -115,7 +117,78 @@ export function getDiffPreviewArtifact(artifacts: TaskArtifact[]): DiffPreviewAr
   }
 
   const sections = (artifact.content as DiffPreviewArtifactContent).sections;
-  return Array.isArray(sections) ? { sections } : null;
+  if (!Array.isArray(sections)) {
+    return null;
+  }
+
+  const normalizedSections = sections
+    .map((section) => normalizeDiffSection(section))
+    .filter((section): section is DiffSection => section !== null);
+
+  return { sections: normalizedSections };
+}
+
+function normalizeDiffSection(input: unknown): DiffSection | null {
+  if (typeof input !== "object" || input === null) {
+    return null;
+  }
+
+  const section = input as Record<string, unknown>;
+  const sectionTitle = typeof section.section_title === "string" ? section.section_title.trim() : "";
+  if (sectionTitle === "") {
+    return null;
+  }
+
+  return {
+    citation_ids: Array.isArray(section.citation_ids)
+      ? section.citation_ids.filter((item): item is string => typeof item === "string")
+      : [],
+    original: typeof section.original === "string" ? sanitizeLegacyInlineExecutionSuffix(section.original) : "",
+    reason: typeof section.reason === "string" ? section.reason : "",
+    revised: typeof section.revised === "string" ? section.revised : "",
+    section_occurrence:
+      typeof section.section_occurrence === "number" && section.section_occurrence > 0
+        ? section.section_occurrence
+        : undefined,
+    section_title: sectionTitle
+  };
+}
+
+function sanitizeLegacyInlineExecutionSuffix(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return "";
+  }
+
+  for (let index = trimmed.length - 1; index >= 0; index -= 1) {
+    if (!isSentenceBoundary(trimmed[index])) {
+      continue;
+    }
+
+    const suffix = trimmed.slice(index + 1).trim();
+    if (suffix === "" || suffix.length > 32 || !looksLikeLegacyExecutionSuffix(suffix)) {
+      continue;
+    }
+
+    const prefix = trimmed.slice(0, index + 1).trim();
+    return prefix || trimmed;
+  }
+
+  return trimmed;
+}
+
+function isSentenceBoundary(value: string): boolean {
+  return value === "。" || value === "！" || value === "？" || value === "!" || value === "?" || value === "；" || value === ";";
+}
+
+function looksLikeLegacyExecutionSuffix(value: string): boolean {
+  return (
+    value.includes("创建任务") ||
+    value.includes("开始执行") ||
+    value.includes("开始修改") ||
+    value.includes("直接修改") ||
+    value.includes("执行吧")
+  );
 }
 
 export interface WebEvidenceSource {

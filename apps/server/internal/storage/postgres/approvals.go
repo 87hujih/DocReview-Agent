@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent_project/apps/server/internal/task/models"
@@ -14,25 +15,27 @@ import (
 
 // Approval 表示任务进入人工审批前生成的审批记录。
 type Approval struct {
-	ID           string
-	TaskID       string
-	Status       string
-	RejectReason *string
-	DecidedAt    *time.Time
-	CreatedAt    time.Time
+	ID            string
+	TaskID        string
+	BaseVersionID *string
+	Status        string
+	RejectReason  *string
+	DecidedAt     *time.Time
+	CreatedAt     time.Time
 }
 
 // ExecutionJob 表示审批通过后进入执行阶段的异步作业。
 type ExecutionJob struct {
-	ID           string
-	TaskID       string
-	ApprovalID   string
-	Status       string
-	ErrorMessage *string
-	NewVersionID *string
-	StartedAt    *time.Time
-	CompletedAt  *time.Time
-	CreatedAt    time.Time
+	ID            string
+	TaskID        string
+	ApprovalID    string
+	BaseVersionID *string
+	Status        string
+	ErrorMessage  *string
+	NewVersionID  *string
+	StartedAt     *time.Time
+	CompletedAt   *time.Time
+	CreatedAt     time.Time
 }
 
 // ApprovalRepo 封装审批表的最小访问能力。
@@ -59,12 +62,17 @@ func NewJobRepo(pool *pgxpool.Pool) *JobRepo {
 }
 
 // Create 为任务创建一条 pending 审批记录。
-func (r *ApprovalRepo) Create(ctx context.Context, taskID string) (*Approval, error) {
+func (r *ApprovalRepo) Create(ctx context.Context, taskID string, baseVersionID string) (*Approval, error) {
+	trimmedBaseVersionID := strings.TrimSpace(baseVersionID)
+	if trimmedBaseVersionID == "" {
+		return nil, fmt.Errorf("审批记录缺少 base_version_id")
+	}
+
 	approval, err := scanApproval(r.pool.QueryRow(ctx, `
-		INSERT INTO approvals (task_id)
-		VALUES ($1)
-		RETURNING id, task_id, status, reject_reason, decided_at, created_at
-	`, taskID))
+		INSERT INTO approvals (task_id, base_version_id)
+		VALUES ($1, $2)
+		RETURNING id, task_id, base_version_id, status, reject_reason, decided_at, created_at
+	`, taskID, trimmedBaseVersionID))
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +83,7 @@ func (r *ApprovalRepo) Create(ctx context.Context, taskID string) (*Approval, er
 // GetByID 按主键读取审批记录，不存在时返回 nil。
 func (r *ApprovalRepo) GetByID(ctx context.Context, id string) (*Approval, error) {
 	approval, err := scanApproval(r.pool.QueryRow(ctx, `
-		SELECT id, task_id, status, reject_reason, decided_at, created_at
+		SELECT id, task_id, base_version_id, status, reject_reason, decided_at, created_at
 		FROM approvals
 		WHERE id = $1
 	`, id))
@@ -93,7 +101,7 @@ func (r *ApprovalRepo) GetByID(ctx context.Context, id string) (*Approval, error
 // GetByIDForUpdateTx 在事务内按主键读取审批记录并加行锁，不存在时返回 nil。
 func GetApprovalByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (*Approval, error) {
 	approval, err := scanApproval(tx.QueryRow(ctx, `
-		SELECT id, task_id, status, reject_reason, decided_at, created_at
+		SELECT id, task_id, base_version_id, status, reject_reason, decided_at, created_at
 		FROM approvals
 		WHERE id = $1
 		FOR UPDATE
@@ -112,7 +120,7 @@ func GetApprovalByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (*App
 // GetByTaskID 按任务 ID 读取审批记录，不存在时返回 nil。
 func (r *ApprovalRepo) GetByTaskID(ctx context.Context, taskID string) (*Approval, error) {
 	approval, err := scanApproval(r.pool.QueryRow(ctx, `
-		SELECT id, task_id, status, reject_reason, decided_at, created_at
+		SELECT id, task_id, base_version_id, status, reject_reason, decided_at, created_at
 		FROM approvals
 		WHERE task_id = $1
 	`, taskID))
@@ -136,14 +144,14 @@ func (r *ApprovalRepo) List(ctx context.Context, statusFilter string) ([]Approva
 
 	if statusFilter != "" {
 		rows, err = r.pool.Query(ctx, `
-			SELECT id, task_id, status, reject_reason, decided_at, created_at
+			SELECT id, task_id, base_version_id, status, reject_reason, decided_at, created_at
 			FROM approvals
 			WHERE status = $1
 			ORDER BY created_at DESC
 		`, statusFilter)
 	} else {
 		rows, err = r.pool.Query(ctx, `
-			SELECT id, task_id, status, reject_reason, decided_at, created_at
+			SELECT id, task_id, base_version_id, status, reject_reason, decided_at, created_at
 			FROM approvals
 			ORDER BY created_at DESC
 		`)
@@ -179,12 +187,17 @@ func (r *ApprovalRepo) UpdateStatus(ctx context.Context, id string, status strin
 }
 
 // Create 写入一条 pending execution job。
-func (r *JobRepo) Create(ctx context.Context, taskID string, approvalID string) (*ExecutionJob, error) {
+func (r *JobRepo) Create(ctx context.Context, taskID string, approvalID string, baseVersionID string) (*ExecutionJob, error) {
+	trimmedBaseVersionID := strings.TrimSpace(baseVersionID)
+	if trimmedBaseVersionID == "" {
+		return nil, fmt.Errorf("执行作业缺少 base_version_id")
+	}
+
 	job, err := scanExecutionJob(r.pool.QueryRow(ctx, `
-		INSERT INTO execution_jobs (task_id, approval_id)
-		VALUES ($1, $2)
-		RETURNING id, task_id, approval_id, status, error_message, new_version_id, started_at, completed_at, created_at
-	`, taskID, approvalID))
+		INSERT INTO execution_jobs (task_id, approval_id, base_version_id)
+		VALUES ($1, $2, $3)
+		RETURNING id, task_id, approval_id, base_version_id, status, error_message, new_version_id, started_at, completed_at, created_at
+	`, taskID, approvalID, trimmedBaseVersionID))
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +208,7 @@ func (r *JobRepo) Create(ctx context.Context, taskID string, approvalID string) 
 // GetByID 按主键读取执行作业，不存在时返回 nil。
 func (r *JobRepo) GetByID(ctx context.Context, id string) (*ExecutionJob, error) {
 	job, err := scanExecutionJob(r.pool.QueryRow(ctx, `
-		SELECT id, task_id, approval_id, status, error_message, new_version_id, started_at, completed_at, created_at
+		SELECT id, task_id, approval_id, base_version_id, status, error_message, new_version_id, started_at, completed_at, created_at
 		FROM execution_jobs
 		WHERE id = $1
 	`, id))
@@ -210,9 +223,28 @@ func (r *JobRepo) GetByID(ctx context.Context, id string) (*ExecutionJob, error)
 	return &job, nil
 }
 
+// GetByApprovalID 按 approval_id 读取执行作业，不存在时返回 nil。
+func (r *JobRepo) GetByApprovalID(ctx context.Context, approvalID string) (*ExecutionJob, error) {
+	job, err := scanExecutionJob(r.pool.QueryRow(ctx, `
+		SELECT id, task_id, approval_id, base_version_id, status, error_message, new_version_id, started_at, completed_at, created_at
+		FROM execution_jobs
+		WHERE approval_id = $1
+	`, approvalID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &job, nil
+}
+
+// getExecutionJobByIDForUpdateTx 在事务内按 ID 读取执行作业并加锁，供审批流更新时避免并发竞争。
 func getExecutionJobByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (*ExecutionJob, error) {
 	job, err := scanExecutionJob(tx.QueryRow(ctx, `
-		SELECT id, task_id, approval_id, status, error_message, new_version_id, started_at, completed_at, created_at
+		SELECT id, task_id, approval_id, base_version_id, status, error_message, new_version_id, started_at, completed_at, created_at
 		FROM execution_jobs
 		WHERE id = $1
 		FOR UPDATE
@@ -231,7 +263,7 @@ func getExecutionJobByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (
 // GetTaskByIDForUpdateTx 在事务内按主键读取任务并加行锁，不存在时返回 nil。
 func GetTaskByIDForUpdateTx(ctx context.Context, tx pgx.Tx, id string) (*Task, error) {
 	task, err := scanTask(tx.QueryRow(ctx, `
-		SELECT id, resource_id, instruction, status, error_message, created_at, updated_at
+		SELECT id, resource_id, instruction, source_message_id, status, error_message, created_at, updated_at
 		FROM tasks
 		WHERE id = $1
 		FOR UPDATE
@@ -260,7 +292,7 @@ func (r *JobRepo) ClaimNext(ctx context.Context) (*ExecutionJob, error) {
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING id, task_id, approval_id, status, error_message, new_version_id, started_at, completed_at, created_at
+		RETURNING id, task_id, approval_id, base_version_id, status, error_message, new_version_id, started_at, completed_at, created_at
 	`))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -309,12 +341,14 @@ func (r *JobRepo) FinalizeFailure(
 	return r.finalize(ctx, jobID, "failed", &errorMessage, nil, models.StatusFailed, hook)
 }
 
+// scanApproval 把当前数据库行扫描成 `审批`，统一查询结果到领域结构的映射。
 func scanApproval(row pgx.Row) (Approval, error) {
 	var approval Approval
 
 	err := row.Scan(
 		&approval.ID,
 		&approval.TaskID,
+		&approval.BaseVersionID,
 		&approval.Status,
 		&approval.RejectReason,
 		&approval.DecidedAt,
@@ -327,6 +361,7 @@ func scanApproval(row pgx.Row) (Approval, error) {
 	return approval, nil
 }
 
+// scanExecutionJob 把当前数据库行扫描成 `执行作业`，统一查询结果到领域结构的映射。
 func scanExecutionJob(row pgx.Row) (ExecutionJob, error) {
 	var job ExecutionJob
 
@@ -334,6 +369,7 @@ func scanExecutionJob(row pgx.Row) (ExecutionJob, error) {
 		&job.ID,
 		&job.TaskID,
 		&job.ApprovalID,
+		&job.BaseVersionID,
 		&job.Status,
 		&job.ErrorMessage,
 		&job.NewVersionID,
@@ -383,13 +419,44 @@ func UpdateApprovalStatusTx(ctx context.Context, tx pgx.Tx, id string, status st
 	return err
 }
 
+// UpdateApprovalStatusTxReturning 在事务内更新审批状态，并返回更新后的审批记录。
+func UpdateApprovalStatusTxReturning(
+	ctx context.Context,
+	tx pgx.Tx,
+	id string,
+	status string,
+	rejectReason *string,
+) (*Approval, error) {
+	approval, err := scanApproval(tx.QueryRow(ctx, `
+		UPDATE approvals
+		SET status = $2,
+		    reject_reason = $3,
+		    decided_at = now()
+		WHERE id = $1
+		RETURNING id, task_id, base_version_id, status, reject_reason, decided_at, created_at
+	`, id, status, rejectReason))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &approval, nil
+}
+
 // CreateJobTx 在事务内创建执行作业。
-func CreateJobTx(ctx context.Context, tx pgx.Tx, taskID string, approvalID string) (*ExecutionJob, error) {
+func CreateJobTx(ctx context.Context, tx pgx.Tx, taskID string, approvalID string, baseVersionID string) (*ExecutionJob, error) {
+	if strings.TrimSpace(baseVersionID) == "" {
+		return nil, fmt.Errorf("执行作业缺少 base_version_id")
+	}
+
 	job, err := scanExecutionJob(tx.QueryRow(ctx, `
-		INSERT INTO execution_jobs (task_id, approval_id)
-		VALUES ($1, $2)
-		RETURNING id, task_id, approval_id, status, error_message, new_version_id, started_at, completed_at, created_at
-	`, taskID, approvalID))
+		INSERT INTO execution_jobs (task_id, approval_id, base_version_id)
+		VALUES ($1, $2, $3)
+		RETURNING id, task_id, approval_id, base_version_id, status, error_message, new_version_id, started_at, completed_at, created_at
+	`, taskID, approvalID, baseVersionID))
 	if err != nil {
 		return nil, err
 	}
@@ -397,6 +464,7 @@ func CreateJobTx(ctx context.Context, tx pgx.Tx, taskID string, approvalID strin
 	return &job, nil
 }
 
+// finalize 收敛 `finalize` 的最终状态，统一尾部写入和错误处理。
 func (r *JobRepo) finalize(
 	ctx context.Context,
 	jobID string,
@@ -469,7 +537,7 @@ func UpdateTaskStatusTx(ctx context.Context, tx pgx.Tx, id string, status string
 // ListPending 返回所有 pending 状态的执行作业，按创建时间正序。
 func (r *JobRepo) ListPending(ctx context.Context) ([]ExecutionJob, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, task_id, approval_id, status, error_message, new_version_id, started_at, completed_at, created_at
+		SELECT id, task_id, approval_id, base_version_id, status, error_message, new_version_id, started_at, completed_at, created_at
 		FROM execution_jobs
 		WHERE status = 'pending'
 		ORDER BY created_at
@@ -495,7 +563,11 @@ func (r *JobRepo) ListPending(ctx context.Context) ([]ExecutionJob, error) {
 // CreateForTaskAwaitingApproval 在同一事务内原子地创建审批记录并将任务状态从
 // drafting 切换为 awaiting_approval。若任务当前状态不是 drafting，则返回错误并
 // 回滚，不创建审批记录。
-func (r *ApprovalRepo) CreateForTaskAwaitingApproval(ctx context.Context, taskID string) (*Approval, error) {
+func (r *ApprovalRepo) CreateForTaskAwaitingApproval(ctx context.Context, taskID string, baseVersionID string) (*Approval, error) {
+	if strings.TrimSpace(baseVersionID) == "" {
+		return nil, fmt.Errorf("审批记录缺少 base_version_id")
+	}
+
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -514,10 +586,10 @@ func (r *ApprovalRepo) CreateForTaskAwaitingApproval(ctx context.Context, taskID
 	}
 
 	approval, err := scanApproval(tx.QueryRow(ctx, `
-		INSERT INTO approvals (task_id)
-		VALUES ($1)
-		RETURNING id, task_id, status, reject_reason, decided_at, created_at
-	`, taskID))
+		INSERT INTO approvals (task_id, base_version_id)
+		VALUES ($1, $2)
+		RETURNING id, task_id, base_version_id, status, reject_reason, decided_at, created_at
+	`, taskID, baseVersionID))
 	if err != nil {
 		return nil, err
 	}

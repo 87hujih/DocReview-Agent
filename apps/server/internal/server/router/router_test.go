@@ -36,6 +36,7 @@ func TestRegisterExposesHealthEndpoint(t *testing.T) {
 	}
 }
 
+// TestNewRegistersApprovalRoutesWhenHandlerProvided 验证`newRegistersApprovalRoutesWhenHandlerProvided`在特定边界条件下的行为，防止同类回归。
 func TestNewRegistersApprovalRoutesWhenHandlerProvided(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		ApprovalHandler: handlers.NewApprovalHandler(nil),
@@ -58,6 +59,7 @@ func TestNewRegistersApprovalRoutesWhenHandlerProvided(t *testing.T) {
 	}
 }
 
+// TestNewRegistersFileRoutesWhenHandlerProvided 验证`newRegistersFileRoutesWhenHandlerProvided`在特定边界条件下的行为，防止同类回归。
 func TestNewRegistersFileRoutesWhenHandlerProvided(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		FileHandler: handlers.NewFileHandler(nil, nil),
@@ -69,6 +71,7 @@ func TestNewRegistersFileRoutesWhenHandlerProvided(t *testing.T) {
 	}
 }
 
+// TestNewRegistersResourceExportRouteWhenHandlerProvided 验证`newRegistersResourceExportRouteWhenHandlerProvided`在特定边界条件下的行为，防止同类回归。
 func TestNewRegistersResourceExportRouteWhenHandlerProvided(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		ResourceHandler: handlers.NewResourceHandler(nil, nil),
@@ -80,6 +83,34 @@ func TestNewRegistersResourceExportRouteWhenHandlerProvided(t *testing.T) {
 	}
 }
 
+// TestNewRegistersResourceListRouteWhenHandlerProvided 验证`newRegistersResourceListRouteWhenHandlerProvided`在特定边界条件下的行为，防止同类回归。
+func TestNewRegistersResourceListRouteWhenHandlerProvided(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
+		ResourceHandler: handlers.NewResourceHandler(nil, nil),
+	})
+
+	response := ut.PerformRequest(h.Engine, "GET", "/api/resources", nil).Result()
+	if response.StatusCode() != consts.StatusInternalServerError {
+		t.Fatalf("expected status %d when resource list route is registered without repo, got %d", consts.StatusInternalServerError, response.StatusCode())
+	}
+	if body := string(response.Body()); !strings.Contains(body, "资源存储未配置") {
+		t.Fatalf("expected resource list route to return configured storage error, got %q", body)
+	}
+}
+
+// TestNewRegistersResourceTaskContextRouteWhenHandlerProvided 验证`newRegistersResourceTaskContextRouteWhenHandlerProvided`在特定边界条件下的行为，防止同类回归。
+func TestNewRegistersResourceTaskContextRouteWhenHandlerProvided(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
+		ResourceHandler: handlers.NewResourceHandler(nil, nil),
+	})
+
+	response := ut.PerformRequest(h.Engine, "GET", "/api/resources/resource-1/task-context", nil).Result()
+	if response.StatusCode() != consts.StatusInternalServerError {
+		t.Fatalf("expected status %d when resource task context route is registered without repo, got %d", consts.StatusInternalServerError, response.StatusCode())
+	}
+}
+
+// TestNewAddsCORSHeadersToAPIResponses 验证`new`在写入或副作用路径下的行为，防止同类回归。
 func TestNewAddsCORSHeadersToAPIResponses(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		ApprovalHandler: handlers.NewApprovalHandler(nil),
@@ -98,6 +129,7 @@ func TestNewAddsCORSHeadersToAPIResponses(t *testing.T) {
 	}
 }
 
+// TestNewHandlesAssistantPreflightOPTIONS 验证`new`在格式处理路径下的行为，防止同类回归。
 func TestNewHandlesAssistantPreflightOPTIONS(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		ApprovalHandler: handlers.NewApprovalHandler(nil),
@@ -126,6 +158,7 @@ func TestNewHandlesAssistantPreflightOPTIONS(t *testing.T) {
 	}
 }
 
+// TestNewAddsRequestIDToPreflightOPTIONS 验证`new`在写入或副作用路径下的行为，防止同类回归。
 func TestNewAddsRequestIDToPreflightOPTIONS(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{})
 
@@ -151,6 +184,7 @@ func TestNewAddsRequestIDToPreflightOPTIONS(t *testing.T) {
 	}
 }
 
+// TestNewRegistersAssistantStreamingRoutesWhenHandlerProvided 验证`newRegistersAssistantStreamingRoutesWhenHandlerProvided`在特定边界条件下的行为，防止同类回归。
 func TestNewRegistersAssistantStreamingRoutesWhenHandlerProvided(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		AssistantHandler: handlers.NewAssistantHandler(fakeAssistantRouterService{}),
@@ -175,8 +209,19 @@ func TestNewRegistersAssistantStreamingRoutesWhenHandlerProvided(t *testing.T) {
 	if appendResponse.StatusCode() != consts.StatusBadRequest {
 		t.Fatalf("expected status %d for registered append stream route, got %d", consts.StatusBadRequest, appendResponse.StatusCode())
 	}
+
+	uploadConversationResponse := ut.PerformRequest(
+		h.Engine,
+		"POST",
+		"/api/assistant/conversations/files",
+		nil,
+	).Result()
+	if uploadConversationResponse.StatusCode() != consts.StatusBadRequest {
+		t.Fatalf("expected status %d for registered conversation upload route, got %d", consts.StatusBadRequest, uploadConversationResponse.StatusCode())
+	}
 }
 
+// TestNewAddsCORSHeadersToAssistantStreamingResponses 验证`new`在写入或副作用路径下的行为，防止同类回归。
 func TestNewAddsCORSHeadersToAssistantStreamingResponses(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		AssistantHandler: handlers.NewAssistantHandler(fakeAssistantRouterService{}),
@@ -195,40 +240,72 @@ func TestNewAddsCORSHeadersToAssistantStreamingResponses(t *testing.T) {
 	}
 }
 
+// TestNewRegistersAssistantCapabilitiesRouteWhenHandlerProvided 验证`newRegistersAssistantCapabilitiesRouteWhenHandlerProvided`在特定边界条件下的行为，防止同类回归。
+func TestNewRegistersAssistantCapabilitiesRouteWhenHandlerProvided(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
+		AssistantHandler: handlers.NewAssistantHandler(fakeAssistantRouterService{}),
+	})
+
+	response := ut.PerformRequest(
+		h.Engine,
+		"GET",
+		"/api/assistant/capabilities",
+		nil,
+	).Result()
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d for registered capabilities route, got %d", consts.StatusOK, response.StatusCode())
+	}
+}
+
+// fakeAssistantRouterService 作为助手Router服务的测试替身，用于在用例里提供可控的依赖行为。
 type fakeAssistantRouterService struct{}
 
+// ListSessions 实现测试替身需要的 `ListSessions` 接口方法，为用例分支提供可控返回。
 func (fakeAssistantRouterService) ListSessions(context.Context) ([]postgres.AssistantSession, error) {
 	return nil, nil
 }
 
+// GetConversation 实现测试替身需要的 `GetConversation` 接口方法，为用例分支提供可控返回。
 func (fakeAssistantRouterService) GetConversation(context.Context, string) (*assistant.ConversationResult, error) {
 	return nil, nil
 }
 
+// StartConversation 实现测试替身需要的 `StartConversation` 接口方法，为用例分支提供可控返回。
 func (fakeAssistantRouterService) StartConversation(context.Context, string) (*assistant.ConversationResult, error) {
 	return nil, nil
 }
 
+// StartConversationWithFile 实现测试替身需要的空会话上传接口，为用例分支提供可控返回。
+func (fakeAssistantRouterService) StartConversationWithFile(context.Context, string, []byte) (*assistant.UploadFileResult, error) {
+	return nil, nil
+}
+
+// StartConversationStream 实现测试替身需要的 `StartConversationStream` 接口方法，为用例分支提供可控返回。
 func (fakeAssistantRouterService) StartConversationStream(context.Context, string, func(assistant.StreamEvent) error) error {
 	return nil
 }
 
+// AppendMessage 实现测试替身需要的 `AppendMessage` 接口方法，为用例分支提供可控返回。
 func (fakeAssistantRouterService) AppendMessage(context.Context, string, string) (*assistant.ConversationResult, error) {
 	return nil, nil
 }
 
+// AppendMessageStream 实现测试替身需要的 `AppendMessageStream` 接口方法，为用例分支提供可控返回。
 func (fakeAssistantRouterService) AppendMessageStream(context.Context, string, string, func(assistant.StreamEvent) error) error {
 	return nil
 }
 
+// UploadFile 实现测试替身需要的 `UploadFile` 接口方法，为用例分支提供可控返回。
 func (fakeAssistantRouterService) UploadFile(context.Context, string, string, []byte) (*assistant.UploadFileResult, error) {
 	return nil, nil
 }
 
+// ConfirmTaskSuggestion 实现测试替身需要的 `ConfirmTaskSuggestion` 接口方法，为用例分支提供可控返回。
 func (fakeAssistantRouterService) ConfirmTaskSuggestion(context.Context, string) (*assistant.ConfirmTaskResult, error) {
 	return nil, nil
 }
 
+// DeleteSession 实现测试替身需要的 `DeleteSession` 接口方法，为用例分支提供可控返回。
 func (fakeAssistantRouterService) DeleteSession(context.Context, string) (bool, error) {
 	return false, nil
 }

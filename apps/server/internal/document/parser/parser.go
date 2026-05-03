@@ -33,9 +33,10 @@ type Input struct {
 	Content  []byte
 }
 
-// Result 描述文档解析后的文本正文。
+// Result 描述文档解析后的 canonical text 与结构化结果。
 type Result struct {
-	Text string
+	Text     string
+	Document *ParsedDocument
 }
 
 // Parser 定义文档解析器的统一入口。
@@ -54,6 +55,7 @@ type Options struct {
 	HTTPClient  *http.Client
 }
 
+// documentParser 承载文档解析器相关状态，明确文档解析链路中的数据边界。
 type documentParser struct {
 	text *textParser
 	tika *tikaParser
@@ -93,6 +95,7 @@ func New(options Options) (Parser, error) {
 	}
 }
 
+// Parse 解析 `Parse`，统一输入校验和领域结果构造。
 func (p *documentParser) Parse(ctx context.Context, input Input) (*Result, error) {
 	extension := normalizeExtension(input.FileName)
 
@@ -109,6 +112,7 @@ func (p *documentParser) Parse(ctx context.Context, input Input) (*Result, error
 	}
 }
 
+// SupportsFileName 判断给定文件名是否在当前解析能力支持的扩展名集合里。
 func (p *documentParser) SupportsFileName(fileName string) bool {
 	extension := normalizeExtension(fileName)
 	if isTextExtension(extension) {
@@ -118,6 +122,7 @@ func (p *documentParser) SupportsFileName(fileName string) bool {
 	return p.tika != nil && isTikaExtension(extension)
 }
 
+// SupportedExtensions 返回当前文档解析能力支持的扩展名列表，保持前端展示与后端校验一致。
 func (p *documentParser) SupportedExtensions() []string {
 	extensions := append([]string(nil), textExtensions...)
 	if p.tika != nil {
@@ -127,6 +132,7 @@ func (p *documentParser) SupportedExtensions() []string {
 	return extensions
 }
 
+// UnsupportedFileMessage 为不受支持的文档类型生成提示文案，统一解析入口返回的错误口径。
 func (p *documentParser) UnsupportedFileMessage(fileName string) string {
 	extension := normalizeExtension(fileName)
 	if p.tika == nil && isTikaExtension(extension) {
@@ -136,6 +142,7 @@ func (p *documentParser) UnsupportedFileMessage(fileName string) string {
 	return fmt.Sprintf("不支持的文件格式：%s。当前支持：%s。", extension, formatExtensions(p.SupportedExtensions()))
 }
 
+// normalizeExtension 归一化 `扩展名`，避免后续流程重复处理边界输入。
 func normalizeExtension(fileName string) string {
 	extension := strings.ToLower(strings.TrimSpace(filepath.Ext(fileName)))
 	if extension == "" {
@@ -145,14 +152,17 @@ func normalizeExtension(fileName string) string {
 	return extension
 }
 
+// isTextExtension 判断文件扩展名是否属于纯文本解析能力支持的集合。
 func isTextExtension(extension string) bool {
 	return containsExtension(textExtensions, extension)
 }
 
+// isTikaExtension 判断文件扩展名是否属于 Tika 解析链路支持的集合。
 func isTikaExtension(extension string) bool {
 	return containsExtension(tikaExtensions, extension)
 }
 
+// containsExtension 判断扩展名列表里是否包含目标后缀，统一大小写与点号差异处理。
 func containsExtension(extensions []string, extension string) bool {
 	for _, supported := range extensions {
 		if extension == supported {
@@ -163,6 +173,7 @@ func containsExtension(extensions []string, extension string) bool {
 	return false
 }
 
+// formatExtensions 把扩展名列表格式化成提示文案，供错误消息和能力展示复用。
 func formatExtensions(extensions []string) string {
 	names := make([]string, 0, len(extensions))
 	for _, extension := range extensions {
@@ -172,6 +183,7 @@ func formatExtensions(extensions []string) string {
 	return strings.Join(names, "、")
 }
 
+// chooseHTTPClient 根据配置选择直连或带超时约束的 HTTP 客户端，供文档解析链路复用。
 func chooseHTTPClient(client *http.Client, timeout time.Duration) *http.Client {
 	if client == nil {
 		return &http.Client{Timeout: timeout}

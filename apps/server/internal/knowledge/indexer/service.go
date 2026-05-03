@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	"agent_project/apps/server/internal/knowledge/chunker"
+	"agent_project/apps/server/internal/knowledge/sections"
 	"agent_project/apps/server/internal/storage/postgres"
 
 	"github.com/pgvector/pgvector-go"
@@ -23,6 +25,7 @@ type embedderClient interface {
 type Input struct {
 	Resource postgres.Resource
 	Version  postgres.ResourceVersion
+	Sections []postgres.ResourceSection
 }
 
 // Service 负责把某个资源版本重建为一组可检索分块。
@@ -46,14 +49,28 @@ func (s *Service) BuildVersionChunks(ctx context.Context, input Input) ([]postgr
 		return nil, nil
 	}
 
-	chunks := chunker.ChunkMarkdown(content)
+	chunks := buildSectionAwareChunkInputs(input.Sections)
 	if len(chunks) == 0 {
-		chunks = []chunker.Chunk{
-			{
-				ChunkIndex:   0,
-				SectionTitle: strings.TrimSpace(input.Resource.Title),
-				Content:      content,
-			},
+		legacyChunks := chunker.ChunkMarkdown(content)
+		chunks = make([]postgres.ResourceChunkInput, 0, len(legacyChunks))
+		sectionOrders := make(map[string]int, len(legacyChunks))
+		for _, chunk := range legacyChunks {
+			sectionKey := strings.TrimSpace(chunk.SectionTitle)
+			sectionOrders[sectionKey]++
+			sectionType := string(documentnormalize.SectionTypeSection)
+			if sectionKey == sections.WholeDocumentTitle {
+				sectionType = string(documentnormalize.SectionTypeDocument)
+			}
+
+			chunks = append(chunks, postgres.ResourceChunkInput{
+				ChunkIndex:     chunk.ChunkIndex,
+				SectionTitle:   chunk.SectionTitle,
+				Content:        chunk.Content,
+				SectionType:    optionalString(sectionType),
+				ChunkRole:      optionalString("section_body"),
+				WindowGroupID:  optionalString(sectionKey),
+				OrderInSection: optionalInt(sectionOrders[sectionKey]),
+			})
 		}
 	}
 
@@ -72,12 +89,8 @@ func (s *Service) BuildVersionChunks(ctx context.Context, input Input) ([]postgr
 
 	inputChunks := make([]postgres.ResourceChunkInput, 0, len(chunks))
 	for index, chunk := range chunks {
-		inputChunks = append(inputChunks, postgres.ResourceChunkInput{
-			ChunkIndex:   chunk.ChunkIndex,
-			SectionTitle: chunk.SectionTitle,
-			Content:      chunk.Content,
-			Embedding:    pgvector.NewVector(vectors[index]),
-		})
+		chunk.Embedding = pgvector.NewVector(vectors[index])
+		inputChunks = append(inputChunks, chunk)
 	}
 
 	return inputChunks, nil

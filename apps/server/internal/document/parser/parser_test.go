@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-func TestParsePassesThroughTextFiles(t *testing.T) {
+// TestTextParserReturnsStructuredDocument 验证`textParser`在返回值分支下的行为，防止同类回归。
+func TestTextParserReturnsStructuredDocument(t *testing.T) {
 	parser, err := New(Options{})
 	if err != nil {
 		t.Fatalf("new parser: %v", err)
@@ -18,17 +19,36 @@ func TestParsePassesThroughTextFiles(t *testing.T) {
 
 	result, err := parser.Parse(context.Background(), Input{
 		FileName: "学生守则.md",
-		Content:  []byte("# 学生守则\n这里是正文。"),
+		Content:  []byte("# 学生守则\n这里是正文。\n\n第二段说明。"),
 	})
 	if err != nil {
 		t.Fatalf("parse text file: %v", err)
 	}
 
-	if result.Text != "# 学生守则\n这里是正文。" {
+	if result.Text != "# 学生守则\n这里是正文。\n\n第二段说明。" {
 		t.Fatalf("expected original markdown content, got %q", result.Text)
+	}
+	if result.Document == nil {
+		t.Fatal("expected structured document for markdown parse")
+	}
+	if result.Document.SourceFormat != "markdown" {
+		t.Fatalf("expected source format markdown, got %q", result.Document.SourceFormat)
+	}
+	if len(result.Document.Blocks) != 3 {
+		t.Fatalf("expected 3 markdown blocks, got %d", len(result.Document.Blocks))
+	}
+	if result.Document.Blocks[0].Type != BlockHeading || result.Document.Blocks[0].Text != "学生守则" {
+		t.Fatalf("expected first block to be heading '学生守则', got %#v", result.Document.Blocks[0])
+	}
+	if result.Document.Blocks[1].Type != BlockParagraph || result.Document.Blocks[1].Text != "这里是正文。" {
+		t.Fatalf("expected second block to be paragraph, got %#v", result.Document.Blocks[1])
+	}
+	if result.Document.Blocks[2].Type != BlockParagraph || result.Document.Blocks[2].Text != "第二段说明。" {
+		t.Fatalf("expected third block to be paragraph, got %#v", result.Document.Blocks[2])
 	}
 }
 
+// TestTextParserCapabilityOnlyAcceptsTextFiles 验证`textParserCapabilityOnly`在合法输入或兼容路径下的行为，防止同类回归。
 func TestTextParserCapabilityOnlyAcceptsTextFiles(t *testing.T) {
 	parser, err := New(Options{Mode: ModeText})
 	if err != nil {
@@ -48,6 +68,7 @@ func TestTextParserCapabilityOnlyAcceptsTextFiles(t *testing.T) {
 	}
 }
 
+// TestTikaParserCapabilityAcceptsDocumentFiles 验证`tikaParserCapability`在合法输入或兼容路径下的行为，防止同类回归。
 func TestTikaParserCapabilityAcceptsDocumentFiles(t *testing.T) {
 	parser, err := New(Options{
 		Mode:    ModeTika,
@@ -67,7 +88,8 @@ func TestTikaParserCapabilityAcceptsDocumentFiles(t *testing.T) {
 	}
 }
 
-func TestParseUsesTikaForDocumentFiles(t *testing.T) {
+// TestTikaParserReturnsStructuredDocument 验证`tikaParser`在返回值分支下的行为，防止同类回归。
+func TestTikaParserReturnsStructuredDocument(t *testing.T) {
 	var receivedPath string
 	var receivedBody []byte
 
@@ -81,7 +103,7 @@ func TestParseUsesTikaForDocumentFiles(t *testing.T) {
 		receivedBody = body
 
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("解析后的正文"))
+		_, _ = w.Write([]byte("项目经历\nCampusHub 校园活动平台\n负责活动发布与报名。"))
 	}))
 	defer server.Close()
 
@@ -111,11 +133,94 @@ func TestParseUsesTikaForDocumentFiles(t *testing.T) {
 		t.Fatalf("expected original file bytes to be sent to tika, got %q", string(receivedBody))
 	}
 
-	if result.Text != "解析后的正文" {
+	if result.Text != "项目经历\nCampusHub 校园活动平台\n负责活动发布与报名。" {
 		t.Fatalf("expected tika text output, got %q", result.Text)
+	}
+	if result.Document == nil {
+		t.Fatal("expected structured document for tika parse")
+	}
+	if result.Document.SourceFormat != "docx" {
+		t.Fatalf("expected source format docx, got %q", result.Document.SourceFormat)
+	}
+	if len(result.Document.Blocks) < 2 {
+		t.Fatalf("expected at least 2 blocks from tika parse, got %d", len(result.Document.Blocks))
+	}
+	if result.Document.Blocks[0].Type != BlockParagraph {
+		t.Fatalf("expected first tika block to be paragraph, got %#v", result.Document.Blocks[0])
 	}
 }
 
+// TestTikaParserMarksQualityFlags 验证`tikaParser`在流程控制路径下的行为，防止同类回归。
+func TestTikaParserMarksQualityFlags(t *testing.T) {
+	t.Run("too many short blocks", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("项目\n项目描述\n工作内容\n技术栈\n成果"))
+		}))
+		defer server.Close()
+
+		parser, err := New(Options{
+			Mode:        ModeTika,
+			TikaURL:     server.URL,
+			TikaTimeout: 2 * time.Second,
+			HTTPClient:  server.Client(),
+		})
+		if err != nil {
+			t.Fatalf("new parser: %v", err)
+		}
+
+		result, err := parser.Parse(context.Background(), Input{
+			FileName: "简历.pdf",
+			Content:  []byte("binary-pdf-content"),
+		})
+		if err != nil {
+			t.Fatalf("parse short-fragment pdf: %v", err)
+		}
+		if result.Document == nil {
+			t.Fatal("expected structured document for short-fragment pdf")
+		}
+		if !result.Document.QualityFlags.Has("too_many_short_blocks") {
+			t.Fatalf("expected too_many_short_blocks flag, got %#v", result.Document.QualityFlags)
+		}
+	})
+
+	t.Run("requires ocr when text is empty", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("   \n\t"))
+		}))
+		defer server.Close()
+
+		parser, err := New(Options{
+			Mode:        ModeTika,
+			TikaURL:     server.URL,
+			TikaTimeout: 2 * time.Second,
+			HTTPClient:  server.Client(),
+		})
+		if err != nil {
+			t.Fatalf("new parser: %v", err)
+		}
+
+		result, err := parser.Parse(context.Background(), Input{
+			FileName: "扫描件.pdf",
+			Content:  []byte("binary-pdf-content"),
+		})
+		if err != nil {
+			t.Fatalf("parse empty pdf: %v", err)
+		}
+		if result.Document == nil {
+			t.Fatal("expected structured document for empty pdf")
+		}
+		if !result.Document.QualityFlags.Has("requires_ocr") {
+			t.Fatalf("expected requires_ocr flag, got %#v", result.Document.QualityFlags)
+		}
+		if !result.Document.QualityFlags.Has("text_empty") {
+			t.Fatalf("expected text_empty flag, got %#v", result.Document.QualityFlags)
+		}
+	})
+}
+
+// TestParseRejectsUnknownExtensions 验证`parse`在非法输入或失败路径下的行为，防止同类回归。
 func TestParseRejectsUnknownExtensions(t *testing.T) {
 	parser, err := New(Options{})
 	if err != nil {
@@ -135,6 +240,7 @@ func TestParseRejectsUnknownExtensions(t *testing.T) {
 	}
 }
 
+// TestParseReturnsErrorWhenTikaFails 验证`parse`在返回值分支下的行为，防止同类回归。
 func TestParseReturnsErrorWhenTikaFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tika failed", http.StatusBadGateway)

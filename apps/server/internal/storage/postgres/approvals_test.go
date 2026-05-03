@@ -24,14 +24,17 @@ func TestApprovalRepoCRUD(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupResource(t, pool, resource.ID)
 	})
-
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
 	task, err := taskRepo.Create(ctx, resource.ID, "测试审批流程")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
 	// 创建 pending approval
-	approvalRecord, err := repo.Create(ctx, task.ID)
+	approvalRecord, err := repo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -40,6 +43,9 @@ func TestApprovalRepoCRUD(t *testing.T) {
 	}
 	if approvalRecord.TaskID != task.ID {
 		t.Fatalf("expected task_id %q, got %q", task.ID, approvalRecord.TaskID)
+	}
+	if approvalRecord.BaseVersionID == nil || *approvalRecord.BaseVersionID != version.ID {
+		t.Fatalf("expected base version %q, got %#v", version.ID, approvalRecord.BaseVersionID)
 	}
 
 	// 按 ID 查询
@@ -76,6 +82,60 @@ func TestApprovalRepoCRUD(t *testing.T) {
 	}
 }
 
+// TestUpdateApprovalStatusTxReturningReturnsUpdatedApproval 验证`updateApprovalStatusTxReturning`在返回值分支下的行为，防止同类回归。
+func TestUpdateApprovalStatusTxReturningReturnsUpdatedApproval(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "审批事务内 returning 测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	task, err := taskRepo.Create(ctx, resource.ID, "验证事务内 returning")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	rejectReason := "需要补充依据"
+	updatedApproval, err := UpdateApprovalStatusTxReturning(ctx, tx, approvalRecord.ID, "rejected", &rejectReason)
+	if err != nil {
+		t.Fatalf("update approval status returning: %v", err)
+	}
+	if updatedApproval == nil {
+		t.Fatal("expected updated approval, got nil")
+	}
+	if updatedApproval.Status != "rejected" {
+		t.Fatalf("expected status %q, got %q", "rejected", updatedApproval.Status)
+	}
+	if updatedApproval.RejectReason == nil || *updatedApproval.RejectReason != rejectReason {
+		t.Fatalf("expected reject reason %q, got %#v", rejectReason, updatedApproval.RejectReason)
+	}
+	if updatedApproval.DecidedAt == nil || updatedApproval.DecidedAt.IsZero() {
+		t.Fatal("expected decided_at to be set")
+	}
+	if updatedApproval.BaseVersionID == nil || *updatedApproval.BaseVersionID != version.ID {
+		t.Fatalf("expected base version %q, got %#v", version.ID, updatedApproval.BaseVersionID)
+	}
+}
+
 // TestApprovalRepoListIsolated 验证审批列表查询只断言本测试创建的数据，不依赖共享库全局状态。
 func TestApprovalRepoListIsolated(t *testing.T) {
 	pool := newTestPool(t)
@@ -89,13 +149,20 @@ func TestApprovalRepoListIsolated(t *testing.T) {
 		t.Fatalf("create resource1: %v", err)
 	}
 	t.Cleanup(func() { cleanupResource(t, pool, resource1.ID) })
+	version1, err := resourceRepo.CreateVersion(ctx, resource1.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version1: %v", err)
+	}
 
 	resource2, err := resourceRepo.Create(ctx, "审批列表隔离测试2-"+uniqueSuffix(), "upload")
 	if err != nil {
 		t.Fatalf("create resource2: %v", err)
 	}
 	t.Cleanup(func() { cleanupResource(t, pool, resource2.ID) })
-
+	version2, err := resourceRepo.CreateVersion(ctx, resource2.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version2: %v", err)
+	}
 	task1, err := taskRepo.Create(ctx, resource1.ID, "审批列表测试任务1")
 	if err != nil {
 		t.Fatalf("create task1: %v", err)
@@ -105,11 +172,11 @@ func TestApprovalRepoListIsolated(t *testing.T) {
 		t.Fatalf("create task2: %v", err)
 	}
 
-	approval1, err := repo.Create(ctx, task1.ID)
+	approval1, err := repo.Create(ctx, task1.ID, version1.ID)
 	if err != nil {
 		t.Fatalf("create approval1: %v", err)
 	}
-	approval2, err := repo.Create(ctx, task2.ID)
+	approval2, err := repo.Create(ctx, task2.ID, version2.ID)
 	if err != nil {
 		t.Fatalf("create approval2: %v", err)
 	}
@@ -185,6 +252,11 @@ func TestCreateForTaskAwaitingApprovalSuccess(t *testing.T) {
 	}
 	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
 
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
 	task, err := taskRepo.Create(ctx, resource.ID, "原子审批流程测试")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -195,7 +267,7 @@ func TestCreateForTaskAwaitingApprovalSuccess(t *testing.T) {
 		t.Fatalf("set task status to drafting: %v", err)
 	}
 
-	approvalRecord, err := repo.CreateForTaskAwaitingApproval(ctx, task.ID)
+	approvalRecord, err := repo.CreateForTaskAwaitingApproval(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("CreateForTaskAwaitingApproval 期望成功，实际得到 %v", err)
 	}
@@ -205,6 +277,9 @@ func TestCreateForTaskAwaitingApprovalSuccess(t *testing.T) {
 	if approvalRecord.TaskID != task.ID {
 		t.Fatalf("期望 task_id %q，实际 %q", task.ID, approvalRecord.TaskID)
 	}
+	if approvalRecord.BaseVersionID == nil || *approvalRecord.BaseVersionID != version.ID {
+		t.Fatalf("期望审批记录固化 base_version_id=%q，实际为 %#v", version.ID, approvalRecord.BaseVersionID)
+	}
 
 	// 验证任务状态已切换为 awaiting_approval
 	updated, err := taskRepo.GetByID(ctx, task.ID)
@@ -213,6 +288,43 @@ func TestCreateForTaskAwaitingApprovalSuccess(t *testing.T) {
 	}
 	if updated.Status != "awaiting_approval" {
 		t.Fatalf("期望任务状态为 awaiting_approval，实际为 %q", updated.Status)
+	}
+}
+
+// TestCreateForTaskAwaitingApprovalStoresBaseVersionID 验证`createForTaskAwaitingApproval`在写入或副作用路径下的行为，防止同类回归。
+func TestCreateForTaskAwaitingApprovalStoresBaseVersionID(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewApprovalRepo(pool)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "原子审批 base version 测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
+
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	task, err := taskRepo.Create(ctx, resource.ID, "审批链需要固化 base version")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET status = 'drafting' WHERE id = $1`, task.ID); err != nil {
+		t.Fatalf("set task status to drafting: %v", err)
+	}
+
+	approvalRecord, err := repo.CreateForTaskAwaitingApproval(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("CreateForTaskAwaitingApproval 期望成功，实际得到 %v", err)
+	}
+	if approvalRecord.BaseVersionID == nil || *approvalRecord.BaseVersionID != version.ID {
+		t.Fatalf("期望审批记录固化 base_version_id=%q，实际为 %#v", version.ID, approvalRecord.BaseVersionID)
 	}
 }
 
@@ -230,13 +342,18 @@ func TestCreateForTaskAwaitingApprovalNonDrafting(t *testing.T) {
 	}
 	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
 
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
 	task, err := taskRepo.Create(ctx, resource.ID, "非法状态审批测试任务")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 	// task 初始状态为 pending，不是 drafting
 
-	_, err = repo.CreateForTaskAwaitingApproval(ctx, task.ID)
+	_, err = repo.CreateForTaskAwaitingApproval(ctx, task.ID, version.ID)
 	if err == nil {
 		t.Fatal("任务状态非 drafting 时期望返回错误，实际得到 nil")
 	}
@@ -251,6 +368,76 @@ func TestCreateForTaskAwaitingApprovalNonDrafting(t *testing.T) {
 	}
 }
 
+// TestUpdateApprovalStatusTxReturningReturnsRejectReason 验证`updateApprovalStatusTxReturning`在返回值分支下的行为，防止同类回归。
+func TestUpdateApprovalStatusTxReturningReturnsRejectReason(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "审批拒绝 returning 测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	task, err := taskRepo.Create(ctx, resource.ID, "验证拒绝 returning")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET status = 'drafting' WHERE id = $1`, task.ID); err != nil {
+		t.Fatalf("set task status to drafting: %v", err)
+	}
+	approvalRecord, err := approvalRepo.CreateForTaskAwaitingApproval(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	reason := "缺少关键信息"
+	updated, err := UpdateApprovalStatusTxReturning(ctx, tx, approvalRecord.ID, "rejected", &reason)
+	if err != nil {
+		t.Fatalf("update approval reject status returning: %v", err)
+	}
+	if updated.Status != "rejected" {
+		t.Fatalf("expected approval status %q, got %q", "rejected", updated.Status)
+	}
+	if updated.RejectReason == nil || *updated.RejectReason != reason {
+		t.Fatalf("expected reject reason %q, got %#v", reason, updated.RejectReason)
+	}
+	if updated.DecidedAt == nil || updated.DecidedAt.IsZero() {
+		t.Fatal("expected decided_at to be set")
+	}
+	if updated.BaseVersionID == nil || *updated.BaseVersionID != version.ID {
+		t.Fatalf("expected base_version_id %q, got %#v", version.ID, updated.BaseVersionID)
+	}
+
+	storedBeforeCommit, err := approvalRepo.GetByID(ctx, approvalRecord.ID)
+	if err != nil {
+		t.Fatalf("get approval before rollback: %v", err)
+	}
+	if storedBeforeCommit == nil {
+		t.Fatal("expected approval before rollback, got nil")
+	}
+	if storedBeforeCommit.Status != "pending" {
+		t.Fatalf("expected stored approval to remain pending before commit, got %q", storedBeforeCommit.Status)
+	}
+	if storedBeforeCommit.RejectReason != nil {
+		t.Fatalf("expected stored reject reason nil before commit, got %#v", storedBeforeCommit.RejectReason)
+	}
+}
+
+// TestJobRepoCreateRejectsDuplicateApprovalID 验证`jobRepoCreate`在非法输入或失败路径下的行为，防止同类回归。
 func TestJobRepoCreateRejectsDuplicateApprovalID(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -264,24 +451,148 @@ func TestJobRepoCreateRejectsDuplicateApprovalID(t *testing.T) {
 		t.Fatalf("create resource: %v", err)
 	}
 	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
 
 	task, err := taskRepo.Create(ctx, resource.ID, "相同审批不应重复创建 job")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
 
-	if _, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID); err != nil {
+	if _, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID); err != nil {
 		t.Fatalf("create first job: %v", err)
 	}
-	if _, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID); err == nil {
+	if _, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID); err == nil {
 		t.Fatal("expected duplicate approval_id job creation to fail")
 	}
 }
 
+// TestJobRepoGetByApprovalIDReturnsJob 验证`jobRepoGetByApprovalID`在返回值分支下的行为，防止同类回归。
+func TestJobRepoGetByApprovalIDReturnsJob(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	jobRepo := NewJobRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "按审批读取作业测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	task, err := taskRepo.Create(ctx, resource.ID, "按 approval_id 查 job")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	gotJob, err := jobRepo.GetByApprovalID(ctx, approvalRecord.ID)
+	if err != nil {
+		t.Fatalf("get job by approval id: %v", err)
+	}
+	if gotJob == nil {
+		t.Fatal("expected job, got nil")
+	}
+	if gotJob.ID != jobRecord.ID {
+		t.Fatalf("expected job id %q, got %q", jobRecord.ID, gotJob.ID)
+	}
+	if gotJob.ApprovalID != approvalRecord.ID {
+		t.Fatalf("expected approval id %q, got %q", approvalRecord.ID, gotJob.ApprovalID)
+	}
+	if gotJob.BaseVersionID == nil || *gotJob.BaseVersionID != version.ID {
+		t.Fatalf("expected base version %q, got %#v", version.ID, gotJob.BaseVersionID)
+	}
+}
+
+// TestJobRepoGetByApprovalIDReturnsNilWhenMissing 验证`jobRepoGetByApprovalID`在返回值分支下的行为，防止同类回归。
+func TestJobRepoGetByApprovalIDReturnsNilWhenMissing(t *testing.T) {
+	pool := newTestPool(t)
+	jobRepo := NewJobRepo(pool)
+	ctx := testContext(t)
+
+	gotJob, err := jobRepo.GetByApprovalID(ctx, "00000000-0000-0000-0000-000000000000")
+	if err != nil {
+		t.Fatalf("get missing job by approval id: %v", err)
+	}
+	if gotJob != nil {
+		t.Fatalf("expected nil job, got %#v", gotJob)
+	}
+}
+
+// TestApprovalRepoCreateRejectsMissingBaseVersionID 验证`approvalRepoCreate`在非法输入或失败路径下的行为，防止同类回归。
+func TestApprovalRepoCreateRejectsMissingBaseVersionID(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewApprovalRepo(pool)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "审批 helper 缺少 base version 测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
+	task, err := taskRepo.Create(ctx, resource.ID, "审批 helper 缺少 base_version_id")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if _, err := repo.Create(ctx, task.ID, ""); err == nil {
+		t.Fatal("expected create approval without base_version_id to fail")
+	}
+}
+
+// TestJobRepoCreateRejectsMissingBaseVersionID 验证`jobRepoCreate`在非法输入或失败路径下的行为，防止同类回归。
+func TestJobRepoCreateRejectsMissingBaseVersionID(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	approvalRepo := NewApprovalRepo(pool)
+	jobRepo := NewJobRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "作业 helper 缺少 base version 测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	task, err := taskRepo.Create(ctx, resource.ID, "作业 helper 缺少 base_version_id")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+
+	if _, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, ""); err == nil {
+		t.Fatal("expected create job without base_version_id to fail")
+	}
+}
+
+// TestJobRepoFinalizeSuccessWritesTaskStateAndEventsAtomically 验证`jobRepoFinalizeSuccess`在写入或副作用路径下的行为，防止同类回归。
 func TestJobRepoFinalizeSuccessWritesTaskStateAndEventsAtomically(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -310,11 +621,11 @@ func TestJobRepoFinalizeSuccessWritesTaskStateAndEventsAtomically(t *testing.T) 
 		t.Fatalf("update task to executing: %v", err)
 	}
 
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
-	job, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID)
+	job, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}
@@ -390,6 +701,7 @@ func TestJobRepoFinalizeSuccessWritesTaskStateAndEventsAtomically(t *testing.T) 
 	}
 }
 
+// TestJobRepoFinalizeFailureWritesTaskStateAndEventsAtomically 验证`jobRepoFinalizeFailure`在写入或副作用路径下的行为，防止同类回归。
 func TestJobRepoFinalizeFailureWritesTaskStateAndEventsAtomically(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -404,7 +716,10 @@ func TestJobRepoFinalizeFailureWritesTaskStateAndEventsAtomically(t *testing.T) 
 		t.Fatalf("create resource: %v", err)
 	}
 	t.Cleanup(func() { cleanupResource(t, pool, resource.ID) })
-
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "原始版本内容", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
 	task, err := taskRepo.Create(ctx, resource.ID, "验证作业失败收尾")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -413,11 +728,11 @@ func TestJobRepoFinalizeFailureWritesTaskStateAndEventsAtomically(t *testing.T) 
 		t.Fatalf("update task to executing: %v", err)
 	}
 
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
-	job, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID)
+	job, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}

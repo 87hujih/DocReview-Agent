@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
+// TestDownloadUploadedFileHandler 验证`downloadUploadedFileHandler`在特定边界条件下的行为，防止同类回归。
 func TestDownloadUploadedFileHandler(t *testing.T) {
 	handler := NewFileHandler(
 		fakeUploadedFileReader{
@@ -49,6 +50,7 @@ func TestDownloadUploadedFileHandler(t *testing.T) {
 	}
 }
 
+// TestDownloadUploadedFileHandlerInvalidID 验证`downloadUploadedFileHandlerInvalidID`在特定边界条件下的行为，防止同类回归。
 func TestDownloadUploadedFileHandlerInvalidID(t *testing.T) {
 	handler := NewFileHandler(fakeUploadedFileReader{}, fakeFileStoreReader{})
 	engine := server.New()
@@ -66,6 +68,7 @@ func TestDownloadUploadedFileHandlerInvalidID(t *testing.T) {
 	}
 }
 
+// TestDownloadUploadedFileHandlerNotFound 验证`downloadUploadedFileHandlerNotFound`在特定边界条件下的行为，防止同类回归。
 func TestDownloadUploadedFileHandlerNotFound(t *testing.T) {
 	handler := NewFileHandler(fakeUploadedFileReader{}, fakeFileStoreReader{})
 	engine := server.New()
@@ -81,6 +84,7 @@ func TestDownloadUploadedFileHandlerNotFound(t *testing.T) {
 	}
 }
 
+// TestDownloadUploadedFileHandlerStoreMissing 验证`downloadUploadedFileHandlerStoreMissing`在特定边界条件下的行为，防止同类回归。
 func TestDownloadUploadedFileHandlerStoreMissing(t *testing.T) {
 	file := &postgres.UploadedFile{
 		ID:               "00000000-0000-0000-0000-000000000002",
@@ -105,6 +109,7 @@ func TestDownloadUploadedFileHandlerStoreMissing(t *testing.T) {
 	}
 }
 
+// TestDownloadUploadedFileHandlerContentLengthSet 验证`downloadUploadedFileHandlerContentLengthSet`在特定边界条件下的行为，防止同类回归。
 func TestDownloadUploadedFileHandlerContentLengthSet(t *testing.T) {
 	content := "hello world content"
 	file := &postgres.UploadedFile{
@@ -130,6 +135,7 @@ func TestDownloadUploadedFileHandlerContentLengthSet(t *testing.T) {
 	}
 }
 
+// TestDownloadUploadedFileHandlerFallbackContentType 验证`downloadUploadedFileHandler`在回退路径下的行为，防止同类回归。
 func TestDownloadUploadedFileHandlerFallbackContentType(t *testing.T) {
 	file := &postgres.UploadedFile{
 		ID:               "00000000-0000-0000-0000-000000000004",
@@ -155,11 +161,13 @@ func TestDownloadUploadedFileHandlerFallbackContentType(t *testing.T) {
 	}
 }
 
+// fakeUploadedFileReader 作为Uploaded文件读取器的测试替身，用于在用例里提供可控的依赖行为。
 type fakeUploadedFileReader struct {
 	file *postgres.UploadedFile
 	err  error
 }
 
+// GetByID 实现测试替身需要的 `GetByID` 接口方法，为用例分支提供可控返回。
 func (r fakeUploadedFileReader) GetByID(context.Context, string) (*postgres.UploadedFile, error) {
 	if r.err != nil {
 		return nil, r.err
@@ -168,12 +176,14 @@ func (r fakeUploadedFileReader) GetByID(context.Context, string) (*postgres.Uplo
 	return r.file, nil
 }
 
+// fakeFileStoreReader 作为文件Store读取器的测试替身，用于在用例里提供可控的依赖行为。
 type fakeFileStoreReader struct {
 	content string
 	openErr error
 	statErr error
 }
 
+// Open 实现测试替身需要的 `Open` 接口方法，为用例分支提供可控返回。
 func (r fakeFileStoreReader) Open(context.Context, string) (io.ReadCloser, error) {
 	if r.openErr != nil {
 		return nil, r.openErr
@@ -181,6 +191,7 @@ func (r fakeFileStoreReader) Open(context.Context, string) (io.ReadCloser, error
 	return io.NopCloser(strings.NewReader(r.content)), nil
 }
 
+// Stat 实现测试替身需要的 `Stat` 接口方法，为用例分支提供可控返回。
 func (r fakeFileStoreReader) Stat(context.Context, string) (os.FileInfo, error) {
 	if r.statErr != nil {
 		return nil, r.statErr
@@ -191,13 +202,25 @@ func (r fakeFileStoreReader) Stat(context.Context, string) (os.FileInfo, error) 
 	return &fakeFileInfo{size: int64(len(r.content))}, nil
 }
 
+// fakeFileInfo 作为文件Info的测试替身，用于在用例里提供可控的依赖行为。
 type fakeFileInfo struct {
 	size int64
 }
 
-func (f *fakeFileInfo) Name() string      { return "fake" }
-func (f *fakeFileInfo) Size() int64       { return f.size }
+// Name 实现测试替身需要的 `Name` 接口方法，为用例分支提供可控返回。
+func (f *fakeFileInfo) Name() string { return "fake" }
+
+// Size 实现测试替身需要的 `Size` 接口方法，为用例分支提供可控返回。
+func (f *fakeFileInfo) Size() int64 { return f.size }
+
+// Mode 实现测试替身需要的 `Mode` 接口方法，为用例分支提供可控返回。
 func (f *fakeFileInfo) Mode() fs.FileMode { return 0o600 }
+
+// ModTime 实现测试替身需要的 `ModTime` 接口方法，为用例分支提供可控返回。
 func (f *fakeFileInfo) ModTime() time.Time { return time.Time{} }
-func (f *fakeFileInfo) IsDir() bool       { return false }
-func (f *fakeFileInfo) Sys() any          { return nil }
+
+// IsDir 实现测试替身需要的 `IsDir` 接口方法，为用例分支提供可控返回。
+func (f *fakeFileInfo) IsDir() bool { return false }
+
+// Sys 实现测试替身需要的 `Sys` 接口方法，为用例分支提供可控返回。
+func (f *fakeFileInfo) Sys() any { return nil }

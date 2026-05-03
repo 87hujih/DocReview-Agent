@@ -8,10 +8,12 @@ import (
 	"time"
 
 	appconfig "agent_project/apps/server/internal/config"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestAssistantRepoSessionLifecycleIntegration 验证`assistantRepoSessionLifecycleIntegration`在特定边界条件下的行为，防止同类回归。
 func TestAssistantRepoSessionLifecycleIntegration(t *testing.T) {
 	pool := newAssistantIntegrationPool(t)
 	repo := NewAssistantRepo(pool)
@@ -90,6 +92,7 @@ func TestAssistantRepoSessionLifecycleIntegration(t *testing.T) {
 	}
 }
 
+// newAssistantIntegrationPool 创建测试场景使用的隔离连接池，避免不同用例之间相互污染。
 func newAssistantIntegrationPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -107,15 +110,5 @@ func newAssistantIntegrationPool(t *testing.T) *pgxpool.Pool {
 	}
 
 	ctx := assistantTestContext(t)
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Fatalf("new pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "storage_postgres_assistant_integration", NewPool, RunMigrations)
 }

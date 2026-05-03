@@ -17,6 +17,7 @@ import (
 )
 
 const retrieverLimit = 5
+const failurePersistenceTimeout = 5 * time.Second
 
 // Orchestrator 负责驱动任务的顶层业务编排。
 type Orchestrator struct {
@@ -29,6 +30,8 @@ type Orchestrator struct {
 	retrieverSvc    resourceSearcher
 	eventService    *taskevents.Service
 	contextMaxRunes int
+	projector       taskStatusProjector
+	notifier        taskStatusNotifier
 }
 
 type plannerRunner interface {
@@ -47,6 +50,14 @@ type resourceSearcher interface {
 	SearchByResource(ctx context.Context, resourceID string, query string, limit int) ([]citation.Citation, error)
 }
 
+type taskStatusProjector interface {
+	ProjectTaskStatusChanged(ctx context.Context, sourceMessageID *string, taskID string, status string) error
+}
+
+type taskStatusNotifier interface {
+	Notify(ctx context.Context, task *postgres.Task, status string) error
+}
+
 // New 构造任务编排器。contextMaxRunes 限制传给审阅和编辑代理的上下文字符数（≤0 使用 24000 默认值）。
 func New(
 	taskRepo *postgres.TaskRepo,
@@ -58,6 +69,8 @@ func New(
 	retrieverSvc resourceSearcher,
 	eventService *taskevents.Service,
 	contextMaxRunes int,
+	projector taskStatusProjector,
+	notifier taskStatusNotifier,
 ) *Orchestrator {
 	return &Orchestrator{
 		taskRepo:        taskRepo,
@@ -69,6 +82,8 @@ func New(
 		retrieverSvc:    retrieverSvc,
 		eventService:    eventService,
 		contextMaxRunes: contextMaxRunes,
+		projector:       projector,
+		notifier:        notifier,
 	}
 }
 
@@ -254,7 +269,8 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 	}
 	o.recordStepEvent(ctx, task, editorStep, "info", "step.started", "编辑步骤开始")
 
-	diffPreview, err := o.editorAgent.Edit(ctx, agentCtx.Content, reviewSummary, citations)
+	editorContent := buildEditorContent(version.Content, planResult.FocusSections, citations)
+	diffPreview, err := o.editorAgent.Edit(ctx, editorContent, reviewSummary, citations)
 	if err != nil {
 		o.failTask(ctx, task, editorStep, err)
 		return
@@ -278,11 +294,16 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 		if err := o.transitionTask(ctx, task, models.StatusCompleted, nil); err != nil {
 			o.failTask(ctx, task, nil, err)
 		}
+		o.syncTaskStatusSideEffects(ctx, task, models.StatusCompleted)
 		return
 	}
 
 	// 2.4: 严格校验 diff 内容
 	if err := validateDiffPreview(diffPreview, citations); err != nil {
+		o.failTask(ctx, task, editorStep, err)
+		return
+	}
+	if err := validateDiffPreviewAgainstBaseContent(diffPreview, version.Content); err != nil {
 		o.failTask(ctx, task, editorStep, err)
 		return
 	}
@@ -307,7 +328,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 	editorStep.Status = "completed"
 	o.recordStepEvent(ctx, task, editorStep, "info", "step.completed", "编辑步骤完成")
 
-	approvalRecord, err := o.approvalRepo.CreateForTaskAwaitingApproval(ctx, task.ID)
+	approvalRecord, err := o.approvalRepo.CreateForTaskAwaitingApproval(ctx, task.ID, version.ID)
 	if err != nil {
 		o.failTask(ctx, task, nil, err)
 		return
@@ -337,8 +358,10 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, task *postgres.Task) {
 			"status":      approvalRecord.Status,
 		},
 	})
+	o.projectTaskStatus(ctx, task, models.StatusAwaitingApproval)
 }
 
+// transitionTask 推进 `任务` 的状态迁移，收口状态机副作用。
 func (o *Orchestrator) transitionTask(ctx context.Context, task *postgres.Task, to string, errorMessage *string) error {
 	from := task.Status
 	if err := models.Transition(task.Status, to); err != nil {
@@ -365,22 +388,26 @@ func (o *Orchestrator) transitionTask(ctx context.Context, task *postgres.Task, 
 	return nil
 }
 
+// failTask 把 `任务` 标记为失败，并补齐对应清理或通知逻辑。
 func (o *Orchestrator) failTask(ctx context.Context, task *postgres.Task, step *postgres.TaskStep, cause error) {
+	cleanupCtx, cancel := failureContext(ctx)
+	defer cancel()
+
 	if step != nil {
 		errorMessage := cause.Error()
-		_ = o.taskRepo.UpdateStep(ctx, step.ID, "failed", &errorMessage)
+		_ = o.taskRepo.UpdateStep(cleanupCtx, step.ID, "failed", &errorMessage)
 		step.Status = "failed"
 		step.ErrorMessage = &errorMessage
-		o.recordStepEvent(ctx, task, step, "error", "step.failed", "步骤执行失败")
+		o.recordStepEvent(cleanupCtx, task, step, "error", "step.failed", "步骤执行失败")
 	}
 
 	errorMessage := cause.Error()
 	if err := models.Transition(task.Status, models.StatusFailed); err == nil {
 		from := task.Status
-		_ = o.taskRepo.UpdateStatus(ctx, task.ID, models.StatusFailed, &errorMessage)
+		_ = o.taskRepo.UpdateStatus(cleanupCtx, task.ID, models.StatusFailed, &errorMessage)
 		task.Status = models.StatusFailed
 		task.ErrorMessage = &errorMessage
-		o.recordEvent(ctx, taskevents.RecordInput{
+		o.recordEvent(cleanupCtx, taskevents.RecordInput{
 			TaskID:    task.ID,
 			Source:    "orchestrator",
 			Level:     "error",
@@ -392,9 +419,58 @@ func (o *Orchestrator) failTask(ctx context.Context, task *postgres.Task, step *
 				"to_status":     models.StatusFailed,
 			},
 		})
+		o.syncTaskStatusSideEffects(cleanupCtx, task, models.StatusFailed)
 	}
 }
 
+// failureContext 归拢 `失败` 上下文，避免调用方重复准备依赖。
+func failureContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		return context.WithTimeout(context.Background(), failurePersistenceTimeout)
+	}
+
+	return context.WithTimeout(context.WithoutCancel(parent), failurePersistenceTimeout)
+}
+
+// projectTaskStatus 把 `任务状态` 投影回任务工作流状态，保持后续读取口径一致。
+func (o *Orchestrator) projectTaskStatus(ctx context.Context, task *postgres.Task, status string) {
+	if o.projector == nil || task == nil {
+		return
+	}
+	projectionCtx, cancel := failureContext(ctx)
+	defer cancel()
+
+	if err := o.projector.ProjectTaskStatusChanged(projectionCtx, task.SourceMessageID, task.ID, status); err != nil {
+		log.Printf("警告：回写助手上下文快照失败：task=%s status=%s err=%v", task.ID, status, err)
+	}
+}
+
+// syncTaskStatusSideEffects 同步 `任务状态SideEffects`，避免状态联动逻辑散落在多个调用方。
+func (o *Orchestrator) syncTaskStatusSideEffects(ctx context.Context, task *postgres.Task, status string) {
+	o.projectTaskStatus(ctx, task, status)
+	o.notifyTaskTerminalStatus(ctx, task, status)
+}
+
+// notifyTaskTerminalStatus 通知 `任务终态状态`，把消息发送时机和格式收口在接收者内部。
+func (o *Orchestrator) notifyTaskTerminalStatus(ctx context.Context, task *postgres.Task, status string) {
+	if o.notifier == nil || task == nil || !isTerminalTaskStatus(status) {
+		return
+	}
+
+	notificationCtx, cancel := failureContext(ctx)
+	defer cancel()
+
+	if err := o.notifier.Notify(notificationCtx, task, status); err != nil {
+		log.Printf("警告：任务终态回写助手会话失败：task=%s status=%s err=%v", task.ID, status, err)
+	}
+}
+
+// isTerminalTaskStatus 判断任务状态是否已经进入终态，供通知和投影逻辑复用。
+func isTerminalTaskStatus(status string) bool {
+	return status == models.StatusCompleted || status == models.StatusFailed
+}
+
+// recordStepEvent 记录 `Step事件`，统一事件和审计信息的写入位置。
 func (o *Orchestrator) recordStepEvent(
 	ctx context.Context,
 	task *postgres.Task,
@@ -418,6 +494,7 @@ func (o *Orchestrator) recordStepEvent(
 	})
 }
 
+// recordArtifactCreated 记录 `产物Created`，统一事件和审计信息的写入位置。
 func (o *Orchestrator) recordArtifactCreated(
 	ctx context.Context,
 	task *postgres.Task,
@@ -442,6 +519,7 @@ func (o *Orchestrator) recordArtifactCreated(
 	})
 }
 
+// recordEvent 记录 `事件`，统一事件和审计信息的写入位置。
 func (o *Orchestrator) recordEvent(ctx context.Context, input taskevents.RecordInput) {
 	if o.eventService == nil {
 		return
@@ -452,6 +530,7 @@ func (o *Orchestrator) recordEvent(ctx context.Context, input taskevents.RecordI
 	}
 }
 
+// summarizeContent 提炼 `内容` 的摘要结果，避免上层重复压缩长文本。
 func summarizeContent(content string, maxRunes int) string {
 	runes := []rune(content)
 	if len(runes) <= maxRunes {
@@ -461,6 +540,7 @@ func summarizeContent(content string, maxRunes int) string {
 	return string(runes[:maxRunes])
 }
 
+// dedupeCitations 对 `引用` 去重，统一结果合并时的判重规则。
 func dedupeCitations(input []citation.Citation) []citation.Citation {
 	seen := make(map[string]struct{})
 	output := make([]citation.Citation, 0, len(input))
@@ -486,6 +566,7 @@ func dedupeCitations(input []citation.Citation) []citation.Citation {
 	return output
 }
 
+// validatePlanResult 校验 `Plan结果`，在进入主流程前提前拦截非法输入。
 func validatePlanResult(result *planner.PlanResult) error {
 	if result == nil {
 		return fmt.Errorf("规划代理返回了空结果")
@@ -531,6 +612,9 @@ func validateDiffPreview(preview *editor.DiffPreview, citations []citation.Citat
 	for i, section := range preview.Sections {
 		if strings.TrimSpace(section.SectionTitle) == "" {
 			return fmt.Errorf("diff 预览第 %d 个章节的 section_title 为空", i)
+		}
+		if section.SectionOccurrence <= 0 {
+			return fmt.Errorf("diff 预览第 %d 个章节的 section_occurrence 非法", i)
 		}
 		if strings.TrimSpace(section.Original) == "" {
 			return fmt.Errorf("diff 预览第 %d 个章节的 original 为空", i)

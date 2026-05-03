@@ -23,6 +23,8 @@ import (
 	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
 	taskservice "agent_project/apps/server/internal/task/service"
+	"agent_project/apps/server/internal/testsupport/postgrescleanup"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
@@ -30,6 +32,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestUploadApproveExecuteAndExportFlow 验证`uploadApproveExecuteAndExportFlow`在特定边界条件下的行为，防止同类回归。
 func TestUploadApproveExecuteAndExportFlow(t *testing.T) {
 	pool := newFlowTestPool(t)
 	ctx := flowTestContext(t)
@@ -104,7 +107,14 @@ func TestUploadApproveExecuteAndExportFlow(t *testing.T) {
 	if _, err := taskRepo.AddArtifact(ctx, task.ID, "diff_preview", []byte(`{"sections":[{"section_title":"第一章","original":"原始第一章内容","revised":"最终修订内容","reason":"验证端到端闭环","citation_ids":["cite_1"]}]}`)); err != nil {
 		t.Fatalf("add diff preview artifact: %v", err)
 	}
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	currentVersion, err := resourceRepo.GetCurrentVersion(ctx, resourceID)
+	if err != nil {
+		t.Fatalf("get current version: %v", err)
+	}
+	if currentVersion == nil {
+		t.Fatal("expected uploaded resource to have current version")
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, currentVersion.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -114,12 +124,12 @@ func TestUploadApproveExecuteAndExportFlow(t *testing.T) {
 
 	versionIndexer := indexer.NewService(resourceRepo, flowEmbedder{})
 	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
-	worker := job.New(jobRepo, exec, taskRepo, 1, taskevents.New(eventRepo))
+	worker := job.New(jobRepo, exec, taskRepo, 1, taskevents.New(eventRepo), nil, nil)
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	worker.Start(workerCtx, 1)
 
-	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), taskevents.New(eventRepo))
+	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), taskevents.New(eventRepo), nil, nil)
 	if _, err := approvalService.Approve(ctx, approvalRecord.ID); err != nil {
 		t.Fatalf("approve task: %v", err)
 	}
@@ -137,6 +147,7 @@ func TestUploadApproveExecuteAndExportFlow(t *testing.T) {
 	}
 }
 
+// flowUploadResponse 定义HTTP 接口层接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type flowUploadResponse struct {
 	Resource *struct {
 		ID string `json:"id"`
@@ -148,6 +159,7 @@ type flowUploadResponse struct {
 	FileID string
 }
 
+// uploadFlowFile 为测试场景执行 `上传Flow文件`，减少重复展开的接口调用步骤。
 func uploadFlowFile(t *testing.T, handler *AssistantHandler, sessionID string, fileName string, content []byte) flowUploadResponse {
 	t.Helper()
 
@@ -197,6 +209,7 @@ func uploadFlowFile(t *testing.T, handler *AssistantHandler, sessionID string, f
 	return upload
 }
 
+// downloadFlowFile 为测试场景执行 `downloadFlow文件`，减少重复展开的接口调用步骤。
 func downloadFlowFile(t *testing.T, repo *postgres.UploadedFileRepo, store *filestore.LocalStore, fileID string) string {
 	t.Helper()
 
@@ -212,6 +225,7 @@ func downloadFlowFile(t *testing.T, repo *postgres.UploadedFileRepo, store *file
 	return string(response.Body())
 }
 
+// getFlowResource 为测试场景执行 `getFlow资源`，减少重复展开的接口调用步骤。
 func getFlowResource(t *testing.T, handler *ResourceHandler, resourceID string) string {
 	t.Helper()
 
@@ -226,6 +240,7 @@ func getFlowResource(t *testing.T, handler *ResourceHandler, resourceID string) 
 	return string(response.Body())
 }
 
+// exportFlowResource 为测试场景执行 `exportFlow资源`，减少重复展开的接口调用步骤。
 func exportFlowResource(t *testing.T, handler *ResourceHandler, resourceID string) string {
 	t.Helper()
 
@@ -240,6 +255,7 @@ func exportFlowResource(t *testing.T, handler *ResourceHandler, resourceID strin
 	return string(response.Body())
 }
 
+// waitForFlowTaskCompleted 在测试里等待 `Flow任务Completed` 达到预期状态，避免轮询逻辑散落在各处。
 func waitForFlowTaskCompleted(t *testing.T, ctx context.Context, taskRepo *postgres.TaskRepo, taskID string) {
 	t.Helper()
 
@@ -265,30 +281,29 @@ func waitForFlowTaskCompleted(t *testing.T, ctx context.Context, taskRepo *postg
 	t.Fatal("timed out waiting for job to finish")
 }
 
+// cleanupFlowData 为测试场景清理 `FlowData`，避免不同用例之间互相污染。
 func cleanupFlowData(t *testing.T, pool *pgxpool.Pool, resourceID string, sessionID string, fileID string) {
 	t.Helper()
 
 	ctx := flowTestContext(t)
+	if resourceID != "" {
+		if err := postgrescleanup.CleanupResourceTree(ctx, pool, resourceID); err != nil {
+			t.Fatalf("cleanup resource tree %q: %v", resourceID, err)
+		}
+	}
+	if sessionID != "" {
+		if _, err := pool.Exec(ctx, `DELETE FROM assistant_sessions WHERE id = $1`, sessionID); err != nil {
+			t.Fatalf("cleanup assistant session %q: %v", sessionID, err)
+		}
+	}
 	if fileID != "" {
 		if _, err := pool.Exec(ctx, `DELETE FROM uploaded_files WHERE id = $1`, fileID); err != nil {
 			t.Fatalf("cleanup uploaded file %q: %v", fileID, err)
 		}
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM assistant_sessions WHERE id = $1`, sessionID); err != nil {
-		t.Fatalf("cleanup assistant session %q: %v", sessionID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM execution_jobs
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-		   OR new_version_id IN (SELECT id FROM resource_versions WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup execution jobs for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM resources WHERE id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup resource %q: %v", resourceID, err)
-	}
 }
 
+// newFlowTestPool 创建测试用隔离数据库连接池，统一初始化与清理约束。
 func newFlowTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -298,19 +313,10 @@ func newFlowTestPool(t *testing.T) *pgxpool.Pool {
 	}
 
 	ctx := flowTestContext(t)
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("database not available: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "server_files_flow", postgres.NewPool, postgres.RunMigrations)
 }
 
+// flowTestContext 构造测试上下文，统一附带当前用例需要的取消和超时能力。
 func flowTestContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -319,8 +325,10 @@ func flowTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// flowEmbedder 提供文件流转测试使用的固定向量嵌入器，避免集成流程依赖真实模型服务。
 type flowEmbedder struct{}
 
+// Embed 实现测试辅助类型上的 `Embed` 方法，供用例注入当前场景需要的可控行为。
 func (flowEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	vectors := make([][]float32, 0, len(texts))
 	for index := range texts {
@@ -332,6 +340,7 @@ func (flowEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error
 	return vectors, nil
 }
 
+// flowUniqueSuffix 生成测试数据使用的唯一后缀，避免并发或重复运行时发生命名冲突。
 func flowUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }

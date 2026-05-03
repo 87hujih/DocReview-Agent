@@ -9,15 +9,19 @@ import (
 	"time"
 
 	executoragent "agent_project/apps/server/internal/agent/executor"
+	"agent_project/apps/server/internal/assistant"
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
+	"agent_project/apps/server/internal/testsupport/postgrescleanup"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestWorkerProcessesJob 验证`workerProcessesJob`在特定边界条件下的行为，防止同类回归。
 func TestWorkerProcessesJob(t *testing.T) {
 	pool := newJobTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -61,7 +65,7 @@ func TestWorkerProcessesJob(t *testing.T) {
 		t.Fatalf("add diff preview artifact: %v", err)
 	}
 
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -72,7 +76,7 @@ func TestWorkerProcessesJob(t *testing.T) {
 		t.Fatalf("update task to executing: %v", err)
 	}
 
-	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID)
+	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}
@@ -80,7 +84,7 @@ func TestWorkerProcessesJob(t *testing.T) {
 	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
 	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
 	eventService := taskevents.New(eventRepo)
-	worker := New(jobRepo, exec, taskRepo, 1, eventService)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService, nil, nil)
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -149,6 +153,7 @@ func TestWorkerProcessesJob(t *testing.T) {
 	t.Fatal("timed out waiting for worker to process job")
 }
 
+// TestWorkerMarksTaskFailedWhenExecutionFails 验证`worker`在流程控制路径下的行为，防止同类回归。
 func TestWorkerMarksTaskFailedWhenExecutionFails(t *testing.T) {
 	pool := newJobTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -166,13 +171,14 @@ func TestWorkerMarksTaskFailedWhenExecutionFails(t *testing.T) {
 		cleanupJobResource(t, pool, resource.ID)
 	})
 
-	if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, strings.Join([]string{
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, strings.Join([]string{
 		"# 文档标题",
 		"",
 		"## 第一章",
 		"原始第一章内容",
 		"",
-	}, "\n"), "original"); err != nil {
+	}, "\n"), "original")
+	if err != nil {
 		t.Fatalf("create version: %v", err)
 	}
 
@@ -184,7 +190,7 @@ func TestWorkerMarksTaskFailedWhenExecutionFails(t *testing.T) {
 		t.Fatalf("update task to awaiting approval: %v", err)
 	}
 
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -195,7 +201,7 @@ func TestWorkerMarksTaskFailedWhenExecutionFails(t *testing.T) {
 		t.Fatalf("update task to executing: %v", err)
 	}
 
-	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID)
+	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}
@@ -203,7 +209,7 @@ func TestWorkerMarksTaskFailedWhenExecutionFails(t *testing.T) {
 	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
 	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
 	eventService := taskevents.New(eventRepo)
-	worker := New(jobRepo, exec, taskRepo, 1, eventService)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService, nil, nil)
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -265,6 +271,324 @@ func TestWorkerMarksTaskFailedWhenExecutionFails(t *testing.T) {
 	t.Fatal("timed out waiting for worker to process failed job")
 }
 
+// TestWorkerProcessesJobProjectsCompletedSnapshot 验证`workerProcessesJob`在写入或副作用路径下的行为，防止同类回归。
+func TestWorkerProcessesJobProjectsCompletedSnapshot(t *testing.T) {
+	pool := newJobTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	assistantRepo := postgres.NewAssistantRepo(pool)
+	snapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
+	projector := assistant.NewSessionContextProjector(snapshotRepo)
+	ctx := jobTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "Worker 快照成功-"+jobUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupJobResource(t, pool, resource.ID)
+	})
+
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, strings.Join([]string{
+		"# 文档标题",
+		"",
+		"## 第一章",
+		"原始第一章内容",
+		"",
+		"## 第二章",
+		"原始第二章内容",
+		"",
+	}, "\n"), "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	session, task, suggestionMessageID := seedJobAssistantTask(t, ctx, assistantRepo, snapshotRepo, taskRepo, resource.ID, "执行审批后的修订")
+	t.Cleanup(func() {
+		if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup session: %v", err)
+		}
+	})
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
+		t.Fatalf("update task to awaiting approval: %v", err)
+	}
+
+	if _, err := taskRepo.AddArtifact(ctx, task.ID, "diff_preview", []byte(`{"sections":[{"section_title":"第一章","original":"原始第一章内容","revised":"修订后的第一章内容","reason":"补充说明","citation_ids":["cite_1"]}]}`)); err != nil {
+		t.Fatalf("add diff preview artifact: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	if err := approvalRepo.UpdateStatus(ctx, approvalRecord.ID, "approved", nil); err != nil {
+		t.Fatalf("update approval to approved: %v", err)
+	}
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusExecuting, nil); err != nil {
+		t.Fatalf("update task to executing: %v", err)
+	}
+
+	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
+	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
+	eventService := taskevents.New(eventRepo)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService, projector, nil)
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	worker.Start(workerCtx, 1)
+	worker.JobCh() <- struct{}{}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		currentJob, err := jobRepo.GetByID(ctx, jobRecord.ID)
+		if err != nil {
+			t.Fatalf("get current job: %v", err)
+		}
+		if currentJob != nil && currentJob.Status == "done" {
+			snapshot, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+			if err != nil {
+				t.Fatalf("get snapshot: %v", err)
+			}
+			if snapshot == nil || snapshot.LatestTaskStatus == nil || *snapshot.LatestTaskStatus != models.StatusCompleted {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			if snapshot.LatestTaskSourceMessageID == nil || *snapshot.LatestTaskSourceMessageID != suggestionMessageID {
+				t.Fatalf("expected snapshot source message id %q, got %#v", suggestionMessageID, snapshot.LatestTaskSourceMessageID)
+			}
+			return
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	t.Fatal("timed out waiting for worker to project completed snapshot")
+}
+
+// TestWorkerMarksTaskFailedProjectsFailedSnapshot 验证`worker`在流程控制路径下的行为，防止同类回归。
+func TestWorkerMarksTaskFailedProjectsFailedSnapshot(t *testing.T) {
+	pool := newJobTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	assistantRepo := postgres.NewAssistantRepo(pool)
+	snapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
+	projector := assistant.NewSessionContextProjector(snapshotRepo)
+	ctx := jobTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "Worker 快照失败-"+jobUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupJobResource(t, pool, resource.ID)
+	})
+
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, strings.Join([]string{
+		"# 文档标题",
+		"",
+		"## 第一章",
+		"原始第一章内容",
+		"",
+	}, "\n"), "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	session, task, suggestionMessageID := seedJobAssistantTask(t, ctx, assistantRepo, snapshotRepo, taskRepo, resource.ID, "执行审批后的修订失败路径")
+	t.Cleanup(func() {
+		if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup session: %v", err)
+		}
+	})
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
+		t.Fatalf("update task to awaiting approval: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	if err := approvalRepo.UpdateStatus(ctx, approvalRecord.ID, "approved", nil); err != nil {
+		t.Fatalf("update approval to approved: %v", err)
+	}
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusExecuting, nil); err != nil {
+		t.Fatalf("update task to executing: %v", err)
+	}
+
+	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
+	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
+	eventService := taskevents.New(eventRepo)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService, projector, nil)
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	worker.Start(workerCtx, 1)
+	worker.JobCh() <- struct{}{}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		currentJob, err := jobRepo.GetByID(ctx, jobRecord.ID)
+		if err != nil {
+			t.Fatalf("get current job: %v", err)
+		}
+		if currentJob != nil && currentJob.Status == "failed" {
+			snapshot, err := snapshotRepo.GetBySessionID(ctx, session.ID)
+			if err != nil {
+				t.Fatalf("get snapshot: %v", err)
+			}
+			if snapshot == nil || snapshot.LatestTaskStatus == nil || *snapshot.LatestTaskStatus != models.StatusFailed {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			if snapshot.LatestTaskSourceMessageID == nil || *snapshot.LatestTaskSourceMessageID != suggestionMessageID {
+				t.Fatalf("expected snapshot source message id %q, got %#v", suggestionMessageID, snapshot.LatestTaskSourceMessageID)
+			}
+			return
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	t.Fatal("timed out waiting for worker to project failed snapshot")
+}
+
+// TestTaskStatusNotifierWorkerSyncsTerminalStatuses 验证`taskStatusNotifierWorker`在写入或副作用路径下的行为，防止同类回归。
+func TestTaskStatusNotifierWorkerSyncsTerminalStatuses(t *testing.T) {
+	projector := &recordingJobProjector{}
+	notifier := &recordingJobNotifier{}
+	worker := New(nil, nil, nil, 1, nil, projector, notifier)
+	task := &postgres.Task{ID: "task-terminal-1"}
+
+	worker.syncTaskStatusSideEffects(context.Background(), task, models.StatusCompleted)
+	if len(projector.statuses) != 1 || projector.statuses[0] != models.StatusCompleted {
+		t.Fatalf("expected projector to record %q once, got %#v", models.StatusCompleted, projector.statuses)
+	}
+	if len(notifier.statuses) != 1 || notifier.statuses[0] != models.StatusCompleted {
+		t.Fatalf("expected notifier to record %q once, got %#v", models.StatusCompleted, notifier.statuses)
+	}
+
+	projector.statuses = nil
+	notifier.statuses = nil
+	worker.syncTaskStatusSideEffects(context.Background(), task, models.StatusExecuting)
+	if len(projector.statuses) != 1 || projector.statuses[0] != models.StatusExecuting {
+		t.Fatalf("expected projector to record %q once, got %#v", models.StatusExecuting, projector.statuses)
+	}
+	if len(notifier.statuses) != 0 {
+		t.Fatalf("expected notifier to ignore non-terminal status, got %#v", notifier.statuses)
+	}
+}
+
+// TestWorkerFailsLegacyJobWithoutBaseVersion 验证`workerFailsLegacyJobWithoutBaseVersion`在特定边界条件下的行为，防止同类回归。
+func TestWorkerFailsLegacyJobWithoutBaseVersion(t *testing.T) {
+	pool := newJobTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	approvalRepo := postgres.NewApprovalRepo(pool)
+	jobRepo := postgres.NewJobRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	ctx := jobTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "Worker legacy job 测试-"+jobUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupJobResource(t, pool, resource.ID)
+	})
+
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, strings.Join([]string{
+		"# 文档标题",
+		"",
+		"## 第一章",
+		"原始第一章内容",
+		"",
+	}, "\n"), "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	task, err := taskRepo.Create(ctx, resource.ID, "legacy job 缺少 base_version_id")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
+		t.Fatalf("update task to awaiting approval: %v", err)
+	}
+
+	if _, err := taskRepo.AddArtifact(ctx, task.ID, "diff_preview", []byte(`{"sections":[{"section_title":"第一章","original":"原始第一章内容","revised":"修订后的第一章内容","reason":"补充说明","citation_ids":["cite_1"]}]}`)); err != nil {
+		t.Fatalf("add diff preview artifact: %v", err)
+	}
+
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	if err := approvalRepo.UpdateStatus(ctx, approvalRecord.ID, "approved", nil); err != nil {
+		t.Fatalf("update approval to approved: %v", err)
+	}
+	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusExecuting, nil); err != nil {
+		t.Fatalf("update task to executing: %v", err)
+	}
+
+	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE execution_jobs
+		SET base_version_id = NULL
+		WHERE id = $1
+	`, jobRecord.ID); err != nil {
+		t.Fatalf("clear job base_version_id: %v", err)
+	}
+
+	versionIndexer := indexer.NewService(resourceRepo, jobEmbedder{})
+	exec := executoragent.New(taskRepo, resourceRepo, versionIndexer)
+	eventService := taskevents.New(eventRepo)
+	worker := New(jobRepo, exec, taskRepo, 1, eventService, nil, nil)
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	worker.Start(workerCtx, 1)
+
+	worker.JobCh() <- struct{}{}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		currentJob, err := jobRepo.GetByID(ctx, jobRecord.ID)
+		if err != nil {
+			t.Fatalf("get current job: %v", err)
+		}
+		if currentJob != nil && currentJob.Status == "failed" {
+			if currentJob.ErrorMessage == nil || !strings.Contains(*currentJob.ErrorMessage, "base_version_id") {
+				t.Fatalf("expected job error to mention base_version_id, got %#v", currentJob.ErrorMessage)
+			}
+			return
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	t.Fatal("timed out waiting for worker to fail legacy job")
+}
+
+// newJobTestPool 创建测试用隔离数据库连接池，统一初始化与清理约束。
 func newJobTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -274,62 +598,20 @@ func newJobTestPool(t *testing.T) *pgxpool.Pool {
 
 	ctx := jobTestContext(t)
 	cfg := appconfig.Load()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("database not available: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "job_worker", postgres.NewPool, postgres.RunMigrations)
 }
 
+// cleanupJobResource 为测试场景清理 `作业资源`，避免不同用例之间互相污染。
 func cleanupJobResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
 	ctx := jobTestContext(t)
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM execution_jobs
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-		   OR new_version_id IN (SELECT id FROM resource_versions WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup execution jobs for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM approvals
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup approvals for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_events
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task events for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_artifacts
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task artifacts for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_steps
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task steps for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM tasks WHERE resource_id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup tasks for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM resources WHERE id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup resource %q: %v", resourceID, err)
+	if err := postgrescleanup.CleanupResourceTree(ctx, pool, resourceID); err != nil {
+		t.Fatalf("cleanup resource tree for resource %q: %v", resourceID, err)
 	}
 }
 
+// jobTestContext 构造测试上下文，统一附带当前用例需要的取消和超时能力。
 func jobTestContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -338,12 +620,68 @@ func jobTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// jobUniqueSuffix 生成测试数据使用的唯一后缀，避免并发或重复运行时发生命名冲突。
 func jobUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// seedJobAssistantTask 为测试场景补齐 `作业助手任务` 所需数据，减少重复造数。
+func seedJobAssistantTask(
+	t *testing.T,
+	ctx context.Context,
+	assistantRepo *postgres.AssistantRepo,
+	snapshotRepo *postgres.SessionContextSnapshotRepo,
+	taskRepo *postgres.TaskRepo,
+	resourceID string,
+	instruction string,
+) (*postgres.AssistantSession, *postgres.Task, string) {
+	t.Helper()
+
+	session, _, err := assistantRepo.CreateSessionWithMessages(ctx, "job-snapshot-"+jobUniqueSuffix(), nil)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := snapshotRepo.CreateEmpty(ctx, session.ID); err != nil {
+		t.Fatalf("create empty snapshot: %v", err)
+	}
+
+	payload := fmt.Sprintf(`{"title":"建议创建任务","instruction":"%s","can_create":true,"action_label":"确认创建任务","resource_id":"%s","resource_label":"测试资源","status_message":"资源已明确，可以创建任务。"}`, instruction, resourceID)
+	messages, err := assistantRepo.AppendMessages(ctx, session.ID, []postgres.AssistantMessageInput{{
+		Role:    "assistant",
+		Kind:    "task_suggestion",
+		Payload: []byte(payload),
+	}})
+	if err != nil {
+		t.Fatalf("append suggestion message: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected one suggestion message, got %d", len(messages))
+	}
+
+	task, created, err := taskRepo.CreateFromAssistantSuggestion(ctx, resourceID, instruction, messages[0].ID)
+	if err != nil {
+		t.Fatalf("create assistant task: %v", err)
+	}
+	if !created {
+		t.Fatal("expected assistant task to be newly created")
+	}
+
+	if err := snapshotRepo.UpsertLatestTask(ctx, postgres.UpsertLatestTaskParams{
+		SessionID:       session.ID,
+		TaskID:          task.ID,
+		Status:          task.Status,
+		SourceMessageID: &messages[0].ID,
+	}); err != nil {
+		t.Fatalf("seed latest task snapshot: %v", err)
+	}
+
+	return session, task, messages[0].ID
+}
+
+// jobEmbedder 承载作业Embedder相关状态，明确后台作业链路中的数据边界。
 type jobEmbedder struct{}
 
+// Embed 实现测试辅助类型上的 `Embed` 方法，供用例注入当前场景需要的可控行为。
 func (jobEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	vectors := make([][]float32, 0, len(texts))
 	for index := range texts {
@@ -353,4 +691,26 @@ func (jobEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error)
 	}
 
 	return vectors, nil
+}
+
+// recordingJobProjector 作为作业投影器的记录型测试替身，用于断言调用副作用。
+type recordingJobProjector struct {
+	statuses []string
+}
+
+// ProjectTaskStatusChanged 实现测试替身需要的 `ProjectTaskStatusChanged` 接口方法，为用例分支提供可控返回。
+func (r *recordingJobProjector) ProjectTaskStatusChanged(_ context.Context, _ *string, _ string, status string) error {
+	r.statuses = append(r.statuses, status)
+	return nil
+}
+
+// recordingJobNotifier 作为作业Notifier的记录型测试替身，用于断言调用副作用。
+type recordingJobNotifier struct {
+	statuses []string
+}
+
+// Notify 实现测试替身需要的 `Notify` 接口方法，为用例分支提供可控返回。
+func (r *recordingJobNotifier) Notify(_ context.Context, _ *postgres.Task, status string) error {
+	r.statuses = append(r.statuses, status)
+	return nil
 }

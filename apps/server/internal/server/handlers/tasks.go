@@ -21,11 +21,13 @@ type TaskHandler struct {
 	eventRepo   *postgres.TaskEventRepo
 }
 
+// createTaskRequest 定义任务接口接收的 JSON 请求体，收口当前接口需要的输入字段。
 type createTaskRequest struct {
 	ResourceID  string `json:"resource_id"`
 	Instruction string `json:"instruction"`
 }
 
+// taskSummaryResponse 定义任务接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type taskSummaryResponse struct {
 	ID           string    `json:"id"`
 	ResourceID   string    `json:"resource_id"`
@@ -35,16 +37,19 @@ type taskSummaryResponse struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// taskDetailResponse 定义任务接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type taskDetailResponse struct {
-	ID           string    `json:"id"`
-	ResourceID   string    `json:"resource_id"`
-	Instruction  string    `json:"instruction"`
-	Status       string    `json:"status"`
-	ErrorMessage *string   `json:"error_message"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	ResourceID      string    `json:"resource_id"`
+	Instruction     string    `json:"instruction"`
+	SourceSessionID *string   `json:"source_session_id,omitempty"`
+	Status          string    `json:"status"`
+	ErrorMessage    *string   `json:"error_message"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+// taskStepResponse 定义任务接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type taskStepResponse struct {
 	ID           string     `json:"id"`
 	StepName     string     `json:"step_name"`
@@ -54,6 +59,7 @@ type taskStepResponse struct {
 	CompletedAt  *time.Time `json:"completed_at"`
 }
 
+// taskArtifactResponse 定义任务接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type taskArtifactResponse struct {
 	ID           string          `json:"id"`
 	ArtifactType string          `json:"artifact_type"`
@@ -61,6 +67,7 @@ type taskArtifactResponse struct {
 	CreatedAt    time.Time       `json:"created_at"`
 }
 
+// taskEventResponse 定义任务接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type taskEventResponse struct {
 	ID        string          `json:"id"`
 	TaskID    string          `json:"task_id"`
@@ -74,29 +81,38 @@ type taskEventResponse struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
+// createTaskResponse 定义任务接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type createTaskResponse struct {
 	Task taskSummaryResponse `json:"task"`
 }
 
+// listTasksResponse 定义任务接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type listTasksResponse struct {
 	Tasks []taskSummaryResponse `json:"tasks"`
 }
 
+// getTaskResponse 定义任务接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type getTaskResponse struct {
 	Task  taskDetailResponse `json:"task"`
 	Steps []taskStepResponse `json:"steps"`
 }
 
+// getTaskArtifactsResponse 定义任务接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type getTaskArtifactsResponse struct {
 	Artifacts []taskArtifactResponse `json:"artifacts"`
 }
 
+// getTaskEventsResponse 定义任务接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type getTaskEventsResponse struct {
 	Events []taskEventResponse `json:"events"`
 }
 
 // NewTaskHandler 创建任务 handler。
 func NewTaskHandler(svc *taskservice.Service, repo *postgres.TaskRepo, eventRepo *postgres.TaskEventRepo) *TaskHandler {
+	if eventRepo == nil {
+		panic("task event repo is required")
+	}
+
 	return &TaskHandler{
 		taskService: svc,
 		taskRepo:    repo,
@@ -178,6 +194,14 @@ func (h *TaskHandler) GetByID(requestCtx context.Context, ctx *app.RequestContex
 		ctx.JSON(consts.StatusNotFound, map[string]string{"error": "任务不存在"})
 		return
 	}
+	if task.SourceMessageID != nil && strings.TrimSpace(*task.SourceMessageID) != "" {
+		sourceSessionID, sourceErr := h.taskRepo.GetSourceSessionIDBySourceMessageID(requestCtx, strings.TrimSpace(*task.SourceMessageID))
+		if sourceErr != nil {
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询任务失败"})
+			return
+		}
+		task.SourceSessionID = sourceSessionID
+	}
 
 	response := getTaskResponse{
 		Task:  taskToDetailResponse(*task),
@@ -225,11 +249,6 @@ func (h *TaskHandler) GetArtifacts(requestCtx context.Context, ctx *app.RequestC
 
 // GetEvents 返回任务执行过程中的结构化事件流。
 func (h *TaskHandler) GetEvents(requestCtx context.Context, ctx *app.RequestContext) {
-	if h.eventRepo == nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "任务事件服务未配置"})
-		return
-	}
-
 	id := ctx.Param("id")
 	if !isValidUUID(id) {
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "无效的任务 ID"})
@@ -261,6 +280,7 @@ func (h *TaskHandler) GetEvents(requestCtx context.Context, ctx *app.RequestCont
 	ctx.JSON(consts.StatusOK, response)
 }
 
+// taskToSummaryResponse 把任务领域模型转换成列表页使用的摘要响应，屏蔽内部字段并统一 JSON 结构。
 func taskToSummaryResponse(task postgres.Task) taskSummaryResponse {
 	return taskSummaryResponse{
 		ID:           task.ID,
@@ -272,18 +292,21 @@ func taskToSummaryResponse(task postgres.Task) taskSummaryResponse {
 	}
 }
 
+// taskToDetailResponse 把任务领域模型转换成详情页响应，补齐来源会话等对外字段。
 func taskToDetailResponse(task postgres.Task) taskDetailResponse {
 	return taskDetailResponse{
-		ID:           task.ID,
-		ResourceID:   task.ResourceID,
-		Instruction:  task.Instruction,
-		Status:       task.Status,
-		ErrorMessage: task.ErrorMessage,
-		CreatedAt:    task.CreatedAt,
-		UpdatedAt:    task.UpdatedAt,
+		ID:              task.ID,
+		ResourceID:      task.ResourceID,
+		Instruction:     task.Instruction,
+		SourceSessionID: task.SourceSessionID,
+		Status:          task.Status,
+		ErrorMessage:    task.ErrorMessage,
+		CreatedAt:       task.CreatedAt,
+		UpdatedAt:       task.UpdatedAt,
 	}
 }
 
+// taskStepToResponse 把任务步骤模型转换成接口响应，统一前端展示需要的字段命名。
 func taskStepToResponse(step postgres.TaskStep) taskStepResponse {
 	return taskStepResponse{
 		ID:           step.ID,
@@ -295,6 +318,7 @@ func taskStepToResponse(step postgres.TaskStep) taskStepResponse {
 	}
 }
 
+// taskArtifactToResponse 把任务产物模型转换成接口响应，保留下载与展示所需的元数据。
 func taskArtifactToResponse(artifact postgres.TaskArtifact) taskArtifactResponse {
 	return taskArtifactResponse{
 		ID:           artifact.ID,
@@ -304,6 +328,7 @@ func taskArtifactToResponse(artifact postgres.TaskArtifact) taskArtifactResponse
 	}
 }
 
+// taskEventToResponse 把任务事件模型转换成接口响应，统一时间与负载字段的对外形态。
 func taskEventToResponse(event postgres.TaskEvent) taskEventResponse {
 	return taskEventResponse{
 		ID:        event.ID,

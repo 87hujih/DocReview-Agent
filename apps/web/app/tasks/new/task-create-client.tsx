@@ -11,7 +11,7 @@ import {
 } from "../../../components/task-create-form";
 import { MetaRow } from "../../../components/ui/meta-row";
 import { TerminalFrame } from "../../../components/ui/terminal-frame";
-import { getResource } from "../../../lib/api/resources";
+import { getResourceTaskContext } from "../../../lib/api/resources";
 import { createTask } from "../../../lib/api/tasks";
 import { getErrorMessage } from "../../../lib/terminal";
 import styles from "./page.module.css";
@@ -28,6 +28,7 @@ type VersionSummary = {
 export default function TaskCreatePageClient({ resourceId }: TaskCreatePageClientProps) {
   const router = useRouter();
 
+  const [blockingReason, setBlockingReason] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(Boolean(resourceId));
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -38,6 +39,7 @@ export default function TaskCreatePageClient({ resourceId }: TaskCreatePageClien
   useEffect(() => {
     if (!resourceId) {
       setIsLoading(false);
+      setBlockingReason(null);
       setResource(null);
       setVersionSummary(null);
       return;
@@ -45,10 +47,11 @@ export default function TaskCreatePageClient({ resourceId }: TaskCreatePageClien
 
     let active = true;
     setIsLoading(true);
+    setBlockingReason(null);
 
     async function loadResource() {
       try {
-        const response = await getResource(resourceId);
+        const response = await getResourceTaskContext(resourceId);
         if (!active) {
           return;
         }
@@ -67,10 +70,12 @@ export default function TaskCreatePageClient({ resourceId }: TaskCreatePageClien
               }
             : null
         );
+        setBlockingReason(response.capabilities.blocking_reason);
         setErrorMessage(null);
       } catch (error) {
         if (active) {
           setErrorMessage(getErrorMessage(error));
+          setBlockingReason(null);
           setResource(null);
           setVersionSummary(null);
         }
@@ -106,7 +111,21 @@ export default function TaskCreatePageClient({ resourceId }: TaskCreatePageClien
     }
   }
 
-  const showResourcePanels = Boolean(resourceId) && !isLoading && Boolean(resource);
+  const canCreateTask = Boolean(resourceId) && !isLoading && Boolean(resource) && !blockingReason;
+
+  function renderBlockingMessage() {
+    if (blockingReason === "missing_current_version") {
+      return (
+        <p className={styles.warning}>当前资源没有可用版本，暂时不能创建任务或检索引用。</p>
+      );
+    }
+
+    if (blockingReason) {
+      return <p className={styles.warning}>当前资源暂时不能创建任务或检索引用。</p>;
+    }
+
+    return null;
+  }
 
   return (
     <div className={styles.page}>
@@ -143,6 +162,7 @@ export default function TaskCreatePageClient({ resourceId }: TaskCreatePageClien
                     : "未找到版本信息"
                 }
               />
+              {renderBlockingMessage()}
             </div>
           ) : errorMessage ? (
             <Link className={styles.linkButton} href="/resources">
@@ -152,7 +172,7 @@ export default function TaskCreatePageClient({ resourceId }: TaskCreatePageClien
         </TerminalFrame>
       ) : null}
 
-      {showResourcePanels ? (
+      {canCreateTask ? (
         <TaskCreateForm
           errorMessage={submitError}
           isSubmitting={isSubmitting}
@@ -161,7 +181,7 @@ export default function TaskCreatePageClient({ resourceId }: TaskCreatePageClien
         />
       ) : null}
 
-      {showResourcePanels ? <ResourceSearch resourceId={resourceId} /> : null}
+      {canCreateTask ? <ResourceSearch resourceId={resourceId} /> : null}
     </div>
   );
 }

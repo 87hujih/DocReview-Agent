@@ -18,12 +18,14 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
+// TestCreateTaskHandler 验证`createTaskHandler`在特定边界条件下的行为，防止同类回归。
 func TestCreateTaskHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.POST("/api/tasks", handler.Create)
 
@@ -61,12 +63,25 @@ func TestCreateTaskHandler(t *testing.T) {
 	}
 }
 
+// TestNewTaskHandlerRequiresEventRepo 验证`newTaskHandler`在约束校验路径下的行为，防止同类回归。
+func TestNewTaskHandlerRequiresEventRepo(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic when event repo is nil")
+		}
+	}()
+
+	_ = NewTaskHandler(nil, nil, nil)
+}
+
+// TestCreateTaskHandlerMissingVersion 验证`createTaskHandlerMissingVersion`在特定边界条件下的行为，防止同类回归。
 func TestCreateTaskHandlerMissingVersion(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.POST("/api/tasks", handler.Create)
 
@@ -95,14 +110,16 @@ func TestCreateTaskHandlerMissingVersion(t *testing.T) {
 	}
 }
 
+// TestCreateTaskHandlerReturnsCreatedFailedTaskWhenSchedulingFails 验证`createTaskHandler`在返回值分支下的行为，防止同类回归。
 func TestCreateTaskHandlerReturnsCreatedFailedTaskWhenSchedulingFails(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	runner := workflow.NewOrchestratorRunner(0, 1, 0, nil, taskRepo)
 	runner.Stop()
 	taskSvc := taskservice.New(taskRepo, resourceRepo, runner, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.POST("/api/tasks", handler.Create)
 
@@ -143,12 +160,14 @@ func TestCreateTaskHandlerReturnsCreatedFailedTaskWhenSchedulingFails(t *testing
 	}
 }
 
+// TestListTasksHandler 验证`listTasksHandler`在特定边界条件下的行为，防止同类回归。
 func TestListTasksHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks", handler.List)
 
@@ -172,12 +191,14 @@ func TestListTasksHandler(t *testing.T) {
 	}
 }
 
+// TestGetTaskByIDHandler 验证`getTaskByIDHandler`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskByIDHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id", handler.GetByID)
 
@@ -207,12 +228,92 @@ func TestGetTaskByIDHandler(t *testing.T) {
 	}
 }
 
+// TestTaskToDetailResponseIncludesSourceSessionID 验证`taskToDetailResponse`在流程控制路径下的行为，防止同类回归。
+func TestTaskToDetailResponseIncludesSourceSessionID(t *testing.T) {
+	sourceSessionID := "session-1"
+	response := taskToDetailResponse(postgres.Task{
+		ID:              "task-1",
+		ResourceID:      "resource-1",
+		Instruction:     "请整理详情接口",
+		SourceSessionID: &sourceSessionID,
+		Status:          "completed",
+	})
+
+	if response.SourceSessionID == nil || *response.SourceSessionID != sourceSessionID {
+		t.Fatalf("expected source_session_id %q, got %#v", sourceSessionID, response.SourceSessionID)
+	}
+}
+
+// TestGetTaskByIDHandlerIncludesAssistantSourceSessionID 验证`getTaskByIDHandler`在流程控制路径下的行为，防止同类回归。
+func TestGetTaskByIDHandlerIncludesAssistantSourceSessionID(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	assistantRepo := postgres.NewAssistantRepo(pool)
+	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
+	engine := server.New()
+	engine.GET("/api/tasks/:id", handler.GetByID)
+
+	ctx := testContext(t)
+	resource, err := resourceRepo.Create(ctx, "任务详情原会话测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "当前版本内容", "original"); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	session, messages, err := assistantRepo.CreateSessionWithMessages(ctx, "任务来源会话", []postgres.AssistantMessageInput{{
+		Role:    "assistant",
+		Kind:    "task_suggestion",
+		Payload: []byte(`{"action_label":"确认创建任务","can_create":true,"instruction":"请整理详情接口","resource_id":"` + resource.ID + `","resource_label":"测试资源 · upload","status_message":"资源已明确，可以创建任务。","title":"建议创建任务"}`),
+	}})
+	if err != nil {
+		t.Fatalf("create assistant session with suggestion: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := assistantRepo.DeleteSession(ctx, session.ID); err != nil {
+			t.Fatalf("cleanup assistant session %q: %v", session.ID, err)
+		}
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 assistant message, got %d", len(messages))
+	}
+
+	task, created, err := taskRepo.CreateFromAssistantSuggestion(ctx, resource.ID, "请整理详情接口", messages[0].ID)
+	if err != nil {
+		t.Fatalf("create assistant-originated task: %v", err)
+	}
+	if !created {
+		t.Fatal("expected assistant-originated task to be newly created")
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/tasks/"+task.ID, nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	body := string(response.Body())
+	if !strings.Contains(body, `"source_session_id":"`+session.ID+`"`) {
+		t.Fatalf("expected source_session_id %q in response, got %q", session.ID, body)
+	}
+}
+
+// TestGetTaskByIDHandlerIncludesErrorMessages 验证`getTaskByIDHandler`在流程控制路径下的行为，防止同类回归。
 func TestGetTaskByIDHandlerIncludesErrorMessages(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id", handler.GetByID)
 
@@ -258,12 +359,14 @@ func TestGetTaskByIDHandlerIncludesErrorMessages(t *testing.T) {
 	}
 }
 
+// TestGetTaskArtifactsHandler 验证`getTaskArtifactsHandler`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskArtifactsHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id/artifacts", handler.GetArtifacts)
 
@@ -311,6 +414,7 @@ func TestGetTaskArtifactsHandler(t *testing.T) {
 	}
 }
 
+// TestGetTaskEventsHandler 验证`getTaskEventsHandler`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskEventsHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -378,12 +482,14 @@ func TestGetTaskEventsHandler(t *testing.T) {
 	}
 }
 
+// TestGetTaskNotFound 验证`getTaskNotFound`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id", handler.GetByID)
 
@@ -394,12 +500,14 @@ func TestGetTaskNotFound(t *testing.T) {
 	}
 }
 
+// TestGetTaskByInvalidUUID 验证`getTaskByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskByInvalidUUID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id", handler.GetByID)
 
@@ -410,12 +518,14 @@ func TestGetTaskByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestGetTaskArtifactsByInvalidUUID 验证`getTaskArtifactsByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskArtifactsByInvalidUUID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.GET("/api/tasks/:id/artifacts", handler.GetArtifacts)
 
@@ -426,6 +536,7 @@ func TestGetTaskArtifactsByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestGetTaskEventsByInvalidUUID 验证`getTaskEventsByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestGetTaskEventsByInvalidUUID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -443,12 +554,14 @@ func TestGetTaskEventsByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestCreateTaskInvalidResourceIDFormat 验证`createTaskInvalidResourceIDFormat`在特定边界条件下的行为，防止同类回归。
 func TestCreateTaskInvalidResourceIDFormat(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
 	taskSvc := taskservice.New(taskRepo, resourceRepo, nil, nil)
-	handler := NewTaskHandler(taskSvc, taskRepo, nil)
+	handler := NewTaskHandler(taskSvc, taskRepo, eventRepo)
 	engine := server.New()
 	engine.POST("/api/tasks", handler.Create)
 
@@ -466,6 +579,7 @@ func TestCreateTaskInvalidResourceIDFormat(t *testing.T) {
 	}
 }
 
+// TestHealthHandlerSetsRequestIDHeader 验证`healthHandlerSetsRequestIDHeader`在特定边界条件下的行为，防止同类回归。
 func TestHealthHandlerSetsRequestIDHeader(t *testing.T) {
 	engine := server.New()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))

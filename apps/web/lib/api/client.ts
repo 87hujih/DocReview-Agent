@@ -1,4 +1,4 @@
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:18080";
+import { buildPublicApiUrl } from "./public-url";
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 export type ApiClientErrorCode = "backend_offline" | "request_timeout" | "service_error";
@@ -55,7 +55,7 @@ export async function apiRequest(path: string, options: ApiRequestInit = {}): Pr
   }, timeoutMs);
 
   try {
-    return await fetch(buildApiUrl(path), {
+    return await fetch(buildPublicApiUrl(path), {
       ...requestOptions,
       cache: "no-store",
       headers,
@@ -77,10 +77,6 @@ function tryParseJSON(value: string): unknown {
   } catch {
     return value;
   }
-}
-
-function buildApiUrl(path: string): string {
-  return `${BASE_URL}${path}`;
 }
 
 function mergeAbortSignals(...signals: Array<AbortSignal | null | undefined>): AbortSignal | undefined {

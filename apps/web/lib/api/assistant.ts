@@ -1,4 +1,5 @@
 import type {
+  AssistantCapabilities,
   AssistantConfirmTaskResult,
   AssistantConversation,
   AssistantSession,
@@ -16,6 +17,10 @@ export async function getAssistantSessions(): Promise<AssistantSession[]> {
   return response.sessions;
 }
 
+export async function getAssistantCapabilities(): Promise<AssistantCapabilities> {
+  return apiFetch<AssistantCapabilities>("/api/assistant/capabilities");
+}
+
 export async function getAssistantSession(sessionId: string): Promise<AssistantConversation> {
   return apiFetch<AssistantConversation>(`/api/assistant/sessions/${sessionId}`);
 }
@@ -23,6 +28,18 @@ export async function getAssistantSession(sessionId: string): Promise<AssistantC
 export async function createAssistantConversation(message: string): Promise<AssistantConversation> {
   return apiFetch<AssistantConversation>("/api/assistant/conversations", {
     body: JSON.stringify({ message }),
+    method: "POST"
+  });
+}
+
+export async function createAssistantConversationWithFile(
+  file: File
+): Promise<AssistantUploadResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return apiFetch<AssistantUploadResult>("/api/assistant/conversations/files", {
+    body: formData,
     method: "POST"
   });
 }

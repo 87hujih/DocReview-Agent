@@ -8,11 +8,14 @@ import (
 	"testing"
 	"time"
 
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/knowledge/indexer"
+	"agent_project/apps/server/internal/knowledge/sections"
 	"agent_project/apps/server/internal/storage/postgres"
 )
 
+// TestImportDocumentCreatesResourceVersionAndChunks 验证`importDocument`在写入或副作用路径下的行为，防止同类回归。
 func TestImportDocumentCreatesResourceVersionAndChunks(t *testing.T) {
 	repo := &fakeResourceRepo{
 		resource: &postgres.Resource{
@@ -54,6 +57,7 @@ func TestImportDocumentCreatesResourceVersionAndChunks(t *testing.T) {
 	}
 }
 
+// TestImportDocumentRejectsEmptyContent 验证`importDocument`在非法输入或失败路径下的行为，防止同类回归。
 func TestImportDocumentRejectsEmptyContent(t *testing.T) {
 	service := NewService(&fakeResourceRepo{}, fakeEmbedder{})
 
@@ -65,6 +69,7 @@ func TestImportDocumentRejectsEmptyContent(t *testing.T) {
 	}
 }
 
+// TestImportDocumentUsesParsedTextWhenParserConfigured 验证`importDocument`在依赖选择路径下的行为，防止同类回归。
 func TestImportDocumentUsesParsedTextWhenParserConfigured(t *testing.T) {
 	repo := &fakeResourceRepo{}
 	service := NewService(repo, fakeEmbedder{}, WithParser(fakeDocumentParser{
@@ -89,8 +94,8 @@ func TestImportDocumentUsesParsedTextWhenParserConfigured(t *testing.T) {
 		t.Fatal("expected parsed content to create chunks")
 	}
 
-	if repo.createdChunks[0].SectionTitle != "解析后的标题" {
-		t.Fatalf("expected chunk section title %q, got %q", "解析后的标题", repo.createdChunks[0].SectionTitle)
+	if repo.createdChunks[0].SectionTitle != sections.WholeDocumentTitle {
+		t.Fatalf("expected chunk section title %q, got %q", sections.WholeDocumentTitle, repo.createdChunks[0].SectionTitle)
 	}
 
 	if repo.createSourceRef == nil || *repo.createSourceRef != "学生守则.pdf" {
@@ -98,6 +103,96 @@ func TestImportDocumentUsesParsedTextWhenParserConfigured(t *testing.T) {
 	}
 }
 
+// TestImportDocumentPersistsStructuredDocumentWhenParserConfigured 验证`importDocument`在写入或副作用路径下的行为，防止同类回归。
+func TestImportDocumentPersistsStructuredDocumentWhenParserConfigured(t *testing.T) {
+	repo := &fakeResourceRepo{
+		resource: &postgres.Resource{
+			ID:         "resource-1",
+			Title:      "CampusHub校园活动平台",
+			SourceType: "upload",
+		},
+		version: &postgres.ResourceVersion{
+			ID:            "version-1",
+			ResourceID:    "resource-1",
+			VersionNumber: 1,
+			Content:       "CampusHub校园活动平台\n负责活动发布与报名。",
+			Source:        "assistant_upload",
+		},
+	}
+	structureRepo := &fakeResourceStructureRepo{}
+	versionIndexer := &fakeVersionIndexer{}
+	normalizer := fakeDocumentNormalizer{
+		result: documentnormalize.NormalizedDocument{
+			Sections: []documentnormalize.NormalizedSection{
+				{
+					SectionKey:          "project-1",
+					Type:                documentnormalize.SectionTypeProject,
+					Order:               1,
+					Title:               "CampusHub校园活动平台",
+					CanonicalEntityName: "CampusHub校园活动平台",
+					Aliases:             []string{"CampusHub校园活动平台", "CampusHub"},
+					Summary:             "校园活动统一平台",
+					Content:             "负责活动发布与报名。",
+					TechStack:           []string{"Go", "Redis"},
+					Metadata:            map[string]any{"quality_flag": "ok"},
+				},
+			},
+		},
+	}
+	service := NewService(
+		repo,
+		fakeEmbedder{},
+		WithIndexer(versionIndexer),
+		WithParser(fakeDocumentParser{
+			result: &documentparser.Result{
+				Text: "CampusHub校园活动平台\n负责活动发布与报名。",
+				Document: &documentparser.ParsedDocument{
+					SourceFormat: "pdf",
+					Blocks: []documentparser.Block{
+						{Type: documentparser.BlockParagraph, Text: "CampusHub校园活动平台（2026.2-2026.3）"},
+						{Type: documentparser.BlockParagraph, Text: "负责活动发布与报名。"},
+					},
+				},
+			},
+		}),
+		WithNormalizer(normalizer),
+		WithStructureRepo(structureRepo),
+	)
+
+	result, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName: "campushub.pdf",
+		Content:  []byte("%PDF-binary-content"),
+	})
+	if err != nil {
+		t.Fatalf("import document with structured parser result: %v", err)
+	}
+	if result.Version == nil || result.Version.ID != "version-1" {
+		t.Fatalf("expected persisted version, got %#v", result.Version)
+	}
+	if structureRepo.createCalls != 1 {
+		t.Fatalf("expected version structure to be persisted once, got %d", structureRepo.createCalls)
+	}
+	if structureRepo.lastCreateParams.VersionID != "version-1" {
+		t.Fatalf("expected version structure to target version-1, got %#v", structureRepo.lastCreateParams)
+	}
+	if structureRepo.replaceCalls != 1 {
+		t.Fatalf("expected sections to be persisted once, got %d", structureRepo.replaceCalls)
+	}
+	if len(structureRepo.lastSections) != 1 {
+		t.Fatalf("expected 1 normalized section to be persisted, got %d", len(structureRepo.lastSections))
+	}
+	if structureRepo.lastSections[0].SectionType != string(documentnormalize.SectionTypeProject) {
+		t.Fatalf("expected persisted section type %q, got %#v", documentnormalize.SectionTypeProject, structureRepo.lastSections[0].SectionType)
+	}
+	if versionIndexer.reindexCalls != 1 {
+		t.Fatalf("expected grounded chunk reindex to run once, got %d", versionIndexer.reindexCalls)
+	}
+	if len(versionIndexer.lastInput.Sections) != 1 {
+		t.Fatalf("expected reindex to receive 1 section, got %d", len(versionIndexer.lastInput.Sections))
+	}
+}
+
+// TestImportDocumentReturnsParserErrorBeforeWritingResource 验证`importDocument`在返回值分支下的行为，防止同类回归。
 func TestImportDocumentReturnsParserErrorBeforeWritingResource(t *testing.T) {
 	repo := &fakeResourceRepo{}
 	parserErr := errors.New("解析失败")
@@ -122,6 +217,7 @@ func TestImportDocumentReturnsParserErrorBeforeWritingResource(t *testing.T) {
 	}
 }
 
+// TestImportDocumentReturnsEmbedderErrorBeforeWritingResource 验证`importDocument`在返回值分支下的行为，防止同类回归。
 func TestImportDocumentReturnsEmbedderErrorBeforeWritingResource(t *testing.T) {
 	repo := &fakeResourceRepo{}
 	embedErr := errors.New("embedding failed")
@@ -144,6 +240,7 @@ func TestImportDocumentReturnsEmbedderErrorBeforeWritingResource(t *testing.T) {
 	}
 }
 
+// TestImportDocumentUsesAtomicGraphWriteForPersistence 验证`importDocument`在依赖选择路径下的行为，防止同类回归。
 func TestImportDocumentUsesAtomicGraphWriteForPersistence(t *testing.T) {
 	repo := &fakeResourceRepo{
 		resource: &postgres.Resource{
@@ -184,8 +281,42 @@ func TestImportDocumentUsesAtomicGraphWriteForPersistence(t *testing.T) {
 	if len(repo.graphChunks) == 0 {
 		t.Fatal("expected graph write to receive chunks")
 	}
+	if repo.graphChunks[0].SectionType == nil || *repo.graphChunks[0].SectionType != string(documentnormalize.SectionTypeDocument) {
+		t.Fatalf("expected fallback graph chunk section type %q, got %#v", documentnormalize.SectionTypeDocument, repo.graphChunks[0].SectionType)
+	}
 }
 
+// TestImportDocumentAllowsCustomSourceTypeAndVersionSource 验证`importDocument`在合法输入或兼容路径下的行为，防止同类回归。
+func TestImportDocumentAllowsCustomSourceTypeAndVersionSource(t *testing.T) {
+	repo := &fakeResourceRepo{}
+	service := NewService(repo, fakeEmbedder{})
+
+	result, err := service.ImportDocument(context.Background(), ImportDocumentInput{
+		FileName:      "对话粘贴正文.md",
+		Content:       []byte("# 项目经历\n内容"),
+		SourceType:    "inline_text",
+		SourceRef:     stringPointer("assistant-inline://session-1"),
+		VersionSource: "assistant_inline_text",
+	})
+	if err != nil {
+		t.Fatalf("import document: %v", err)
+	}
+
+	if result.Resource == nil || result.Version == nil {
+		t.Fatalf("expected imported resource and version, got %#v", result)
+	}
+	if repo.lastGraphParams.SourceType != "inline_text" {
+		t.Fatalf("expected source type %q, got %q", "inline_text", repo.lastGraphParams.SourceType)
+	}
+	if repo.lastGraphParams.VersionSource != "assistant_inline_text" {
+		t.Fatalf("expected version source %q, got %q", "assistant_inline_text", repo.lastGraphParams.VersionSource)
+	}
+	if repo.lastGraphParams.SourceRef == nil || *repo.lastGraphParams.SourceRef != "assistant-inline://session-1" {
+		t.Fatalf("expected custom source ref to be preserved, got %#v", repo.lastGraphParams.SourceRef)
+	}
+}
+
+// TestImportDirectoryBackfillsSourceRefForLegacyTitleMatch 验证`importDirectoryBackfillsSourceRefForLegacyTitleMatch`在特定边界条件下的行为，防止同类回归。
 func TestImportDirectoryBackfillsSourceRefForLegacyTitleMatch(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "student-handbook.md")
@@ -238,6 +369,7 @@ func TestImportDirectoryBackfillsSourceRefForLegacyTitleMatch(t *testing.T) {
 	}
 }
 
+// TestImportDirectoryReindexesExistingResourceWithoutChunks 验证`importDirectoryReindexesExistingResourceWithoutChunks`在特定边界条件下的行为，防止同类回归。
 func TestImportDirectoryReindexesExistingResourceWithoutChunks(t *testing.T) {
 	tempDir := t.TempDir()
 	content := "# 考勤制度\n\n## 考勤管理\n员工必须在九点前签到。"
@@ -280,6 +412,7 @@ func TestImportDirectoryReindexesExistingResourceWithoutChunks(t *testing.T) {
 	}
 }
 
+// TestImportDirectorySkipsIndexedResource 验证`importDirectory`在跳过或空操作路径下的行为，防止同类回归。
 func TestImportDirectorySkipsIndexedResource(t *testing.T) {
 	tempDir := t.TempDir()
 	content := "# 考勤制度\n\n## 考勤管理\n员工必须在九点前签到。"
@@ -319,6 +452,7 @@ func TestImportDirectorySkipsIndexedResource(t *testing.T) {
 	}
 }
 
+// fakeResourceRepo 作为资源仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeResourceRepo struct {
 	listResult            []postgres.Resource
 	currentVersion        *postgres.ResourceVersion
@@ -338,10 +472,12 @@ type fakeResourceRepo struct {
 	lastReplaceResourceID string
 }
 
+// List 实现测试替身需要的 `List` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceRepo) List(context.Context) ([]postgres.Resource, error) {
 	return append([]postgres.Resource(nil), r.listResult...), nil
 }
 
+// CreateDocumentGraph 实现测试替身需要的 `CreateDocumentGraph` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceRepo) CreateDocumentGraph(_ context.Context, params postgres.CreateDocumentGraphParams) (*postgres.Resource, *postgres.ResourceVersion, error) {
 	r.graphCalls++
 	r.createSourceRef = params.SourceRef
@@ -381,6 +517,7 @@ func (r *fakeResourceRepo) CreateDocumentGraph(_ context.Context, params postgre
 	return resource, version, nil
 }
 
+// GetCurrentVersion 实现测试替身需要的 `GetCurrentVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceRepo) GetCurrentVersion(_ context.Context, resourceID string) (*postgres.ResourceVersion, error) {
 	if r.currentVersions != nil {
 		return r.currentVersions[resourceID], nil
@@ -389,6 +526,7 @@ func (r *fakeResourceRepo) GetCurrentVersion(_ context.Context, resourceID strin
 	return r.currentVersion, nil
 }
 
+// CountChunksByVersion 实现测试替身需要的 `CountChunksByVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceRepo) CountChunksByVersion(_ context.Context, versionID string) (int, error) {
 	if r.chunkCountByVersion != nil {
 		return r.chunkCountByVersion[versionID], nil
@@ -397,6 +535,7 @@ func (r *fakeResourceRepo) CountChunksByVersion(_ context.Context, versionID str
 	return r.chunkCount, nil
 }
 
+// UpdateSourceRef 实现测试替身需要的 `UpdateSourceRef` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceRepo) UpdateSourceRef(_ context.Context, resourceID string, sourceRef *string) error {
 	r.updateSourceRefCalls = append(r.updateSourceRefCalls, sourceRefUpdateCall{
 		resourceID: resourceID,
@@ -405,6 +544,7 @@ func (r *fakeResourceRepo) UpdateSourceRef(_ context.Context, resourceID string,
 	return nil
 }
 
+// ReplaceVersionChunks 实现测试替身需要的 `ReplaceVersionChunks` 接口方法，为用例分支提供可控返回。
 func (r *fakeResourceRepo) ReplaceVersionChunks(_ context.Context, versionID string, resourceID string, chunks []postgres.ResourceChunkInput) error {
 	r.replaceCalls++
 	r.lastReplaceVersionID = versionID
@@ -424,8 +564,10 @@ func (r *fakeResourceRepo) ReplaceVersionChunks(_ context.Context, versionID str
 	return nil
 }
 
+// fakeEmbedder 作为Embedder的测试替身，用于在用例里提供可控的依赖行为。
 type fakeEmbedder struct{}
 
+// Embed 实现测试替身需要的 `Embed` 接口方法，为用例分支提供可控返回。
 func (fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	vectors := make([][]float32, 0, len(texts))
 	for range texts {
@@ -435,14 +577,17 @@ func (fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error
 	return vectors, nil
 }
 
+// fakeEmbedderWithError 作为带Error的Embedder的测试替身，用于在用例里提供可控的依赖行为。
 type fakeEmbedderWithError struct {
 	err error
 }
 
+// Embed 实现测试替身需要的 `Embed` 接口方法，为用例分支提供可控返回。
 func (fake fakeEmbedderWithError) Embed(context.Context, []string) ([][]float32, error) {
 	return nil, fake.err
 }
 
+// testVector 为测试场景处理 `testVector` 的辅助步骤，减少重复搭建逻辑。
 func testVector(seed float32) []float32 {
 	values := make([]float32, 1024)
 	for index := range values {
@@ -452,11 +597,13 @@ func testVector(seed float32) []float32 {
 	return values
 }
 
+// fakeDocumentParser 作为文档解析器的测试替身，用于在用例里提供可控的依赖行为。
 type fakeDocumentParser struct {
 	result *documentparser.Result
 	err    error
 }
 
+// Parse 实现测试替身需要的 `Parse` 接口方法，为用例分支提供可控返回。
 func (p fakeDocumentParser) Parse(context.Context, documentparser.Input) (*documentparser.Result, error) {
 	if p.err != nil {
 		return nil, p.err
@@ -465,18 +612,81 @@ func (p fakeDocumentParser) Parse(context.Context, documentparser.Input) (*docum
 	return p.result, nil
 }
 
+// SupportsFileName 返回接收者对指定文件名的兼容性判断，供上层尽早拦截不支持的输入。
 func (p fakeDocumentParser) SupportsFileName(string) bool {
 	return true
 }
 
+// SupportedExtensions 返回接收者允许的扩展名集合，避免调用方重复维护能力清单。
 func (p fakeDocumentParser) SupportedExtensions() []string {
 	return []string{".md"}
 }
 
+// UnsupportedFileMessage 为不支持的文件生成对外提示文案，避免各入口分散拼接错误消息。
 func (p fakeDocumentParser) UnsupportedFileMessage(string) string {
 	return "不支持的文件格式"
 }
 
+// fakeDocumentNormalizer 作为文档Normalizer的测试替身，用于在用例里提供可控的依赖行为。
+type fakeDocumentNormalizer struct {
+	result documentnormalize.NormalizedDocument
+}
+
+// Normalize 实现测试替身需要的 `Normalize` 接口方法，为用例分支提供可控返回。
+func (f fakeDocumentNormalizer) Normalize(document documentparser.ParsedDocument) documentnormalize.NormalizedDocument {
+	return f.result
+}
+
+// fakeResourceStructureRepo 作为资源结构化结果仓储的测试替身，用于在用例里提供可控的依赖行为。
+type fakeResourceStructureRepo struct {
+	createCalls      int
+	replaceCalls     int
+	lastCreateParams postgres.CreateVersionStructureParams
+	lastSections     []postgres.ResourceSectionInput
+}
+
+// CreateVersionStructure 实现测试替身需要的 `CreateVersionStructure` 接口方法，为用例分支提供可控返回。
+func (f *fakeResourceStructureRepo) CreateVersionStructure(_ context.Context, params postgres.CreateVersionStructureParams) (*postgres.ResourceVersionStructure, error) {
+	f.createCalls++
+	f.lastCreateParams = params
+	return &postgres.ResourceVersionStructure{
+		ID:           "structure-1",
+		ResourceID:   params.ResourceID,
+		VersionID:    params.VersionID,
+		SourceFormat: params.SourceFormat,
+		DocumentJSON: params.DocumentJSON,
+	}, nil
+}
+
+// ReplaceSectionsForVersion 实现测试替身需要的 `ReplaceSectionsForVersion` 接口方法，为用例分支提供可控返回。
+func (f *fakeResourceStructureRepo) ReplaceSectionsForVersion(_ context.Context, versionID string, resourceID string, sections []postgres.ResourceSectionInput) ([]postgres.ResourceSection, error) {
+	f.replaceCalls++
+	f.lastSections = append([]postgres.ResourceSectionInput(nil), sections...)
+
+	inserted := make([]postgres.ResourceSection, 0, len(sections))
+	for index, section := range sections {
+		inserted = append(inserted, postgres.ResourceSection{
+			ID:                  "section-" + string(rune('1'+index)),
+			ResourceID:          resourceID,
+			VersionID:           versionID,
+			SectionKey:          section.SectionKey,
+			SectionType:         section.SectionType,
+			SectionOrder:        section.SectionOrder,
+			Title:               section.Title,
+			CanonicalEntityName: section.CanonicalEntityName,
+			AliasesJSON:         section.AliasesJSON,
+			Summary:             section.Summary,
+			Content:             section.Content,
+			PageStart:           section.PageStart,
+			PageEnd:             section.PageEnd,
+			MetadataJSON:        section.MetadataJSON,
+		})
+	}
+
+	return inserted, nil
+}
+
+// fakeVersionIndexer 作为版本索引器的测试替身，用于在用例里提供可控的依赖行为。
 type fakeVersionIndexer struct {
 	buildCalls   int
 	reindexCalls int
@@ -486,6 +696,7 @@ type fakeVersionIndexer struct {
 	reindexErr   error
 }
 
+// BuildVersionChunks 实现测试替身需要的 `BuildVersionChunks` 接口方法，为用例分支提供可控返回。
 func (f *fakeVersionIndexer) BuildVersionChunks(_ context.Context, input indexer.Input) ([]postgres.ResourceChunkInput, error) {
 	f.buildCalls++
 	f.lastInput = input
@@ -496,12 +707,14 @@ func (f *fakeVersionIndexer) BuildVersionChunks(_ context.Context, input indexer
 	return append([]postgres.ResourceChunkInput(nil), f.buildChunks...), nil
 }
 
+// ReindexVersion 实现测试替身需要的 `ReindexVersion` 接口方法，为用例分支提供可控返回。
 func (f *fakeVersionIndexer) ReindexVersion(_ context.Context, input indexer.Input) error {
 	f.reindexCalls++
 	f.lastInput = input
 	return f.reindexErr
 }
 
+// sourceRefUpdateCall 记录来源RefUpdate的调用参数，便于测试断言副作用。
 type sourceRefUpdateCall struct {
 	resourceID string
 	sourceRef  *string

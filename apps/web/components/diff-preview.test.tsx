@@ -41,4 +41,66 @@ describe("DiffPreview", () => {
       });
     });
   });
+
+  it("renders explicit occurrence labels for duplicate titles", () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sections = [
+      {
+        citation_ids: ["cite_1"],
+        original: "old-1",
+        reason: "clarify-1",
+        revised: "new-1",
+        section_occurrence: 1,
+        section_title: "Policy Updates"
+      },
+      {
+        citation_ids: ["cite_1"],
+        original: "old-2",
+        reason: "clarify-2",
+        revised: "new-2",
+        section_occurrence: 2,
+        section_title: "Policy Updates"
+      }
+    ];
+
+    render(<DiffPreview sections={sections} />);
+
+    expect(screen.getByText("Policy Updates · 第 1 处")).toBeInTheDocument();
+    expect(screen.getByText("Policy Updates · 第 2 处")).toBeInTheDocument();
+    expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("Encountered two children with the same key")
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("falls back to local occurrence labels for legacy duplicate titles", () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sections = [
+      {
+        citation_ids: ["cite_1"],
+        original: "old-1",
+        reason: "clarify-1",
+        revised: "new-1",
+        section_title: "Policy Updates"
+      },
+      {
+        citation_ids: ["cite_1"],
+        original: "old-2",
+        reason: "clarify-2",
+        revised: "new-2",
+        section_title: "Policy Updates"
+      }
+    ];
+
+    render(<DiffPreview sections={sections} />);
+
+    expect(screen.getByText("Policy Updates · 第 1 处")).toBeInTheDocument();
+    expect(screen.getByText("Policy Updates · 第 2 处")).toBeInTheDocument();
+    expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("Encountered two children with the same key")
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
 });

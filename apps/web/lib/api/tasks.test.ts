@@ -1,4 +1,4 @@
-import { getTaskEvents } from "./tasks";
+import { getDiffPreviewArtifact, getTaskEvents, type TaskArtifact } from "./tasks";
 
 describe("tasks api", () => {
   beforeEach(() => {
@@ -47,5 +47,149 @@ describe("tasks api", () => {
     expect(events).toHaveLength(1);
     expect(events[0].event_type).toBe("step.started");
     expect(events[0].payload).toEqual({ step_name: "planner" });
+  });
+
+  it("preserves explicit section_occurrence while filtering invalid sections", () => {
+    const artifacts: TaskArtifact[] = [
+      {
+        content: {
+          sections: [
+            {
+              citation_ids: ["cite_1"],
+              original: "old",
+              reason: "clarify",
+              revised: "new",
+              section_occurrence: 2,
+              section_title: "Policy Updates"
+            },
+            {
+              citation_ids: ["cite_2"],
+              original: "ignored",
+              reason: "missing title",
+              revised: "ignored",
+              section_occurrence: 3,
+              section_title: "   "
+            }
+          ]
+        },
+        created_at: "2026-04-15T10:00:00Z",
+        id: "artifact-1",
+        artifact_type: "diff_preview"
+      }
+    ];
+
+    expect(getDiffPreviewArtifact(artifacts)).toEqual({
+      sections: [
+        {
+          citation_ids: ["cite_1"],
+          original: "old",
+          reason: "clarify",
+          revised: "new",
+          section_occurrence: 2,
+          section_title: "Policy Updates"
+        }
+      ]
+    });
+  });
+
+  it("keeps legacy diff preview sections without section_occurrence and normalizes missing citation_ids", () => {
+    const artifacts: TaskArtifact[] = [
+      {
+        content: {
+          sections: [
+            {
+              original: "old",
+              reason: "clarify",
+              revised: "new",
+              section_title: "Policy Updates"
+            }
+          ]
+        },
+        created_at: "2026-04-15T10:00:00Z",
+        id: "artifact-1",
+        artifact_type: "diff_preview"
+      }
+    ];
+
+    expect(getDiffPreviewArtifact(artifacts)).toEqual({
+      sections: [
+        {
+          citation_ids: [],
+          original: "old",
+          reason: "clarify",
+          revised: "new",
+          section_title: "Policy Updates"
+        }
+      ]
+    });
+  });
+
+  it("ignores invalid section_occurrence values from diff preview artifacts", () => {
+    const artifacts: TaskArtifact[] = [
+      {
+        content: {
+          sections: [
+            {
+              citation_ids: ["cite_1", 123, null],
+              original: "old",
+              reason: "clarify",
+              revised: "new",
+              section_occurrence: 0,
+              section_title: "Policy Updates"
+            }
+          ]
+        },
+        created_at: "2026-04-15T10:00:00Z",
+        id: "artifact-1",
+        artifact_type: "diff_preview"
+      }
+    ];
+
+    expect(getDiffPreviewArtifact(artifacts)).toEqual({
+      sections: [
+        {
+          citation_ids: ["cite_1"],
+          original: "old",
+          reason: "clarify",
+          revised: "new",
+          section_title: "Policy Updates"
+        }
+      ]
+    });
+  });
+
+  it("strips legacy inline execution suffixes from diff preview original content", () => {
+    const artifacts: TaskArtifact[] = [
+      {
+        content: {
+          sections: [
+            {
+              citation_ids: ["cite_1"],
+              original:
+                "反馈机制：原文说“直属主管与导师应定期跟进学习效果并给予反馈”，但“定期”较为模糊。可以细化，例如“导师需在入职第1个月、第3个月进行正式学习回顾与反馈”。直接按照这个补充，创建任务吧",
+              reason: "clarify",
+              revised: "反馈机制：补充后的正文。",
+              section_title: "全文"
+            }
+          ]
+        },
+        created_at: "2026-04-20T10:00:00Z",
+        id: "artifact-1",
+        artifact_type: "diff_preview"
+      }
+    ];
+
+    expect(getDiffPreviewArtifact(artifacts)).toEqual({
+      sections: [
+        {
+          citation_ids: ["cite_1"],
+          original:
+            "反馈机制：原文说“直属主管与导师应定期跟进学习效果并给予反馈”，但“定期”较为模糊。可以细化，例如“导师需在入职第1个月、第3个月进行正式学习回顾与反馈”。",
+          reason: "clarify",
+          revised: "反馈机制：补充后的正文。",
+          section_title: "全文"
+        }
+      ]
+    });
   });
 });

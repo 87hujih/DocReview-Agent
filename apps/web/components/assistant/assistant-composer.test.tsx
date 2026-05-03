@@ -3,12 +3,19 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AssistantComposer } from "./assistant-composer";
 
 describe("AssistantComposer", () => {
-  it("limits file input types and shows supported format hint", () => {
+  const uploadCapabilities = {
+    accept: ".md,.txt",
+    hint: "支持 md、txt",
+    supported_extensions: [".md", ".txt"]
+  };
+
+  it("reads file input types and hint text from upload capabilities", () => {
     const { container } = render(
       <AssistantComposer
         canUpload
         onSubmitMessage={() => {}}
         onUploadFile={() => {}}
+        uploadCapabilities={uploadCapabilities}
       />
     );
 
@@ -17,8 +24,9 @@ describe("AssistantComposer", () => {
       throw new Error("expected file input to exist");
     }
 
-    expect(input).toHaveAttribute("accept", ".md,.txt,.doc,.docx,.pdf,.rtf,.odt");
-    expect(screen.getByText("支持 md、txt、doc、docx、pdf、rtf、odt")).toBeInTheDocument();
+    expect(input).toHaveAttribute("accept", ".md,.txt");
+    expect(screen.getByText("支持 md、txt")).toBeInTheDocument();
+    expect(input).not.toBeDisabled();
   });
 
   it("forwards the selected file to upload handler", () => {
@@ -28,6 +36,7 @@ describe("AssistantComposer", () => {
         canUpload
         onSubmitMessage={() => {}}
         onUploadFile={handleUploadFile}
+        uploadCapabilities={uploadCapabilities}
       />
     );
 
@@ -48,6 +57,7 @@ describe("AssistantComposer", () => {
         canUpload
         onSubmitMessage={vi.fn()}
         onUploadFile={vi.fn()}
+        uploadCapabilities={uploadCapabilities}
       />
     );
 

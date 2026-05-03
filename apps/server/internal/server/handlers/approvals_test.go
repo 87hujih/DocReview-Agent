@@ -14,13 +14,14 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
+// TestListApprovalsHandler 验证`listApprovalsHandler`在特定边界条件下的行为，防止同类回归。
 func TestListApprovalsHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil))
 	engine := server.New()
 	engine.GET("/api/approvals", handler.List)
 
@@ -37,7 +38,11 @@ func TestListApprovalsHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := approvalRepo.Create(ctx, task.ID); err != nil {
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	if _, err := approvalRepo.Create(ctx, task.ID, version.ID); err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
 
@@ -53,13 +58,14 @@ func TestListApprovalsHandler(t *testing.T) {
 	}
 }
 
+// TestGetApprovalHandler 验证`getApprovalHandler`在特定边界条件下的行为，防止同类回归。
 func TestGetApprovalHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil))
 	engine := server.New()
 	engine.GET("/api/approvals/:id", handler.GetByID)
 
@@ -76,7 +82,11 @@ func TestGetApprovalHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -96,12 +106,13 @@ func TestGetApprovalHandler(t *testing.T) {
 	}
 }
 
+// TestGetApprovalHandlerNotFound 验证`getApprovalHandlerNotFound`在特定边界条件下的行为，防止同类回归。
 func TestGetApprovalHandlerNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil))
 	engine := server.New()
 	engine.GET("/api/approvals/:id", handler.GetByID)
 
@@ -112,13 +123,14 @@ func TestGetApprovalHandlerNotFound(t *testing.T) {
 	}
 }
 
+// TestGetJobHandler 验证`getJobHandler`在特定边界条件下的行为，防止同类回归。
 func TestGetJobHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil))
 	engine := server.New()
 	engine.GET("/api/jobs/:id", handler.GetJobByID)
 
@@ -135,11 +147,15 @@ func TestGetJobHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
-	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID)
+	jobRecord, err := jobRepo.Create(ctx, task.ID, approvalRecord.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}
@@ -159,12 +175,13 @@ func TestGetJobHandler(t *testing.T) {
 	}
 }
 
+// TestGetJobHandlerNotFound 验证`getJobHandlerNotFound`在特定边界条件下的行为，防止同类回归。
 func TestGetJobHandlerNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil))
 	engine := server.New()
 	engine.GET("/api/jobs/:id", handler.GetJobByID)
 
@@ -175,13 +192,14 @@ func TestGetJobHandlerNotFound(t *testing.T) {
 	}
 }
 
+// TestApproveApprovalHandler 验证`approveApprovalHandler`在特定边界条件下的行为，防止同类回归。
 func TestApproveApprovalHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil))
 	engine := server.New()
 	engine.POST("/api/approvals/:id/approve", handler.Approve)
 
@@ -201,8 +219,11 @@ func TestApproveApprovalHandler(t *testing.T) {
 	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
 		t.Fatalf("update task to awaiting approval: %v", err)
 	}
-
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -219,13 +240,14 @@ func TestApproveApprovalHandler(t *testing.T) {
 	}
 }
 
+// TestRejectApprovalHandler 验证`rejectApprovalHandler`在特定边界条件下的行为，防止同类回归。
 func TestRejectApprovalHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil))
 	engine := server.New()
 	engine.POST("/api/approvals/:id/reject", handler.Reject)
 
@@ -245,8 +267,11 @@ func TestRejectApprovalHandler(t *testing.T) {
 	if err := taskRepo.UpdateStatus(ctx, task.ID, models.StatusAwaitingApproval, nil); err != nil {
 		t.Fatalf("update task to awaiting approval: %v", err)
 	}
-
-	approvalRecord, err := approvalRepo.Create(ctx, task.ID)
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	approvalRecord, err := approvalRepo.Create(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -275,6 +300,7 @@ func TestRejectApprovalHandler(t *testing.T) {
 	}
 }
 
+// TestRejectApprovalHandlerMissingReason 验证`rejectApprovalHandlerMissingReason`在特定边界条件下的行为，防止同类回归。
 func TestRejectApprovalHandlerMissingReason(t *testing.T) {
 	handler := NewApprovalHandler(nil)
 	engine := server.New()
@@ -296,6 +322,7 @@ func TestRejectApprovalHandlerMissingReason(t *testing.T) {
 	}
 }
 
+// TestGetApprovalByInvalidUUID 验证`getApprovalByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestGetApprovalByInvalidUUID(t *testing.T) {
 	handler := NewApprovalHandler(nil)
 	engine := server.New()
@@ -308,6 +335,7 @@ func TestGetApprovalByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestApproveByInvalidUUID 验证`approveByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestApproveByInvalidUUID(t *testing.T) {
 	handler := NewApprovalHandler(nil)
 	engine := server.New()
@@ -320,6 +348,7 @@ func TestApproveByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestRejectByInvalidUUID 验证`rejectByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestRejectByInvalidUUID(t *testing.T) {
 	handler := NewApprovalHandler(nil)
 	engine := server.New()
@@ -339,6 +368,7 @@ func TestRejectByInvalidUUID(t *testing.T) {
 	}
 }
 
+// TestGetJobByInvalidUUID 验证`getJobByInvalidUUID`在特定边界条件下的行为，防止同类回归。
 func TestGetJobByInvalidUUID(t *testing.T) {
 	handler := NewApprovalHandler(nil)
 	engine := server.New()
@@ -351,11 +381,13 @@ func TestGetJobByInvalidUUID(t *testing.T) {
 	}
 }
 
-func TestApproveApprovalNotFound(t *testing.T) {	pool := newHandlerTestPool(t)
+// TestApproveApprovalNotFound 验证`approveApprovalNotFound`在特定边界条件下的行为，防止同类回归。
+func TestApproveApprovalNotFound(t *testing.T) {
+	pool := newHandlerTestPool(t)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
-	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil))
+	handler := NewApprovalHandler(approval.NewService(pool, approvalRepo, jobRepo, taskRepo, make(chan struct{}, 2), nil, nil, nil))
 	engine := server.New()
 	engine.POST("/api/approvals/:id/approve", handler.Approve)
 

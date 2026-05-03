@@ -2,11 +2,16 @@ package postgres
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
+// TestTaskRepoCRUD 验证`taskRepoCRUD`在特定边界条件下的行为，防止同类回归。
 func TestTaskRepoCRUD(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -51,11 +56,17 @@ func TestTaskRepoCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
-	if len(listedTasks) < 2 {
-		t.Fatalf("expected at least 2 tasks, got %d", len(listedTasks))
+	secondTaskIndex := slices.IndexFunc(listedTasks, func(task Task) bool {
+		return task.ID == secondTask.ID
+	})
+	firstTaskIndex := slices.IndexFunc(listedTasks, func(task Task) bool {
+		return task.ID == firstTask.ID
+	})
+	if secondTaskIndex == -1 || firstTaskIndex == -1 {
+		t.Fatalf("expected task list to contain created tasks %q and %q, got %d tasks", secondTask.ID, firstTask.ID, len(listedTasks))
 	}
-	if listedTasks[0].ID != secondTask.ID {
-		t.Fatalf("expected latest task %q first, got %q", secondTask.ID, listedTasks[0].ID)
+	if secondTaskIndex > firstTaskIndex {
+		t.Fatalf("expected newer task %q to appear before older task %q, got indexes [%d %d]", secondTask.ID, firstTask.ID, secondTaskIndex, firstTaskIndex)
 	}
 
 	errorMessage := "planner failed"
@@ -145,6 +156,220 @@ func TestTaskRepoCRUD(t *testing.T) {
 	}
 }
 
+// TestTaskRepoListOrdersByCreatedAtThenIDDescWhenTimestampsTie 验证`taskRepoList`在状态保持路径下的行为，防止同类回归。
+func TestTaskRepoListOrdersByCreatedAtThenIDDescWhenTimestampsTie(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "任务列表排序稳定性测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	fixedCreatedAt := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
+	firstTaskID := "00000000-0000-0000-0000-000000000001"
+	secondTaskID := "00000000-0000-0000-0000-000000000002"
+	cleanupFixedTaskIDs := func() {
+		if _, cleanupErr := pool.Exec(testContext(t), `DELETE FROM tasks WHERE id = ANY($1)`, []string{firstTaskID, secondTaskID}); cleanupErr != nil {
+			t.Fatalf("cleanup fixed task ids: %v", cleanupErr)
+		}
+	}
+	cleanupFixedTaskIDs()
+	t.Cleanup(cleanupFixedTaskIDs)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO tasks (id, resource_id, instruction, status, created_at, updated_at)
+		VALUES ($1, $2, $3, 'pending', $4, $4), ($5, $2, $6, 'pending', $4, $4)
+	`, firstTaskID, resource.ID, "第一条任务", fixedCreatedAt, secondTaskID, "第二条任务"); err != nil {
+		t.Fatalf("insert tasks with fixed ids: %v", err)
+	}
+
+	listedTasks, err := taskRepo.List(ctx)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(listedTasks) < 2 {
+		t.Fatalf("expected at least 2 tasks, got %d", len(listedTasks))
+	}
+
+	wantOrder := []string{firstTaskID, secondTaskID}
+	slices.SortFunc(wantOrder, func(left string, right string) int {
+		switch {
+		case left > right:
+			return -1
+		case left < right:
+			return 1
+		default:
+			return 0
+		}
+	})
+
+	if listedTasks[0].ID != wantOrder[0] || listedTasks[1].ID != wantOrder[1] {
+		t.Fatalf("expected tasks ordered by id desc when created_at ties, got [%s %s], want [%s %s]", listedTasks[0].ID, listedTasks[1].ID, wantOrder[0], wantOrder[1])
+	}
+}
+
+// TestTaskRepoCreateFromAssistantSuggestionReturnsExistingTaskOnDuplicate 验证`taskRepoCreateFromAssistantSuggestion`在返回值分支下的行为，防止同类回归。
+func TestTaskRepoCreateFromAssistantSuggestionReturnsExistingTaskOnDuplicate(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "助手建议幂等测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	assistantRepo := NewAssistantRepo(pool)
+	session, messages, err := assistantRepo.CreateSessionWithMessages(ctx, "助手建议幂等测试", []AssistantMessageInput{
+		{
+			Role:    "assistant",
+			Kind:    "task_suggestion",
+			Payload: []byte(`{"instruction":"请修订第二章"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create assistant session with suggestion message: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, cleanupErr := pool.Exec(testContext(t), `DELETE FROM assistant_sessions WHERE id = $1`, session.ID); cleanupErr != nil {
+			t.Fatalf("cleanup assistant session %q: %v", session.ID, cleanupErr)
+		}
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 assistant suggestion message, got %d", len(messages))
+	}
+	sourceMessageID := messages[0].ID
+
+	createFromSuggestionRepo, ok := any(taskRepo).(interface {
+		CreateFromAssistantSuggestion(context.Context, string, string, string) (*Task, bool, error)
+	})
+	if !ok {
+		t.Fatal("task repo does not implement assistant suggestion idempotency contract")
+	}
+
+	firstTask, firstCreated, err := createFromSuggestionRepo.CreateFromAssistantSuggestion(ctx, resource.ID, "请修订第二章", sourceMessageID)
+	if err != nil {
+		t.Fatalf("create task from assistant suggestion first time: %v", err)
+	}
+	if !firstCreated {
+		t.Fatal("expected first create-from-suggestion call to create a new task")
+	}
+
+	secondTask, secondCreated, err := createFromSuggestionRepo.CreateFromAssistantSuggestion(ctx, resource.ID, "请修订第二章", sourceMessageID)
+	if err != nil {
+		t.Fatalf("create task from assistant suggestion second time: %v", err)
+	}
+	if secondCreated {
+		t.Fatal("expected duplicate create-from-suggestion call to reuse existing task")
+	}
+	if secondTask == nil || firstTask == nil || secondTask.ID != firstTask.ID {
+		t.Fatalf("expected duplicate create to return existing task %q, got first=%#v second=%#v", firstTask.ID, firstTask, secondTask)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT id
+		FROM tasks
+		WHERE source_message_id = $1
+	`, sourceMessageID)
+	if err != nil {
+		t.Fatalf("query tasks by source_message_id: %v", err)
+	}
+	defer rows.Close()
+
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collect task ids by source_message_id: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 task for duplicate suggestion, got %d (%v)", len(ids), ids)
+	}
+}
+
+// TestTaskRepoGetStepsAndArtifactsOrderByCreatedAtThenIDAscWhenTimestampsTie 验证`taskRepoGetStepsAndArtifactsOrderByCreatedAtThenIDAscWhenTimestampsTie`在特定边界条件下的行为，防止同类回归。
+func TestTaskRepoGetStepsAndArtifactsOrderByCreatedAtThenIDAscWhenTimestampsTie(t *testing.T) {
+	pool := newTestPool(t)
+	resourceRepo := NewResourceRepo(pool)
+	taskRepo := NewTaskRepo(pool)
+	ctx := testContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "任务步骤与产物排序稳定性测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	task, err := taskRepo.Create(ctx, resource.ID, "验证步骤与产物排序")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	firstStep, err := taskRepo.AddStep(ctx, task.ID, "planner")
+	if err != nil {
+		t.Fatalf("add first step: %v", err)
+	}
+	secondStep, err := taskRepo.AddStep(ctx, task.ID, "reviewer")
+	if err != nil {
+		t.Fatalf("add second step: %v", err)
+	}
+
+	firstArtifact, err := taskRepo.AddArtifact(ctx, task.ID, "review_summary", []byte(`{"summary":"first"}`))
+	if err != nil {
+		t.Fatalf("add first artifact: %v", err)
+	}
+	secondArtifact, err := taskRepo.AddArtifact(ctx, task.ID, "diff_preview", []byte(`{"summary":"second"}`))
+	if err != nil {
+		t.Fatalf("add second artifact: %v", err)
+	}
+
+	fixedCreatedAt := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `UPDATE task_steps SET created_at = $2 WHERE id = ANY($1)`, []string{firstStep.ID, secondStep.ID}, fixedCreatedAt); err != nil {
+		t.Fatalf("pin task_steps created_at: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE task_artifacts SET created_at = $2 WHERE id = ANY($1)`, []string{firstArtifact.ID, secondArtifact.ID}, fixedCreatedAt); err != nil {
+		t.Fatalf("pin task_artifacts created_at: %v", err)
+	}
+
+	steps, err := taskRepo.GetSteps(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(steps))
+	}
+
+	wantStepOrder := []string{firstStep.ID, secondStep.ID}
+	slices.Sort(wantStepOrder)
+	if steps[0].ID != wantStepOrder[0] || steps[1].ID != wantStepOrder[1] {
+		t.Fatalf("expected steps ordered by id asc when created_at ties, got [%s %s], want [%s %s]", steps[0].ID, steps[1].ID, wantStepOrder[0], wantStepOrder[1])
+	}
+
+	artifacts, err := taskRepo.GetArtifacts(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get artifacts: %v", err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("expected 2 artifacts, got %d", len(artifacts))
+	}
+
+	wantArtifactOrder := []string{firstArtifact.ID, secondArtifact.ID}
+	slices.Sort(wantArtifactOrder)
+	if artifacts[0].ID != wantArtifactOrder[0] || artifacts[1].ID != wantArtifactOrder[1] {
+		t.Fatalf("expected artifacts ordered by id asc when created_at ties, got [%s %s], want [%s %s]", artifacts[0].ID, artifacts[1].ID, wantArtifactOrder[0], wantArtifactOrder[1])
+	}
+}
+
+// TestApprovalRepoCreate 验证`approvalRepoCreate`在特定边界条件下的行为，防止同类回归。
 func TestApprovalRepoCreate(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -164,8 +389,15 @@ func TestApprovalRepoCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
+	version, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n原始正文", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET status = 'drafting' WHERE id = $1`, task.ID); err != nil {
+		t.Fatalf("set task to drafting: %v", err)
+	}
 
-	approval, err := approvalRepo.Create(ctx, task.ID)
+	approval, err := approvalRepo.CreateForTaskAwaitingApproval(ctx, task.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -175,6 +407,9 @@ func TestApprovalRepoCreate(t *testing.T) {
 	if approval.Status != "pending" {
 		t.Fatalf("expected approval status %q, got %q", "pending", approval.Status)
 	}
+	if approval.BaseVersionID == nil || *approval.BaseVersionID != version.ID {
+		t.Fatalf("expected base version %q, got %#v", version.ID, approval.BaseVersionID)
+	}
 	if approval.RejectReason != nil {
 		t.Fatalf("expected nil reject reason, got %#v", approval.RejectReason)
 	}
@@ -183,6 +418,7 @@ func TestApprovalRepoCreate(t *testing.T) {
 	}
 }
 
+// TestApprovalRepoReadListAndUpdateStatus 验证`approvalRepoReadListAndUpdateStatus`在特定边界条件下的行为，防止同类回归。
 func TestApprovalRepoReadListAndUpdateStatus(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -202,8 +438,15 @@ func TestApprovalRepoReadListAndUpdateStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first task: %v", err)
 	}
+	firstVersion, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "## 第一章\n第一份原始正文", "original")
+	if err != nil {
+		t.Fatalf("create first version: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET status = 'drafting' WHERE id = $1`, firstTask.ID); err != nil {
+		t.Fatalf("set first task to drafting: %v", err)
+	}
 
-	firstApproval, err := approvalRepo.Create(ctx, firstTask.ID)
+	firstApproval, err := approvalRepo.CreateForTaskAwaitingApproval(ctx, firstTask.ID, firstVersion.ID)
 	if err != nil {
 		t.Fatalf("create first approval: %v", err)
 	}
@@ -214,8 +457,15 @@ func TestApprovalRepoReadListAndUpdateStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second task: %v", err)
 	}
+	secondVersion, err := resourceRepo.CreateVersion(ctx, resource.ID, 2, "## 第一章\n第二份原始正文", "original")
+	if err != nil {
+		t.Fatalf("create second version: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET status = 'drafting' WHERE id = $1`, secondTask.ID); err != nil {
+		t.Fatalf("set second task to drafting: %v", err)
+	}
 
-	secondApproval, err := approvalRepo.Create(ctx, secondTask.ID)
+	secondApproval, err := approvalRepo.CreateForTaskAwaitingApproval(ctx, secondTask.ID, secondVersion.ID)
 	if err != nil {
 		t.Fatalf("create second approval: %v", err)
 	}
@@ -310,6 +560,7 @@ func TestApprovalRepoReadListAndUpdateStatus(t *testing.T) {
 	}
 }
 
+// TestJobRepoCRUD 验证`jobRepoCRUD`在特定边界条件下的行为，防止同类回归。
 func TestJobRepoCRUD(t *testing.T) {
 	pool := newTestPool(t)
 	resourceRepo := NewResourceRepo(pool)
@@ -335,11 +586,11 @@ func TestJobRepoCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first task: %v", err)
 	}
-	firstApproval, err := approvalRepo.Create(ctx, firstTask.ID)
+	firstApproval, err := approvalRepo.Create(ctx, firstTask.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create first approval: %v", err)
 	}
-	firstJob, err := jobRepo.Create(ctx, firstTask.ID, firstApproval.ID)
+	firstJob, err := jobRepo.Create(ctx, firstTask.ID, firstApproval.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create first job: %v", err)
 	}
@@ -350,11 +601,11 @@ func TestJobRepoCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second task: %v", err)
 	}
-	secondApproval, err := approvalRepo.Create(ctx, secondTask.ID)
+	secondApproval, err := approvalRepo.Create(ctx, secondTask.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create second approval: %v", err)
 	}
-	secondJob, err := jobRepo.Create(ctx, secondTask.ID, secondApproval.ID)
+	secondJob, err := jobRepo.Create(ctx, secondTask.ID, secondApproval.ID, version.ID)
 	if err != nil {
 		t.Fatalf("create second job: %v", err)
 	}
@@ -449,12 +700,14 @@ func TestJobRepoCRUD(t *testing.T) {
 	}
 }
 
+// jsonEqual 为测试场景处理 `JSONEqual` 的辅助步骤，减少重复搭建逻辑。
 func jsonEqual(left []byte, right []byte) bool {
 	leftNormalized := normalizeJSON(left)
 	rightNormalized := normalizeJSON(right)
 	return bytes.Equal(leftNormalized, rightNormalized)
 }
 
+// normalizeJSON 在测试里归一化 `JSON`，避免比较时受格式差异干扰。
 func normalizeJSON(input []byte) []byte {
 	var value any
 	if err := json.Unmarshal(input, &value); err != nil {

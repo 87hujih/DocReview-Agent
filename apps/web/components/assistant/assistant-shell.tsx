@@ -5,15 +5,19 @@ import { startTransition, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type {
+  AssistantCapabilities,
   AssistantMessage,
   AssistantRenderableMessage,
   AssistantSession,
   AssistantStreamEvent,
-  AssistantTurnError
+  AssistantTurnError,
+  AssistantUploadCapabilities
 } from "../../lib/assistant/types";
 import {
   confirmAssistantTaskSuggestion,
+  createAssistantConversationWithFile,
   deleteAssistantSession,
+  getAssistantCapabilities,
   getAssistantSession,
   getAssistantSessions,
   streamAssistantConversation,
@@ -32,7 +36,17 @@ import styles from "./assistant-shell.module.css";
 type HistoryStatus = "history_error" | "history_ready" | "loading_history";
 type TurnStatus = "confirming_task" | "idle" | "loading_conversation" | "stopping" | "streaming" | "uploading_file";
 
-export function AssistantShell() {
+type AssistantShellProps = {
+  initialSessionId?: string | null;
+};
+
+const FALLBACK_UPLOAD_CAPABILITIES: AssistantUploadCapabilities = {
+  accept: ".md,.txt",
+  hint: "支持 md、txt",
+  supported_extensions: [".md", ".txt"]
+};
+
+export function AssistantShell({ initialSessionId = null }: AssistantShellProps) {
   const { railCollapsed, setRailCollapsed } = useAppChrome();
   const [sessions, setSessions] = useState<AssistantSession[]>([]);
   const [currentSession, setCurrentSession] = useState<AssistantSession | null>(null);
@@ -45,36 +59,85 @@ export function AssistantShell() {
   const [stickToBottom, setStickToBottom] = useState(true);
   const [historyHost, setHistoryHost] = useState<HTMLElement | null>(null);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [uploadCapabilities, setUploadCapabilities] = useState<AssistantUploadCapabilities>(FALLBACK_UPLOAD_CAPABILITIES);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const initialSessionIdRef = useRef(normalizeSessionId(initialSessionId));
   const localMessageCounterRef = useRef(0);
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
+  const turnTokenRef = useRef(0);
 
   useEffect(() => {
     let active = true;
 
-    async function loadHistory() {
-      try {
-        const items = await getAssistantSessions();
-        if (!active) {
-          return;
-        }
+    async function loadInitialData() {
+      const [historyResult, capabilitiesResult] = await Promise.allSettled([
+        getAssistantSessions(),
+        getAssistantCapabilities()
+      ]);
+      if (!active) {
+        return;
+      }
 
-        startTransition(() => {
-          setSessions(items);
+      const loadedSessions = historyResult.status === "fulfilled" ? historyResult.value : [];
+
+      startTransition(() => {
+        if (historyResult.status === "fulfilled") {
+          setSessions(loadedSessions);
           setHistoryError(null);
           setHistoryStatus("history_ready");
-        });
-      } catch (error) {
+        } else {
+          setHistoryError(getErrorMessage(historyResult.reason));
+          setHistoryStatus("history_error");
+        }
+
+        if (capabilitiesResult.status === "fulfilled") {
+          setUploadCapabilities(normalizeAssistantUploadCapabilities(capabilitiesResult.value));
+        } else {
+          setUploadCapabilities(FALLBACK_UPLOAD_CAPABILITIES);
+        }
+      });
+
+      const requestedSessionId = initialSessionIdRef.current;
+      initialSessionIdRef.current = null;
+      if (requestedSessionId === null) {
+        return;
+      }
+
+      startTransition(() => {
+        setActionNotice(null);
+        setTurnStatus("loading_conversation");
+      });
+
+      try {
+        const result = await getAssistantSession(requestedSessionId);
         if (!active) {
           return;
         }
 
-        setHistoryError(getErrorMessage(error));
-        setHistoryStatus("history_error");
+        replaceSessionQuery(result.session.id);
+        startTransition(() => {
+          setCurrentSession(result.session);
+          setMessages(result.messages);
+          setSessions((current) => upsertSession(current.length > 0 ? current : loadedSessions, result.session));
+          setStickToBottom(true);
+          setTurnStatus("idle");
+        });
+      } catch {
+        if (!active) {
+          return;
+        }
+
+        replaceSessionQuery(null);
+        startTransition(() => {
+          setCurrentSession(null);
+          setMessages([]);
+          setStickToBottom(true);
+          setTurnStatus("idle");
+        });
       }
     }
 
-    void loadHistory();
+    void loadInitialData();
 
     return () => {
       active = false;
@@ -121,11 +184,15 @@ export function AssistantShell() {
   }, [railCollapsed]);
 
   function resetToDraft() {
+    invalidateCurrentTurn(turnTokenRef);
     abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    replaceSessionQuery(null);
     startTransition(() => {
       setCurrentSession(null);
       setMessages([]);
       setActionNotice(null);
+      setActiveTaskSuggestionId(null);
       setTurnStatus("idle");
       setStickToBottom(true);
       setWebSearchEnabled(false);
@@ -142,6 +209,7 @@ export function AssistantShell() {
 
     try {
       const result = await getAssistantSession(sessionId);
+      replaceSessionQuery(result.session.id);
       setCurrentSession(result.session);
       setWebSearchEnabled(result.session.web_search_enabled);
       setMessages(result.messages);
@@ -196,6 +264,7 @@ export function AssistantShell() {
     );
 
     let sessionSnapshot = currentSession;
+    const turnToken = beginTurn(turnTokenRef);
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -207,9 +276,14 @@ export function AssistantShell() {
     });
 
     const handleEvent = (event: AssistantStreamEvent) => {
+      if (!isActiveTurn(turnTokenRef, turnToken)) {
+        return;
+      }
+
       switch (event.type) {
         case "session_created":
           sessionSnapshot = event.session;
+          replaceSessionQuery(event.session.id);
           startTransition(() => {
             setCurrentSession(event.session);
             setSessions((current) => upsertSession(current, event.session));
@@ -218,6 +292,20 @@ export function AssistantShell() {
         case "message_delta":
           startTransition(() => {
             setMessages((current) => updateLocalStreamingMessage(current, localAssistantMessage.id, event.delta));
+          });
+          return;
+        case "session_file":
+          if (sessionSnapshot) {
+            sessionSnapshot = patchSessionTimestamp(sessionSnapshot, event.message.created_at);
+          }
+          startTransition(() => {
+            setMessages((current) =>
+              insertMessageBeforeStreamingPlaceholder(current, localAssistantMessage.id, event.message)
+            );
+            if (sessionSnapshot) {
+              setCurrentSession(sessionSnapshot);
+              setSessions((current) => upsertSession(current, sessionSnapshot!));
+            }
           });
           return;
         case "message_completed":
@@ -260,6 +348,10 @@ export function AssistantShell() {
             signal: controller.signal
           });
 
+      if (!isActiveTurn(turnTokenRef, turnToken)) {
+        return;
+      }
+
       if (result.status === "stopped") {
         startTransition(() => {
           setMessages((current) => finalizeTurnFailure(current, localAssistantMessage.id, result.error));
@@ -273,6 +365,10 @@ export function AssistantShell() {
       });
     } catch (error) {
       const turnError = toAssistantTurnError(error);
+      if (!isActiveTurn(turnTokenRef, turnToken)) {
+        return;
+      }
+
       startTransition(() => {
         setMessages((current) => finalizeTurnFailure(current, localAssistantMessage.id, turnError));
         setTurnStatus("idle");
@@ -294,10 +390,6 @@ export function AssistantShell() {
   }
 
   async function handleUploadFile(file: File) {
-    if (!currentSession) {
-      setActionNotice("请先发送第一条消息后再上传文件。");
-      return;
-    }
     if (turnStatus !== "idle") {
       return;
     }
@@ -306,12 +398,16 @@ export function AssistantShell() {
     setTurnStatus("uploading_file");
 
     try {
-      const result = await uploadAssistantFile(currentSession.id, file);
+      const result = currentSession
+        ? await uploadAssistantFile(currentSession.id, file)
+        : await createAssistantConversationWithFile(file);
+      replaceSessionQuery(result.session.id);
       startTransition(() => {
         setCurrentSession(result.session);
         setMessages((current) => [...current, ...result.messages]);
         setSessions((current) => upsertSession(current, result.session));
         setActionNotice(result.error_message || null);
+        setStickToBottom(true);
         setTurnStatus("idle");
       });
     } catch (error) {
@@ -421,12 +517,13 @@ export function AssistantShell() {
           </div>
 
           <AssistantComposer
-            canUpload={currentSession !== null}
+            canUpload
             isBusy={isBusy}
             onSubmitMessage={(nextMessage) => handleSubmitMessage(nextMessage)}
             onToggleWebSearch={currentSession ? () => void handleToggleWebSearch() : undefined}
             onUploadFile={(file) => handleUploadFile(file)}
             webSearchEnabled={webSearchEnabled}
+            uploadCapabilities={uploadCapabilities}
           />
         </section>
       </section>
@@ -459,6 +556,19 @@ function nextLocalId(counterRef: MutableRefObject<number>, prefix: string): stri
   return `${prefix}-${counterRef.current}`;
 }
 
+function beginTurn(turnTokenRef: MutableRefObject<number>): number {
+  turnTokenRef.current += 1;
+  return turnTokenRef.current;
+}
+
+function invalidateCurrentTurn(turnTokenRef: MutableRefObject<number>) {
+  turnTokenRef.current += 1;
+}
+
+function isActiveTurn(turnTokenRef: MutableRefObject<number>, turnToken: number): boolean {
+  return turnTokenRef.current === turnToken;
+}
+
 function patchSessionTimestamp(session: AssistantSession, isoString: string): AssistantSession {
   return {
     ...session,
@@ -473,6 +583,23 @@ function replaceLocalMessage(
   nextMessage: AssistantMessage
 ): AssistantRenderableMessage[] {
   return current.map((message) => (message.id === localMessageId ? nextMessage : message));
+}
+
+function insertMessageBeforeStreamingPlaceholder(
+  current: AssistantRenderableMessage[],
+  localMessageId: string,
+  nextMessage: AssistantMessage
+): AssistantRenderableMessage[] {
+  const placeholderIndex = current.findIndex((message) => message.id === localMessageId);
+  if (placeholderIndex === -1) {
+    return [...current, nextMessage];
+  }
+
+  return [
+    ...current.slice(0, placeholderIndex),
+    nextMessage,
+    ...current.slice(placeholderIndex)
+  ];
 }
 
 function updateLocalStreamingMessage(
@@ -548,4 +675,59 @@ function upsertSession(current: AssistantSession[], session: AssistantSession): 
 
     return right.last_message_at.localeCompare(left.last_message_at);
   });
+}
+
+function normalizeAssistantUploadCapabilities(capabilities: AssistantCapabilities): AssistantUploadCapabilities {
+  const rawUpload = capabilities.upload;
+  const supportedExtensions =
+    rawUpload && Array.isArray(rawUpload.supported_extensions)
+      ? [...rawUpload.supported_extensions]
+      : [...FALLBACK_UPLOAD_CAPABILITIES.supported_extensions];
+  const accept =
+    rawUpload && typeof rawUpload.accept === "string" && rawUpload.accept.trim() !== ""
+      ? rawUpload.accept
+      : supportedExtensions.join(",");
+  const hint =
+    rawUpload && typeof rawUpload.hint === "string" && rawUpload.hint.trim() !== ""
+      ? rawUpload.hint
+      : buildUploadHintFromExtensions(supportedExtensions);
+
+  return {
+    accept,
+    hint,
+    supported_extensions: supportedExtensions
+  };
+}
+
+function buildUploadHintFromExtensions(supportedExtensions: string[]): string {
+  if (supportedExtensions.length === 0) {
+    return "当前服务未开放文件上传";
+  }
+
+  return `支持 ${supportedExtensions.map((extension) => extension.replace(/^\./, "")).join("、")}`;
+}
+
+function normalizeSessionId(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+function replaceSessionQuery(sessionId: string | null) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  if (sessionId) {
+    url.searchParams.set("session", sessionId);
+  } else {
+    url.searchParams.delete("session");
+  }
+
+  const nextURL = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(window.history.state, "", nextURL || "/");
 }

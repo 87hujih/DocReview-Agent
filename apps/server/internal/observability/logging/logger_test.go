@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// TestNewLoggerWritesJSONWithBaseFields 验证`newLogger`在写入或副作用路径下的行为，防止同类回归。
 func TestNewLoggerWritesJSONWithBaseFields(t *testing.T) {
 	t.Setenv("APP_ENV", "test")
 

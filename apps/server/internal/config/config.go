@@ -361,6 +361,7 @@ func findUpward(target string) (string, bool) {
 	}
 }
 
+// isGitBoundary 判断 `GitBoundary` 是否满足当前流程的条件，避免同一谓词在多处分散实现。
 func isGitBoundary(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil

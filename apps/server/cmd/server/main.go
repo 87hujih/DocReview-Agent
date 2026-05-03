@@ -16,6 +16,7 @@ import (
 	"agent_project/apps/server/internal/assistant"
 	"agent_project/apps/server/internal/assistant/websearch"
 	appconfig "agent_project/apps/server/internal/config"
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/job"
 	"agent_project/apps/server/internal/knowledge/embedder"
@@ -31,9 +32,11 @@ import (
 	taskevents "agent_project/apps/server/internal/task/events"
 	taskservice "agent_project/apps/server/internal/task/service"
 	"agent_project/apps/server/internal/task/workflow"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// main 负责装配配置、数据库、检索能力和 HTTP 服务入口。
+// main 负责装配配置、数据库、检索能力和 HTTP 服务入口
 func main() {
 	cfg := appconfig.Load()
 	logger := logging.NewLogger("server", cfg.LogLevel, cfg.LogFormat, cfg.LogAddSource, os.Stdout)
@@ -54,13 +57,16 @@ func main() {
 	}
 
 	resourceRepo := postgres.NewResourceRepo(pool)
+	resourceStructureRepo := postgres.NewResourceStructureRepo(pool)
 	taskRepo := postgres.NewTaskRepo(pool)
 	approvalRepo := postgres.NewApprovalRepo(pool)
 	jobRepo := postgres.NewJobRepo(pool)
 	eventRepo := postgres.NewTaskEventRepo(pool)
 	assistantRepo := postgres.NewAssistantRepo(pool)
+	sessionContextSnapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
 	uploadedFileRepo := postgres.NewUploadedFileRepo(pool)
 	eventService := taskevents.New(eventRepo)
+	runtimeLearning := buildAssistantRuntimeLearning(pool)
 
 	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
 	if err != nil {
@@ -70,6 +76,7 @@ func main() {
 	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
 	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient)
 	versionIndexer := indexer.NewService(resourceRepo, emb)
+	normalizeService := documentnormalize.NewService()
 	docParser, err := documentparser.New(documentparser.Options{
 		Mode:        cfg.DocumentParser,
 		TikaURL:     cfg.TikaURL,
@@ -79,7 +86,14 @@ func main() {
 		log.Fatalf("文档解析器初始化失败：%v", err)
 	}
 
-	ingestService := ingest.NewService(resourceRepo, emb, ingest.WithParser(docParser), ingest.WithIndexer(versionIndexer))
+	ingestService := ingest.NewService(
+		resourceRepo,
+		emb,
+		ingest.WithParser(docParser),
+		ingest.WithIndexer(versionIndexer),
+		ingest.WithStructureRepo(resourceStructureRepo),
+		ingest.WithNormalizer(normalizeService),
+	)
 
 	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
 		TimeoutMS: cfg.LLMTimeoutMS,
@@ -117,9 +131,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("原文件存储初始化失败：%v", err)
 	}
+	sessionContextProjector := assistant.NewSessionContextProjector(sessionContextSnapshotRepo)
+	assistantTaskNotificationRepo := postgres.NewAssistantTaskNotificationRepo(pool)
+	assistantTaskStatusNotifier := assistant.NewAssistantTaskStatusNotifier(assistantRepo, assistantTaskNotificationRepo)
 
 	exec := executor.New(taskRepo, resourceRepo, versionIndexer)
-	worker := job.New(jobRepo, exec, taskRepo, 100, eventService)
+	worker := job.New(jobRepo, exec, taskRepo, 100, eventService, sessionContextProjector, assistantTaskStatusNotifier)
 	worker.Start(ctx, 3)
 
 	// 服务启动时补发所有未处理的 pending job 信号，防止重启后 job 永久搁置（B4）
@@ -139,7 +156,7 @@ func main() {
 	}
 
 	resourceHandler := handlers.NewResourceHandler(resourceRepo, retrieverService)
-	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService, cfg.TaskContextMaxRunes)
+	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService, cfg.TaskContextMaxRunes, sessionContextProjector, assistantTaskStatusNotifier)
 	runner := workflow.NewOrchestratorRunner(
 		cfg.WorkflowWorkers,
 		cfg.WorkflowQueueSize,
@@ -151,11 +168,48 @@ func main() {
 	defer runner.Stop()
 	taskService := taskservice.New(taskRepo, resourceRepo, runner, eventService)
 	taskHandler := handlers.NewTaskHandler(taskService, taskRepo, eventRepo)
-	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService)
+	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService, sessionContextProjector, assistantTaskStatusNotifier)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
-	assistantResponder, err := assistant.NewChatResponder(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel)
+	assistantResponder, err := assistant.NewChatResponder(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
+		TimeoutMS: cfg.LLMTimeoutMS,
+		RetryMax:  cfg.LLMRetryMax,
+		BackoffMS: cfg.LLMRetryBackoffMS,
+	})
 	if err != nil {
 		log.Fatalf("助手对话模型初始化失败：%v", err)
+	}
+
+	deliberationAgent, err := assistant.NewDeliberationAgent(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
+		TimeoutMS: cfg.LLMTimeoutMS,
+		RetryMax:  cfg.LLMRetryMax,
+		BackoffMS: cfg.LLMRetryBackoffMS,
+	})
+	if err != nil {
+		log.Fatalf("助手 deliberation agent 初始化失败：%v", err)
+	}
+	assistantWorkflowPlanner, err := assistant.NewWorkflowPlannerAgent(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
+		TimeoutMS: cfg.LLMTimeoutMS,
+		RetryMax:  cfg.LLMRetryMax,
+		BackoffMS: cfg.LLMRetryBackoffMS,
+	})
+	if err != nil {
+		log.Fatalf("助手 workflow planner 初始化失败：%v", err)
+	}
+	assistantWorkflowVerifier, err := assistant.NewWorkflowVerifierAgent(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
+		TimeoutMS: cfg.LLMTimeoutMS,
+		RetryMax:  cfg.LLMRetryMax,
+		BackoffMS: cfg.LLMRetryBackoffMS,
+	})
+	if err != nil {
+		log.Fatalf("助手 workflow verifier 初始化失败：%v", err)
+	}
+	conversationSummarizer, err := assistant.NewConversationSummarizer(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
+		TimeoutMS: cfg.LLMTimeoutMS,
+		RetryMax:  cfg.LLMRetryMax,
+		BackoffMS: cfg.LLMRetryBackoffMS,
+	})
+	if err != nil {
+		log.Fatalf("助手会话摘要器初始化失败：%v", err)
 	}
 
 	assistantOptions := []assistant.ServiceOption{
@@ -178,7 +232,18 @@ func main() {
 		taskService,
 		assistantResponder,
 		retrieverService,
-		assistantOptions...,
+		append(assistantOptions,
+			assistant.WithDeliberationAgent(deliberationAgent),
+			assistant.WithWorkflowPlanner(assistantWorkflowPlanner),
+			assistant.WithWorkflowVerifier(assistantWorkflowVerifier),
+			assistant.WithConversationSummarizer(conversationSummarizer, sessionContextSnapshotRepo),
+			assistant.WithSessionContextProjector(sessionContextProjector),
+			assistant.WithSectionLocator(assistant.NewSectionLocator(resourceRepo)),
+			assistant.WithSectionReader(assistant.NewSectionReader(resourceRepo)),
+			assistant.WithCurrentDocumentLoader(assistant.NewCurrentDocumentLoader(resourceRepo)),
+			assistant.WithDeterministicReadResponder(assistant.NewDeterministicReadResponder()),
+			assistant.WithRuntimeLearning(runtimeLearning.eventService, runtimeLearning.projector),
+		)...,
 	)
 	assistantHandler := handlers.NewAssistantHandlerWithUploadLimitAndPolicy(
 		assistantService,
@@ -199,6 +264,29 @@ func main() {
 	}
 }
 
+type assistantRuntimeLearningDeps struct {
+	eventRepo    *postgres.AssistantRuntimeEventRepo
+	sampleRepo   *postgres.AssistantRuntimeSampleRepo
+	eventService *assistant.RuntimeEventService
+	projector    *assistant.RuntimeLearningProjector
+}
+
+// buildAssistantRuntimeLearning 装配 assistant runtime learning 依赖，避免 main 入口继续散落 wiring 细节。
+func buildAssistantRuntimeLearning(pool *pgxpool.Pool) *assistantRuntimeLearningDeps {
+	eventRepo := postgres.NewAssistantRuntimeEventRepo(pool)
+	sampleRepo := postgres.NewAssistantRuntimeSampleRepo(pool)
+	eventService := assistant.NewRuntimeEventService(eventRepo)
+	projector := assistant.NewRuntimeLearningProjector(sampleRepo)
+
+	return &assistantRuntimeLearningDeps{
+		eventRepo:    eventRepo,
+		sampleRepo:   sampleRepo,
+		eventService: eventService,
+		projector:    projector,
+	}
+}
+
+// projectPath 从 section 元数据里提取项目路径，供项目结构切块时复用。
 func projectPath(relative string) string {
 	if filepath.IsAbs(relative) {
 		return relative
@@ -212,6 +300,7 @@ func projectPath(relative string) string {
 	return filepath.Join(root, relative)
 }
 
+// findProjectRoot 在项目 section 树里定位顶层目录节点，作为生成项目级 chunk 的锚点。
 func findProjectRoot() string {
 	currentDir, err := os.Getwd()
 	if err != nil {

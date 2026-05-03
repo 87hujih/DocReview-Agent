@@ -13,10 +13,13 @@ import (
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/workflow"
+	"agent_project/apps/server/internal/testsupport/postgrescleanup"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestCreateTaskRecordsCreatedEvent 验证`createTask`在写入或副作用路径下的行为，防止同类回归。
 func TestCreateTaskRecordsCreatedEvent(t *testing.T) {
 	pool := newTaskServiceTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -58,6 +61,7 @@ func TestCreateTaskRecordsCreatedEvent(t *testing.T) {
 	}
 }
 
+// TestCreateTaskMarksTaskFailedWhenRunnerQueueFull 验证`createTask`在流程控制路径下的行为，防止同类回归。
 func TestCreateTaskMarksTaskFailedWhenRunnerQueueFull(t *testing.T) {
 	pool := newTaskServiceTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -95,6 +99,7 @@ func TestCreateTaskMarksTaskFailedWhenRunnerQueueFull(t *testing.T) {
 	assertTaskFailureEvents(t, ctx, eventRepo, task.ID, []string{"task.created", "task.status_changed", "task.failed"})
 }
 
+// TestCreateTaskMarksTaskFailedWhenRunnerStopped 验证`createTask`在流程控制路径下的行为，防止同类回归。
 func TestCreateTaskMarksTaskFailedWhenRunnerStopped(t *testing.T) {
 	pool := newTaskServiceTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -130,6 +135,83 @@ func TestCreateTaskMarksTaskFailedWhenRunnerStopped(t *testing.T) {
 	assertTaskFailureEvents(t, ctx, eventRepo, task.ID, []string{"task.created", "task.status_changed", "task.failed"})
 }
 
+// TestCreateTaskFromAssistantSuggestionReturnsExistingTaskOnDuplicate 验证`createTaskFromAssistantSuggestion`在返回值分支下的行为，防止同类回归。
+func TestCreateTaskFromAssistantSuggestionReturnsExistingTaskOnDuplicate(t *testing.T) {
+	pool := newTaskServiceTestPool(t)
+	resourceRepo := postgres.NewResourceRepo(pool)
+	taskRepo := postgres.NewTaskRepo(pool)
+	eventRepo := postgres.NewTaskEventRepo(pool)
+	eventService := taskevents.New(eventRepo)
+	service := New(taskRepo, resourceRepo, nil, eventService)
+	ctx := taskServiceTestContext(t)
+
+	resource, err := resourceRepo.Create(ctx, "任务服务助手建议幂等测试-"+taskServiceUniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupTaskServiceResource(t, pool, resource.ID)
+	})
+
+	assistantRepo := postgres.NewAssistantRepo(pool)
+	session, messages, err := assistantRepo.CreateSessionWithMessages(ctx, "任务服务助手建议幂等测试", []postgres.AssistantMessageInput{
+		{
+			Role:    "assistant",
+			Kind:    "task_suggestion",
+			Payload: []byte(`{"instruction":"请修订第二章"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create assistant session with suggestion message: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupTaskServiceAssistantSession(t, pool, session.ID)
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 assistant suggestion message, got %d", len(messages))
+	}
+	sourceMessageID := messages[0].ID
+
+	if _, err := resourceRepo.CreateVersion(ctx, resource.ID, 1, "当前版本内容", "original"); err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	createFromSuggestionService, ok := any(service).(interface {
+		CreateTaskFromAssistantSuggestion(context.Context, string, string, string) (*postgres.Task, bool, error)
+	})
+	if !ok {
+		t.Fatal("task service does not implement assistant suggestion idempotency contract")
+	}
+
+	firstTask, firstCreated, err := createFromSuggestionService.CreateTaskFromAssistantSuggestion(ctx, resource.ID, "请修订第二章", sourceMessageID)
+	if err != nil {
+		t.Fatalf("create task from assistant suggestion first time: %v", err)
+	}
+	if !firstCreated {
+		t.Fatal("expected first create-from-suggestion call to create a new task")
+	}
+
+	secondTask, secondCreated, err := createFromSuggestionService.CreateTaskFromAssistantSuggestion(ctx, resource.ID, "请修订第二章", sourceMessageID)
+	if err != nil {
+		t.Fatalf("create task from assistant suggestion second time: %v", err)
+	}
+	if secondCreated {
+		t.Fatal("expected duplicate create-from-suggestion call to return existing task")
+	}
+	if firstTask == nil || secondTask == nil || secondTask.ID != firstTask.ID {
+		t.Fatalf("expected duplicate create to return task %q, got first=%#v second=%#v", firstTask.ID, firstTask, secondTask)
+	}
+
+	events, err := eventRepo.ListByTask(ctx, firstTask.ID)
+	if err != nil {
+		t.Fatalf("list task events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected duplicate create to keep only 1 task.created event, got %d", len(events))
+	}
+}
+
+// newTaskServiceTestPool 创建测试用隔离数据库连接池，统一初始化与清理约束。
 func newTaskServiceTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -139,62 +221,30 @@ func newTaskServiceTestPool(t *testing.T) *pgxpool.Pool {
 
 	ctx := taskServiceTestContext(t)
 	cfg := appconfig.Load()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("database not available: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "task_service", postgres.NewPool, postgres.RunMigrations)
 }
 
+// cleanupTaskServiceResource 为测试场景清理 `任务服务资源`，避免不同用例之间互相污染。
 func cleanupTaskServiceResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
 	ctx := taskServiceTestContext(t)
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM execution_jobs
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-		   OR new_version_id IN (SELECT id FROM resource_versions WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup execution jobs for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM approvals
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup approvals for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_events
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task events for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_artifacts
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task artifacts for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_steps
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task steps for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM tasks WHERE resource_id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup tasks for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM resources WHERE id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup resource %q: %v", resourceID, err)
+	if err := postgrescleanup.CleanupResourceTree(ctx, pool, resourceID); err != nil {
+		t.Fatalf("cleanup resource tree for resource %q: %v", resourceID, err)
 	}
 }
 
+// cleanupTaskServiceAssistantSession 为测试场景清理 `任务服务助手会话`，避免不同用例之间互相污染。
+func cleanupTaskServiceAssistantSession(t *testing.T, pool *pgxpool.Pool, sessionID string) {
+	t.Helper()
+
+	ctx := taskServiceTestContext(t)
+	if _, err := pool.Exec(ctx, `DELETE FROM assistant_sessions WHERE id = $1`, sessionID); err != nil {
+		t.Fatalf("cleanup assistant session %q: %v", sessionID, err)
+	}
+}
+
+// taskServiceTestContext 构造测试上下文，统一附带当前用例需要的取消和超时能力。
 func taskServiceTestContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -203,10 +253,12 @@ func taskServiceTestContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// taskServiceUniqueSuffix 生成测试数据使用的唯一后缀，避免并发或重复运行时发生命名冲突。
 func taskServiceUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// assertTaskCreateFailedResult 封装 `任务创建Failed结果` 的断言逻辑，避免用例重复展开校验细节。
 func assertTaskCreateFailedResult(t *testing.T, task *postgres.Task, expectedError string) {
 	t.Helper()
 
@@ -218,6 +270,7 @@ func assertTaskCreateFailedResult(t *testing.T, task *postgres.Task, expectedErr
 	}
 }
 
+// assertStoredTaskFailed 封装 `Stored任务Failed` 的断言逻辑，避免用例重复展开校验细节。
 func assertStoredTaskFailed(t *testing.T, ctx context.Context, taskRepo *postgres.TaskRepo, taskID string, expectedError string) {
 	t.Helper()
 
@@ -231,6 +284,7 @@ func assertStoredTaskFailed(t *testing.T, ctx context.Context, taskRepo *postgre
 	assertTaskCreateFailedResult(t, task, expectedError)
 }
 
+// assertTaskFailureEvents 封装 `任务失败事件` 的断言逻辑，避免用例重复展开校验细节。
 func assertTaskFailureEvents(
 	t *testing.T,
 	ctx context.Context,

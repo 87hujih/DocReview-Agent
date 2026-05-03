@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// Client 承载客户端相关状态，明确重排链路中的数据边界。
 type Client struct {
 	baseURL string
 	apiKey  string
@@ -18,11 +19,13 @@ type Client struct {
 	client  *http.Client
 }
 
+// Result 承载目标数据的处理结果，方便上游统一消费。
 type Result struct {
 	Index          int
 	RelevanceScore float64
 }
 
+// rerankRequest 定义重排接口接收的 JSON 请求体，收口当前接口需要的输入字段。
 type rerankRequest struct {
 	Model           string   `json:"model"`
 	Query           string   `json:"query"`
@@ -31,6 +34,7 @@ type rerankRequest struct {
 	ReturnDocuments bool     `json:"return_documents"`
 }
 
+// rerankResponse 定义重排接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type rerankResponse struct {
 	Results []struct {
 		Index          int     `json:"index"`
@@ -38,6 +42,7 @@ type rerankResponse struct {
 	} `json:"results"`
 }
 
+// New 创建New，并补齐重排链路需要的默认依赖和缺省行为。
 func New(baseURL string, apiKey string, model string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
@@ -49,6 +54,7 @@ func New(baseURL string, apiKey string, model string) *Client {
 	}
 }
 
+// Rerank 对 `Rerank` 重排，统一排序策略和分数处理。
 func (c *Client) Rerank(ctx context.Context, query string, documents []string, topN int) ([]Result, error) {
 	if len(documents) == 0 {
 		return []Result{}, nil

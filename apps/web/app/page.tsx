@@ -1,10 +1,20 @@
 import { AssistantShell } from "../components/assistant/assistant-shell";
 import styles from "./page.module.css";
 
-export default function HomePage() {
+type HomePageProps = {
+  searchParams?: {
+    session?: string | string[];
+  };
+};
+
+export default function HomePage({ searchParams }: HomePageProps) {
+  const initialSessionId = Array.isArray(searchParams?.session)
+    ? searchParams?.session[0] || null
+    : searchParams?.session || null;
+
   return (
     <div className={styles.page}>
-      <AssistantShell />
+      <AssistantShell initialSessionId={initialSessionId} />
     </div>
   );
 }

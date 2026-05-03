@@ -9,6 +9,7 @@ import (
 	"testing"
 )
 
+// TestRerankSendsExpectedRequestAndParsesResponse 验证`rerankSendsExpectedRequestAnd`在约束校验路径下的行为，防止同类回归。
 func TestRerankSendsExpectedRequestAndParsesResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -73,6 +74,7 @@ func TestRerankSendsExpectedRequestAndParsesResponse(t *testing.T) {
 	}
 }
 
+// TestRerankSkipsEmptyDocuments 验证`rerank`在跳过或空操作路径下的行为，防止同类回归。
 func TestRerankSkipsEmptyDocuments(t *testing.T) {
 	var called atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

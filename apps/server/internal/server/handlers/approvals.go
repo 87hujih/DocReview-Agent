@@ -19,6 +19,7 @@ type ApprovalHandler struct {
 	approvalService *approval.Service
 }
 
+// approvalResponse 定义审批接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type approvalResponse struct {
 	ID           string     `json:"id"`
 	TaskID       string     `json:"task_id"`
@@ -28,6 +29,7 @@ type approvalResponse struct {
 	CreatedAt    time.Time  `json:"created_at"`
 }
 
+// executionJobResponse 定义审批接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type executionJobResponse struct {
 	ID           string     `json:"id"`
 	TaskID       string     `json:"task_id"`
@@ -40,18 +42,22 @@ type executionJobResponse struct {
 	CreatedAt    time.Time  `json:"created_at"`
 }
 
+// listApprovalsResponse 定义审批接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type listApprovalsResponse struct {
 	Approvals []approvalResponse `json:"approvals"`
 }
 
+// getApprovalResponse 定义审批接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type getApprovalResponse struct {
 	Approval approvalResponse `json:"approval"`
 }
 
+// getExecutionJobResponse 定义审批接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type getExecutionJobResponse struct {
 	Job executionJobResponse `json:"job"`
 }
 
+// rejectApprovalRequest 定义审批接口接收的 JSON 请求体，收口当前接口需要的输入字段。
 type rejectApprovalRequest struct {
 	Reason string `json:"reason"`
 }
@@ -213,6 +219,7 @@ func (h *ApprovalHandler) Reject(requestCtx context.Context, ctx *app.RequestCon
 	})
 }
 
+// approvalToResponse 把 `审批` 转换成 `响应`，避免HTTP 接口层链路直接暴露内部模型。
 func approvalToResponse(approvalRecord postgres.Approval) approvalResponse {
 	return approvalResponse{
 		ID:           approvalRecord.ID,
@@ -224,6 +231,7 @@ func approvalToResponse(approvalRecord postgres.Approval) approvalResponse {
 	}
 }
 
+// executionJobToResponse 把 `执行作业` 转换成 `响应`，避免HTTP 接口层链路直接暴露内部模型。
 func executionJobToResponse(job postgres.ExecutionJob) executionJobResponse {
 	return executionJobResponse{
 		ID:           job.ID,

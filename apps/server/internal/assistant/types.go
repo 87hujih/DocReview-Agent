@@ -14,12 +14,14 @@ const (
 	KindSessionFile    = "session_file"
 	KindSystem         = "system"
 	KindTaskCreated    = "task_created"
+	KindTaskStatus     = "task_status"
 	KindTaskSuggestion = "task_suggestion"
 	KindText           = "text"
 )
 
 const (
 	StreamEventSessionCreated   = "session_created"
+	StreamEventSessionFile      = "session_file"
 	StreamEventMessageStarted   = "message_started"
 	StreamEventMessageDelta     = "message_delta"
 	StreamEventMessageCompleted = "message_completed"
@@ -33,6 +35,39 @@ const (
 	StreamErrorCodeStreamFailed = "assistant_stream_failed"
 	StreamErrorCodeEmptyReply   = "assistant_empty_reply"
 	StreamErrorCodeInternal     = "assistant_internal_error"
+)
+
+const (
+	RuntimeEventTypeDeliberationDecided       = "deliberation.decided"
+	RuntimeEventTypePolicyApplied             = "policy.applied"
+	RuntimeEventTypeActionGateApplied         = "action_gate.applied"
+	RuntimeEventTypePlannerUsed               = "planner.used"
+	RuntimeEventTypeVerifierUsed              = "verifier.used"
+	RuntimeEventTypeClarificationPrompted     = "clarification.prompted"
+	RuntimeEventTypeClarificationResolvedChat = "clarification.resolved_to_chat"
+	RuntimeEventTypeClarificationResolvedFlow = "clarification.resolved_to_workflow"
+	RuntimeEventTypeTaskSuggestionCreated     = "task_suggestion.created"
+	RuntimeEventTypeTaskSuggestionConfirmed   = "task_suggestion.confirmed"
+	RuntimeEventTypeTaskSuggestionIgnored     = "task_suggestion.ignored"
+	RuntimeEventTypeUserCorrected             = "user.corrected"
+	RuntimeEventTypeWorkflowPromoted          = "workflow.promoted"
+	RuntimeEventTypeWorkflowDowngraded        = "workflow.downgraded"
+)
+
+const (
+	RuntimeFinalOutcomeTaskSuggestionCreated   = "task_suggestion_created"
+	RuntimeFinalOutcomeTaskSuggestionConfirmed = "task_suggestion_confirmed"
+	RuntimeFinalOutcomeTaskSuggestionIgnored   = "task_suggestion_ignored"
+	RuntimeFinalOutcomeClarificationToChat     = "clarification_resolved_to_chat"
+	RuntimeFinalOutcomeClarificationToFlow     = "clarification_resolved_to_workflow"
+	RuntimeFinalOutcomeWorkflowDowngraded      = "workflow_downgraded"
+	RuntimeFinalOutcomeUserCorrected           = "user_corrected"
+)
+
+const (
+	RuntimeCorrectionReasonNotThisIntent       = "not_this_intent"
+	RuntimeCorrectionReasonDeclineTaskCreation = "decline_task_creation"
+	RuntimeCorrectionReasonReadbackOnly        = "readback_only"
 )
 
 // ConversationResult 表示创建会话、加载会话后的标准结果。
@@ -56,6 +91,18 @@ type StreamError struct {
 	cause   error
 }
 
+// WorkflowVerificationDecision 表示 verifier 对 workflow promotion 的最终复核结论。
+type WorkflowVerificationDecision struct {
+	ApproveWorkflow       bool     `json:"approve_workflow"`
+	DowngradeToChat       bool     `json:"downgrade_to_chat"`
+	NeedsClarification    bool     `json:"needs_clarification"`
+	ClarificationQuestion *string  `json:"clarification_question,omitempty"`
+	RevisedInstruction    *string  `json:"revised_instruction,omitempty"`
+	Confidence            float64  `json:"confidence"`
+	Reasons               []string `json:"reasons"`
+}
+
+// Error 返回接收者封装后的错误文本，便于上层直接对外暴露。
 func (e *StreamError) Error() string {
 	if e == nil {
 		return ""
@@ -64,6 +111,7 @@ func (e *StreamError) Error() string {
 	return e.Message
 }
 
+// Unwrap 返回接收者内部持有的底层错误，支持上层使用 errors.Is 或 errors.As。
 func (e *StreamError) Unwrap() error {
 	if e == nil {
 		return nil
@@ -117,8 +165,11 @@ type ConfirmTaskResult struct {
 
 // ImportDocumentInput 描述导入一份会话文件所需的输入。
 type ImportDocumentInput struct {
-	FileName string
-	Content  []byte
+	FileName      string
+	Content       []byte
+	SourceType    string
+	SourceRef     *string
+	VersionSource string
 }
 
 // ImportDocumentResult 描述导入资源库后的结果。
@@ -152,6 +203,18 @@ type TaskCreatedPayload struct {
 	Status              string `json:"status"`
 	SuggestionMessageID string `json:"suggestion_message_id"`
 	TaskID              string `json:"task_id"`
+}
+
+// TaskStatusPayload 表示任务终态回写到会话后的结构化消息。
+type TaskStatusPayload struct {
+	DetailURL     string `json:"detail_url"`
+	Instruction   string `json:"instruction"`
+	ResourceID    string `json:"resource_id"`
+	ResultURL     string `json:"result_url,omitempty"`
+	Status        string `json:"status"`
+	StatusMessage string `json:"status_message"`
+	TaskID        string `json:"task_id"`
+	Title         string `json:"title"`
 }
 
 // SessionFilePayload 表示当前会话中一个已导入资源库的文件。

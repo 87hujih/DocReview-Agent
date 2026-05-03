@@ -3,136 +3,83 @@ $ErrorActionPreference = "Stop"
 
 # 基于脚本目录计算仓库根目录，避免依赖调用方当前工作目录。
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\\..")).Path
-$webRoot = Join-Path $repoRoot "apps\\web"
-$statePath = Join-Path $PSScriptRoot ".local-dev-state.json"
-$serverStdout = Join-Path $repoRoot "server.18080.stdout.log"
-$serverStderr = Join-Path $repoRoot "server.18080.stderr.log"
-$webStdout = Join-Path $repoRoot "web.3000.stdout.log"
-$webStderr = Join-Path $repoRoot "web.3000.stderr.log"
-$serverUrl = "http://127.0.0.1:18080/healthz"
-$webUrl = "http://127.0.0.1:3000"
 $pwshPath = Join-Path $PSHOME "pwsh.exe"
+$helperPath = Join-Path $PSScriptRoot "local-dev-common.ps1"
+. $helperPath
+$config = Get-LocalDevConfig -RepoRoot $repoRoot -ScriptRoot $PSScriptRoot
 
-function Test-HttpReady {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$Url
-  )
-
-  try {
-    $null = Invoke-WebRequest -Uri $Url -Method Get -TimeoutSec 2
-    return $true
-  } catch {
-    return $false
-  }
-}
-
-function Wait-HttpReady {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$Url,
-
-    [Parameter(Mandatory = $true)]
-    [int]$TimeoutSeconds
-  )
-
-  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-  while ((Get-Date) -lt $deadline) {
-    if (Test-HttpReady -Url $Url) {
-      return $true
-    }
-
-    Start-Sleep -Seconds 1
-  }
-
-  return $false
-}
-
-function Stop-TrackedProcess {
-  param(
-    [Parameter(Mandatory = $true)]
-    [System.Diagnostics.Process]$Process
-  )
-
-  if ($null -eq $Process -or $Process.HasExited) {
-    return
-  }
-
-  Stop-Process -Id $Process.Id -Force
-}
-
-if (Test-Path -LiteralPath $statePath) {
+if (Test-Path -LiteralPath $config.StatePath) {
   & (Join-Path $PSScriptRoot "stop-local.ps1") | Out-Host
 }
 
-if (Test-HttpReady -Url $serverUrl) {
-  throw "检测到 $serverUrl 已可访问，但它不在当前项目状态文件中。请先手动释放 18080 端口后再重试。"
+if (Test-LocalDevHttpReady -Url $config.Urls.Server) {
+  throw "检测到 $($config.Urls.Server) 已可访问，但它不在当前项目状态文件中。请先手动释放 18080 端口后再重试。"
 }
 
-if (Test-HttpReady -Url $webUrl) {
-  throw "检测到 $webUrl 已可访问，但它不在当前项目状态文件中。请先手动释放 3000 端口后再重试。"
+if (Test-LocalDevHttpReady -Url $config.Urls.Web) {
+  throw "检测到 $($config.Urls.Web) 已可访问，但它不在当前项目状态文件中。请先手动释放 3000 端口后再重试。"
 }
 
 $serverProcess = $null
 $webProcess = $null
 
 try {
+  Invoke-LocalDevCompose -Config $config -Arguments (@("up", "-d") + $config.ComposeServices)
+
+  if (-not (Wait-LocalDevTcpReady -HostName "127.0.0.1" -Port $config.Ports.Tika -TimeoutSeconds 45)) {
+    throw "Tika 未在 45 秒内就绪。请检查 docker compose 服务 tika。"
+  }
+
   $serverCommand = "& { Set-Location '$repoRoot'; `$env:SERVER_PORT='18080'; go run ./apps/server/cmd/server }"
   $serverProcess = Start-Process `
     -FilePath $pwshPath `
     -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $serverCommand) `
     -WorkingDirectory $repoRoot `
-    -RedirectStandardOutput $serverStdout `
-    -RedirectStandardError $serverStderr `
+    -RedirectStandardOutput $config.Logs.ServerStdout `
+    -RedirectStandardError $config.Logs.ServerStderr `
     -PassThru
 
-  if (-not (Wait-HttpReady -Url $serverUrl -TimeoutSeconds 45)) {
-    throw "后端未在 45 秒内就绪。stdout: $serverStdout ; stderr: $serverStderr"
+  if (-not (Wait-LocalDevHttpReady -Url $config.Urls.Server -TimeoutSeconds 45)) {
+    throw "后端未在 45 秒内就绪。stdout: $($config.Logs.ServerStdout) ; stderr: $($config.Logs.ServerStderr)"
   }
 
-  $webCommand = "& { Set-Location '$webRoot'; `$env:NEXT_PUBLIC_API_URL='http://127.0.0.1:18080'; npm run dev -- --hostname 127.0.0.1 --port 3000 }"
+  $webCommand = "& { Set-Location '$($config.WebRoot)'; `$env:NEXT_PUBLIC_API_URL='http://127.0.0.1:18080'; npm run dev -- --hostname 127.0.0.1 --port 3000 }"
   $webProcess = Start-Process `
     -FilePath $pwshPath `
     -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $webCommand) `
-    -WorkingDirectory $webRoot `
-    -RedirectStandardOutput $webStdout `
-    -RedirectStandardError $webStderr `
+    -WorkingDirectory $config.WebRoot `
+    -RedirectStandardOutput $config.Logs.WebStdout `
+    -RedirectStandardError $config.Logs.WebStderr `
     -PassThru
 
-  if (-not (Wait-HttpReady -Url $webUrl -TimeoutSeconds 90)) {
-    throw "前端未在 90 秒内就绪。stdout: $webStdout ; stderr: $webStderr"
+  if (-not (Wait-LocalDevHttpReady -Url $config.Urls.Web -TimeoutSeconds 90)) {
+    throw "前端未在 90 秒内就绪。stdout: $($config.Logs.WebStdout) ; stderr: $($config.Logs.WebStderr)"
   }
 
-  $state = [ordered]@{
-    started_at_utc = (Get-Date).ToUniversalTime().ToString("o")
-    server         = @{
-      pid            = $serverProcess.Id
-      start_time_utc = $serverProcess.StartTime.ToUniversalTime().ToString("o")
-      stdout         = $serverStdout
-      stderr         = $serverStderr
-      url            = $serverUrl
-    }
-    web            = @{
-      pid            = $webProcess.Id
-      start_time_utc = $webProcess.StartTime.ToUniversalTime().ToString("o")
-      stdout         = $webStdout
-      stderr         = $webStderr
-      url            = $webUrl
-    }
-  }
+  $state = New-LocalDevState `
+    -Config $config `
+    -StartedAtUtc (Get-Date).ToUniversalTime().ToString("o") `
+    -Server (New-TrackedProcessRecord -Process $serverProcess -Stdout $config.Logs.ServerStdout -Stderr $config.Logs.ServerStderr -Url $config.Urls.Server) `
+    -Web (New-TrackedProcessRecord -Process $webProcess -Stdout $config.Logs.WebStdout -Stderr $config.Logs.WebStderr -Url $config.Urls.Web)
 
-  $state | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $statePath -Encoding UTF8
+  $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $config.StatePath -Encoding UTF8
 
   Write-Host "本地联调环境已启动。"
-  Write-Host "server: $serverUrl"
-  Write-Host "web:    $webUrl"
-  Write-Host "state:  $statePath"
+  Write-Host "infra:  $($config.ComposeServices -join ', ')"
+  Write-Host "tika:   $($config.Urls.Tika)"
+  Write-Host "server: $($config.Urls.Server)"
+  Write-Host "web:    $($config.Urls.Web)"
+  Write-Host "state:  $($config.StatePath)"
 } catch {
-  Stop-TrackedProcess -Process $webProcess
-  Stop-TrackedProcess -Process $serverProcess
+  if ($null -ne $webProcess -and -not $webProcess.HasExited) {
+    Stop-Process -Id $webProcess.Id -Force
+  }
+  if ($null -ne $serverProcess -and -not $serverProcess.HasExited) {
+    Stop-Process -Id $serverProcess.Id -Force
+  }
 
-  if (Test-Path -LiteralPath $statePath) {
-    Remove-Item -LiteralPath $statePath -Force
+  if (Test-Path -LiteralPath $config.StatePath) {
+    Remove-Item -LiteralPath $config.StatePath -Force
   }
 
   throw

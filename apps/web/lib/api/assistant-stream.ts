@@ -1,5 +1,6 @@
 import type {
   AssistantMessage,
+  AssistantSessionFileMessage,
   AssistantSession,
   AssistantStreamEvent,
   AssistantStreamRunResult,
@@ -49,6 +50,14 @@ class AssistantStreamClientError extends Error {
   }
 }
 
+const assistantTurnErrorCodes = new Set<AssistantTurnErrorCode>([
+  "assistant_empty_reply",
+  "backend_offline",
+  "generation_stopped",
+  "request_timeout",
+  "service_error"
+]);
+
 export async function streamAssistantConversation(
   message: string,
   options: AssistantStreamRequestOptions = {}
@@ -95,6 +104,10 @@ export async function parseSSEStream(
 }
 
 export function toAssistantTurnError(error: unknown): AssistantTurnError {
+  if (isAssistantTurnErrorLike(error)) {
+    return error;
+  }
+
   if (error instanceof AssistantStreamClientError) {
     return {
       code: error.code,
@@ -151,7 +164,7 @@ async function streamAssistant(
       };
     }
 
-    throw toAssistantTurnError(error);
+    throw error;
   }
 
   if (!response.ok) {
@@ -250,6 +263,13 @@ function parseAssistantStreamEvent(frame: ParsedSSEFrame): AssistantStreamEvent 
     }
     case "message_started":
       return { type: "message_started" };
+    case "session_file": {
+      const payload = parseJSON<StreamMessagePayload>(frame.data);
+      return {
+        message: payload.message as AssistantSessionFileMessage,
+        type: "session_file"
+      };
+    }
     case "message_delta": {
       const payload = parseJSON<StreamDeltaPayload>(frame.data);
       return {
@@ -360,4 +380,17 @@ function tryParseJSON(value: string): unknown {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
+}
+
+function isAssistantTurnErrorLike(error: unknown): error is AssistantTurnError {
+  if (!error || typeof error !== "object" || error instanceof Error) {
+    return false;
+  }
+
+  const candidate = error as Partial<AssistantTurnError>;
+  return (
+    typeof candidate.code === "string" &&
+    assistantTurnErrorCodes.has(candidate.code as AssistantTurnErrorCode) &&
+    typeof candidate.message === "string"
+  );
 }

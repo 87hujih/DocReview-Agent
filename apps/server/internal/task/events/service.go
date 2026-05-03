@@ -69,6 +69,7 @@ func (s *Service) RecordTx(ctx context.Context, tx pgx.Tx, input RecordInput) (*
 	return s.repo.AddTx(ctx, tx, params)
 }
 
+// marshalPayload 编码 `载荷`，统一对外或落库时的序列化格式。
 func marshalPayload(payload any) ([]byte, error) {
 	if payload == nil {
 		return []byte(`{}`), nil
@@ -86,6 +87,7 @@ func marshalPayload(payload any) ([]byte, error) {
 	return encoded, nil
 }
 
+// buildCreateParams 组装 `创建参数`，统一写库或调用下游前的参数边界处理。
 func buildCreateParams(input RecordInput) (postgres.TaskEventCreateParams, error) {
 	taskID := strings.TrimSpace(input.TaskID)
 	if taskID == "" {

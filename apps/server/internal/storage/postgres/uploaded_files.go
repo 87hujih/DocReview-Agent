@@ -85,6 +85,17 @@ func (r *UploadedFileRepo) UpdateResourceID(ctx context.Context, id string, reso
 	return err
 }
 
+// UpdateSessionID 为已保存的原始文件补上所属会话 ID。
+func (r *UploadedFileRepo) UpdateSessionID(ctx context.Context, id string, sessionID string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE uploaded_files
+		SET session_id = $2
+		WHERE id = $1
+	`, id, sessionID)
+	return err
+}
+
+// scanUploadedFile 把当前数据库行扫描成 `Uploaded文件`，统一查询结果到领域结构的映射。
 func scanUploadedFile(row pgx.Row) (UploadedFile, error) {
 	var file UploadedFile
 

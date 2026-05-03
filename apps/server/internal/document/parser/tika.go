@@ -9,6 +9,7 @@ import (
 	"strings"
 )
 
+// tikaParser 承载tika解析器相关状态，明确文档解析链路中的数据边界。
 type tikaParser struct {
 	baseURL string
 	client  *http.Client
@@ -37,7 +38,9 @@ func (p *tikaParser) Parse(ctx context.Context, input Input) (*Result, error) {
 		return nil, fmt.Errorf("Tika 解析失败：状态码 %d，响应 %s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
 
+	text := string(body)
 	return &Result{
-		Text: string(body),
+		Text:     text,
+		Document: buildTikaDocument(input.FileName, text),
 	}, nil
 }

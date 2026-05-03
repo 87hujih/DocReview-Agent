@@ -12,6 +12,8 @@ import (
 	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/postgres"
+	"agent_project/apps/server/internal/testsupport/postgrescleanup"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
@@ -81,6 +83,124 @@ func TestGetResourceByIDHandler(t *testing.T) {
 	}
 }
 
+// TestGetResourceTaskContextWithCurrentVersionReturnsEnabledCapabilities 验证`getResourceTaskContextWithCurrentVersion`在返回值分支下的行为，防止同类回归。
+func TestGetResourceTaskContextWithCurrentVersionReturnsEnabledCapabilities(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, nil)
+	engine := server.New()
+	engine.GET("/api/resources/:id/task-context", handler.GetTaskContext)
+
+	ctx := testContext(t)
+	resource, err := repo.Create(ctx, "任务上下文测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	version, err := repo.CreateVersion(ctx, resource.ID, 1, "正文内容", "original")
+	if err != nil {
+		t.Fatalf("create version: %v", err)
+	}
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/"+resource.ID+"/task-context", nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	var payload struct {
+		Resource struct {
+			ID         string `json:"id"`
+			Title      string `json:"title"`
+			SourceType string `json:"source_type"`
+			CreatedAt  string `json:"created_at"`
+		} `json:"resource"`
+		CurrentVersion *struct {
+			ID            string `json:"id"`
+			VersionNumber int    `json:"version_number"`
+			Source        string `json:"source"`
+			CreatedAt     string `json:"created_at"`
+			Content       string `json:"content"`
+		} `json:"current_version"`
+		Capabilities struct {
+			CanCreateTask      bool    `json:"can_create_task"`
+			CanSearchCitations bool    `json:"can_search_citations"`
+			BlockingReason     *string `json:"blocking_reason"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(response.Body(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if payload.Resource.ID != resource.ID {
+		t.Fatalf("expected resource id %q, got %q", resource.ID, payload.Resource.ID)
+	}
+	if payload.CurrentVersion == nil {
+		t.Fatal("expected current version to be present")
+	}
+	if payload.CurrentVersion.ID != version.ID {
+		t.Fatalf("expected current version id %q, got %q", version.ID, payload.CurrentVersion.ID)
+	}
+	if payload.CurrentVersion.Content != "" {
+		t.Fatalf("expected task context not to include content, got %q", payload.CurrentVersion.Content)
+	}
+	if !payload.Capabilities.CanCreateTask || !payload.Capabilities.CanSearchCitations {
+		t.Fatalf("expected capabilities to be enabled, got %#v", payload.Capabilities)
+	}
+	if payload.Capabilities.BlockingReason != nil {
+		t.Fatalf("expected blocking reason to be nil, got %#v", payload.Capabilities.BlockingReason)
+	}
+}
+
+// TestGetResourceTaskContextWithoutCurrentVersionReturnsBlockingCapabilities 验证`getResourceTaskContextWithoutCurrentVersion`在返回值分支下的行为，防止同类回归。
+func TestGetResourceTaskContextWithoutCurrentVersionReturnsBlockingCapabilities(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	repo := postgres.NewResourceRepo(pool)
+	handler := NewResourceHandler(repo, nil)
+	engine := server.New()
+	engine.GET("/api/resources/:id/task-context", handler.GetTaskContext)
+
+	ctx := testContext(t)
+	resource, err := repo.Create(ctx, "缺少版本任务上下文测试-"+uniqueSuffix(), "upload")
+	if err != nil {
+		t.Fatalf("create resource: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupResource(t, pool, resource.ID)
+	})
+
+	response := ut.PerformRequest(engine.Engine, "GET", "/api/resources/"+resource.ID+"/task-context", nil).Result()
+
+	if response.StatusCode() != consts.StatusOK {
+		t.Fatalf("expected status %d, got %d", consts.StatusOK, response.StatusCode())
+	}
+
+	var payload struct {
+		CurrentVersion any `json:"current_version"`
+		Capabilities   struct {
+			CanCreateTask      bool    `json:"can_create_task"`
+			CanSearchCitations bool    `json:"can_search_citations"`
+			BlockingReason     *string `json:"blocking_reason"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(response.Body(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if payload.CurrentVersion != nil {
+		t.Fatalf("expected current version to be nil, got %#v", payload.CurrentVersion)
+	}
+	if payload.Capabilities.CanCreateTask || payload.Capabilities.CanSearchCitations {
+		t.Fatalf("expected blocking capabilities, got %#v", payload.Capabilities)
+	}
+	if payload.Capabilities.BlockingReason == nil || *payload.Capabilities.BlockingReason != "missing_current_version" {
+		t.Fatalf("expected blocking reason %q, got %#v", "missing_current_version", payload.Capabilities.BlockingReason)
+	}
+}
+
 // TestGetResourceNotFound 验证查询不存在的资源会返回 404。
 func TestGetResourceNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
@@ -96,6 +216,7 @@ func TestGetResourceNotFound(t *testing.T) {
 	}
 }
 
+// TestExportCurrentResourceVersionHandler 验证`exportCurrentResourceVersionHandler`在特定边界条件下的行为，防止同类回归。
 func TestExportCurrentResourceVersionHandler(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -135,6 +256,7 @@ func TestExportCurrentResourceVersionHandler(t *testing.T) {
 	}
 }
 
+// TestExportCurrentResourceVersionHandlerWithoutCurrentVersion 验证`exportCurrentResourceVersionHandlerWithoutCurrentVersion`在特定边界条件下的行为，防止同类回归。
 func TestExportCurrentResourceVersionHandlerWithoutCurrentVersion(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -161,6 +283,7 @@ func TestExportCurrentResourceVersionHandlerWithoutCurrentVersion(t *testing.T) 
 	}
 }
 
+// TestSearchResourceMissingQuery 验证`searchResourceMissingQuery`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceMissingQuery(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -180,6 +303,7 @@ func TestSearchResourceMissingQuery(t *testing.T) {
 	}
 }
 
+// TestSearchResourceInvalidID 验证`searchResourceInvalidID`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceInvalidID(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -197,6 +321,7 @@ func TestSearchResourceInvalidID(t *testing.T) {
 	}
 }
 
+// TestSearchResourceNotFound 验证`searchResourceNotFound`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceNotFound(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -211,6 +336,7 @@ func TestSearchResourceNotFound(t *testing.T) {
 	}
 }
 
+// TestSearchResourceMissingCurrentVersion 验证`searchResourceMissingCurrentVersion`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceMissingCurrentVersion(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -237,6 +363,7 @@ func TestSearchResourceMissingCurrentVersion(t *testing.T) {
 	}
 }
 
+// TestSearchResourceSuccess 验证`searchResourceSuccess`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceSuccess(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -275,6 +402,7 @@ func TestSearchResourceSuccess(t *testing.T) {
 	}
 }
 
+// TestSearchResourceNoHits 验证`searchResourceNoHits`在特定边界条件下的行为，防止同类回归。
 func TestSearchResourceNoHits(t *testing.T) {
 	pool := newHandlerTestPool(t)
 	repo := postgres.NewResourceRepo(pool)
@@ -304,6 +432,7 @@ func TestSearchResourceNoHits(t *testing.T) {
 	}
 }
 
+// TestNewSearchResourcesResponseEncodesNilCitationsAsEmptyArray 验证`newSearchResourcesResponse`在格式处理路径下的行为，防止同类回归。
 func TestNewSearchResourcesResponseEncodesNilCitationsAsEmptyArray(t *testing.T) {
 	payload, err := json.Marshal(newSearchResourcesResponse("考勤", nil))
 	if err != nil {
@@ -325,17 +454,7 @@ func newHandlerTestPool(t *testing.T) *pgxpool.Pool {
 
 	ctx := testContext(t)
 	cfg := appconfig.Load()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("database not available: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return pool
+	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "server_handlers", postgres.NewPool, postgres.RunMigrations)
 }
 
 // cleanupResource 清理 handler 测试中创建的资源数据。
@@ -343,42 +462,8 @@ func cleanupResource(t *testing.T, pool *pgxpool.Pool, resourceID string) {
 	t.Helper()
 
 	ctx := testContext(t)
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM execution_jobs
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-		   OR new_version_id IN (SELECT id FROM resource_versions WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup execution jobs for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM approvals
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup approvals for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_events
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task events for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_artifacts
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task artifacts for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		DELETE FROM task_steps
-		WHERE task_id IN (SELECT id FROM tasks WHERE resource_id = $1)
-	`, resourceID); err != nil {
-		t.Fatalf("cleanup task steps for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM tasks WHERE resource_id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup tasks for resource %q: %v", resourceID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM resources WHERE id = $1`, resourceID); err != nil {
-		t.Fatalf("cleanup resource %q: %v", resourceID, err)
+	if err := postgrescleanup.CleanupResourceTree(ctx, pool, resourceID); err != nil {
+		t.Fatalf("cleanup resource tree for resource %q: %v", resourceID, err)
 	}
 }
 
@@ -396,11 +481,13 @@ func uniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// fakeResourceSearchService 作为资源搜索服务的测试替身，用于在用例里提供可控的依赖行为。
 type fakeResourceSearchService struct {
 	citations []citation.Citation
 	err       error
 }
 
+// SearchByResource 实现测试替身需要的 `SearchByResource` 接口方法，为用例分支提供可控返回。
 func (f fakeResourceSearchService) SearchByResource(context.Context, string, string, int) ([]citation.Citation, error) {
 	return f.citations, f.err
 }

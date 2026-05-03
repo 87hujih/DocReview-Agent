@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 
 import { AssistantShell } from "./assistant-shell";
 import { AppChrome } from "../app-chrome";
-import { getAssistantSessions } from "../../lib/api/assistant";
+import { getAssistantCapabilities, getAssistantSessions } from "../../lib/api/assistant";
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/"
@@ -11,6 +11,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("../../lib/api/assistant", () => ({
   confirmAssistantTaskSuggestion: vi.fn(),
   deleteAssistantSession: vi.fn(),
+  getAssistantCapabilities: vi.fn(),
   getAssistantSession: vi.fn(),
   getAssistantSessions: vi.fn(),
   streamAssistantConversation: vi.fn(),
@@ -20,10 +21,19 @@ vi.mock("../../lib/api/assistant", () => ({
 }));
 
 const mockedGetAssistantSessions = vi.mocked(getAssistantSessions);
+const mockedGetAssistantCapabilities = vi.mocked(getAssistantCapabilities);
 
 describe("assistant sidebar layout", () => {
   beforeEach(() => {
     mockedGetAssistantSessions.mockReset();
+    mockedGetAssistantCapabilities.mockReset();
+    mockedGetAssistantCapabilities.mockResolvedValue({
+      upload: {
+        accept: ".md,.txt",
+        hint: "支持 md、txt",
+        supported_extensions: [".md", ".txt"]
+      }
+    });
   });
 
   it("shows assistant history in the global sidebar without rendering a second sidebar separator", async () => {

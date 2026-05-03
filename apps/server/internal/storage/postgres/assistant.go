@@ -116,6 +116,33 @@ func (r *AssistantRepo) ListMessages(ctx context.Context, sessionID string) ([]A
 	return messages, rows.Err()
 }
 
+// ListMessagesAfterSequence 返回指定序号之后的消息窗口。
+func (r *AssistantRepo) ListMessagesAfterSequence(ctx context.Context, sessionID string, afterSequenceNo int) ([]AssistantMessage, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, session_id, role, kind, sequence_no, payload, created_at
+		FROM assistant_messages
+		WHERE session_id = $1
+		  AND sequence_no > $2
+		ORDER BY sequence_no ASC, id ASC
+	`, sessionID, afterSequenceNo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []AssistantMessage
+	for rows.Next() {
+		message, err := scanAssistantMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		messages = append(messages, message)
+	}
+
+	return messages, rows.Err()
+}
+
 // GetMessageByID 在消息不存在时返回 nil。
 func (r *AssistantRepo) GetMessageByID(ctx context.Context, id string) (*AssistantMessage, error) {
 	message, err := scanAssistantMessage(r.pool.QueryRow(ctx, `
@@ -198,6 +225,70 @@ func (r *AssistantRepo) AppendMessages(ctx context.Context, sessionID string, in
 		_ = tx.Rollback(ctx)
 	}()
 
+	messages, err := appendAssistantMessagesTx(ctx, tx, sessionID, inputs)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return messages, nil
+}
+
+// DeleteSession 删除会话及其级联消息。
+func (r *AssistantRepo) DeleteSession(ctx context.Context, id string) (bool, error) {
+	result, err := r.pool.Exec(ctx, `
+		DELETE FROM assistant_sessions
+		WHERE id = $1
+	`, id)
+	if err != nil {
+		return false, err
+	}
+
+	return result.RowsAffected() > 0, nil
+}
+
+// insertAssistantMessages 批量写入助手消息记录，并保持会话内顺序字段连续。
+func insertAssistantMessages(
+	ctx context.Context,
+	tx pgx.Tx,
+	sessionID string,
+	baseSequence int,
+	inputs []AssistantMessageInput,
+) ([]AssistantMessage, time.Time, error) {
+	messages := make([]AssistantMessage, 0, len(inputs))
+	var lastMessageAt time.Time
+
+	for index, input := range inputs {
+		message, err := scanAssistantMessage(tx.QueryRow(ctx, `
+			INSERT INTO assistant_messages (session_id, role, kind, sequence_no, payload)
+			VALUES ($1, $2, $3, $4, $5::jsonb)
+			RETURNING id, session_id, role, kind, sequence_no, payload, created_at
+		`, sessionID, input.Role, input.Kind, baseSequence+index+1, string(input.Payload)))
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+
+		messages = append(messages, message)
+		lastMessageAt = message.CreatedAt
+	}
+
+	return messages, lastMessageAt, nil
+}
+
+// appendAssistantMessagesTx 追加 `助手消息事务`，保持消息和副作用写入顺序一致。
+func appendAssistantMessagesTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	sessionID string,
+	inputs []AssistantMessageInput,
+) ([]AssistantMessage, error) {
+	if len(inputs) == 0 {
+		return []AssistantMessage{}, nil
+	}
+
 	var lockedSessionID string
 	if err := tx.QueryRow(ctx, `
 		SELECT id
@@ -228,24 +319,7 @@ func (r *AssistantRepo) AppendMessages(ctx context.Context, sessionID string, in
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-
 	return messages, nil
-}
-
-// DeleteSession 删除会话及其级联消息。
-func (r *AssistantRepo) DeleteSession(ctx context.Context, id string) (bool, error) {
-	result, err := r.pool.Exec(ctx, `
-		DELETE FROM assistant_sessions
-		WHERE id = $1
-	`, id)
-	if err != nil {
-		return false, err
-	}
-
-	return result.RowsAffected() > 0, nil
 }
 
 // UpdateSessionWebSearchEnabled 更新会话的联网搜索开关状态。
@@ -259,33 +333,7 @@ func (r *AssistantRepo) UpdateSessionWebSearchEnabled(ctx context.Context, sessi
 	return err
 }
 
-func insertAssistantMessages(
-	ctx context.Context,
-	tx pgx.Tx,
-	sessionID string,
-	baseSequence int,
-	inputs []AssistantMessageInput,
-) ([]AssistantMessage, time.Time, error) {
-	messages := make([]AssistantMessage, 0, len(inputs))
-	var lastMessageAt time.Time
-
-	for index, input := range inputs {
-		message, err := scanAssistantMessage(tx.QueryRow(ctx, `
-			INSERT INTO assistant_messages (session_id, role, kind, sequence_no, payload)
-			VALUES ($1, $2, $3, $4, $5::jsonb)
-			RETURNING id, session_id, role, kind, sequence_no, payload, created_at
-		`, sessionID, input.Role, input.Kind, baseSequence+index+1, string(input.Payload)))
-		if err != nil {
-			return nil, time.Time{}, err
-		}
-
-		messages = append(messages, message)
-		lastMessageAt = message.CreatedAt
-	}
-
-	return messages, lastMessageAt, nil
-}
-
+// updateAssistantSessionTimestamp 刷新助手会话的最近活动时间，确保列表排序反映最新交互。
 func updateAssistantSessionTimestamp(ctx context.Context, tx pgx.Tx, sessionID string, timestamp time.Time) (AssistantSession, error) {
 	return scanAssistantSession(tx.QueryRow(ctx, `
 		UPDATE assistant_sessions
@@ -296,6 +344,7 @@ func updateAssistantSessionTimestamp(ctx context.Context, tx pgx.Tx, sessionID s
 	`, sessionID, timestamp))
 }
 
+// scanAssistantSession 把当前数据库行扫描成 `助手会话`，统一查询结果到领域结构的映射。
 func scanAssistantSession(row pgx.Row) (AssistantSession, error) {
 	var session AssistantSession
 
@@ -314,6 +363,7 @@ func scanAssistantSession(row pgx.Row) (AssistantSession, error) {
 	return session, nil
 }
 
+// scanAssistantMessage 把当前数据库行扫描成 `助手消息`，统一查询结果到领域结构的映射。
 func scanAssistantMessage(row pgx.Row) (AssistantMessage, error) {
 	var message AssistantMessage
 

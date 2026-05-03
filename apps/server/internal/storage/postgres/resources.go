@@ -6,6 +6,9 @@ import (
 	"strings"
 	"time"
 
+	documentnormalize "agent_project/apps/server/internal/document/normalize"
+	"agent_project/apps/server/internal/knowledge/sections"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pgvector/pgvector-go"
@@ -38,22 +41,38 @@ type ResourceVersion struct {
 
 // ResourceChunk 是从某个资源版本切分出的、带 embedding 的检索单元。
 type ResourceChunk struct {
-	ID           string
-	ResourceID   string
-	VersionID    string
-	ChunkIndex   int
-	SectionTitle string
-	Content      string
-	Embedding    pgvector.Vector
-	CreatedAt    time.Time
+	ID             string
+	ResourceID     string
+	VersionID      string
+	ChunkIndex     int
+	SectionTitle   string
+	Content        string
+	Embedding      pgvector.Vector
+	SectionID      *string
+	SectionType    *string
+	ChunkRole      *string
+	WindowGroupID  *string
+	OrderInSection *int
+	PageStart      *int
+	PageEnd        *int
+	MetadataJSON   []byte
+	CreatedAt      time.Time
 }
 
 // ResourceChunkInput 表示写入资源图或重建版本索引时预先算好的单个 chunk。
 type ResourceChunkInput struct {
-	ChunkIndex   int
-	SectionTitle string
-	Content      string
-	Embedding    pgvector.Vector
+	ChunkIndex     int
+	SectionTitle   string
+	Content        string
+	Embedding      pgvector.Vector
+	SectionID      *string
+	SectionType    *string
+	ChunkRole      *string
+	WindowGroupID  *string
+	OrderInSection *int
+	PageStart      *int
+	PageEnd        *int
+	MetadataJSON   []byte
 }
 
 // CreateDocumentGraphParams 描述一次原子写入资源、版本和 chunks 所需的数据。
@@ -169,6 +188,54 @@ func (r *ResourceRepo) GetCurrentVersion(ctx context.Context, resourceID string)
 	return &version, nil
 }
 
+// GetVersionByID 按主键读取单个资源版本，不存在时返回 nil。
+func (r *ResourceRepo) GetVersionByID(ctx context.Context, versionID string) (*ResourceVersion, error) {
+	version, err := scanResourceVersion(r.pool.QueryRow(ctx, `
+		SELECT id, resource_id, version_number, content, source, created_at
+		FROM resource_versions
+		WHERE id = $1
+	`, versionID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &version, nil
+}
+
+// ListSectionsByVersion 返回某个资源版本下的全部逻辑 sections。
+func (r *ResourceRepo) ListSectionsByVersion(ctx context.Context, versionID string) ([]ResourceSection, error) {
+	return NewResourceStructureRepo(r.pool).ListSectionsByVersion(ctx, versionID)
+}
+
+// GetSectionByID 按主键读取单个逻辑 section，不存在时返回 nil。
+func (r *ResourceRepo) GetSectionByID(ctx context.Context, sectionID string) (*ResourceSection, error) {
+	return NewResourceStructureRepo(r.pool).GetSectionByID(ctx, sectionID)
+}
+
+// GetSectionByOrder 按 section 类型和顺序读取单个逻辑 section，不存在时返回 nil。
+func (r *ResourceRepo) GetSectionByOrder(ctx context.Context, versionID string, sectionType string, ordinal int) (*ResourceSection, error) {
+	return NewResourceStructureRepo(r.pool).GetSectionByOrder(ctx, versionID, sectionType, ordinal)
+}
+
+// FindSectionByEntity 按 canonical entity 或 alias 读取单个逻辑 section，不存在时返回 nil。
+func (r *ResourceRepo) FindSectionByEntity(ctx context.Context, versionID string, entityName string) (*ResourceSection, error) {
+	return NewResourceStructureRepo(r.pool).FindSectionByEntity(ctx, versionID, entityName)
+}
+
+// ListSectionsForReading 返回 assistant 当前文件直接阅读所需的有序 section 视图。
+func (r *ResourceRepo) ListSectionsForReading(ctx context.Context, versionID string, sectionType string) ([]ResourceSection, error) {
+	return NewResourceStructureRepo(r.pool).ListSectionsForReading(ctx, versionID, sectionType)
+}
+
+// GetVersionStructureByVersionID 返回指定版本的结构化文档 JSON。
+func (r *ResourceRepo) GetVersionStructureByVersionID(ctx context.Context, versionID string) (*ResourceVersionStructure, error) {
+	return NewResourceStructureRepo(r.pool).GetVersionStructureByVersionID(ctx, versionID)
+}
+
 // CountChunksByVersion 返回指定版本当前已有的 chunk 数。
 func (r *ResourceRepo) CountChunksByVersion(ctx context.Context, versionID string) (int, error) {
 	var count int
@@ -181,6 +248,37 @@ func (r *ResourceRepo) CountChunksByVersion(ctx context.Context, versionID strin
 	}
 
 	return count, nil
+}
+
+// ListChunksByVersion 按 chunk_index 顺序返回某个版本下的全部 grounded chunks。
+func (r *ResourceRepo) ListChunksByVersion(ctx context.Context, versionID string) ([]ResourceChunk, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       chunk_index,
+		       section_title,
+		       content,
+		       embedding,
+		       section_id,
+		       section_type,
+		       chunk_role,
+		       window_group_id,
+		       order_in_section,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
+		FROM resource_chunks
+		WHERE version_id = $1
+		ORDER BY chunk_index ASC, created_at ASC
+	`, versionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectResourceChunks(rows)
 }
 
 // UpdateSourceRef 为资源回填或更新来源引用。
@@ -196,11 +294,43 @@ func (r *ResourceRepo) UpdateSourceRef(ctx context.Context, resourceID string, s
 
 // CreateChunk 持久化一个可检索分块，并把生成出的 ID 和时间戳回填到入参结构体。
 func (r *ResourceRepo) CreateChunk(ctx context.Context, chunk *ResourceChunk) error {
+	normalizeChunkForInsert(chunk)
+
 	return r.pool.QueryRow(ctx, `
-		INSERT INTO resource_chunks (resource_id, version_id, chunk_index, section_title, content, embedding)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO resource_chunks (
+		    resource_id,
+		    version_id,
+		    chunk_index,
+		    section_title,
+		    content,
+		    embedding,
+		    section_id,
+		    section_type,
+		    chunk_role,
+		    window_group_id,
+		    order_in_section,
+		    page_start,
+		    page_end,
+		    metadata_json
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
 		RETURNING id, created_at
-	`, chunk.ResourceID, chunk.VersionID, chunk.ChunkIndex, chunk.SectionTitle, chunk.Content, chunk.Embedding).Scan(&chunk.ID, &chunk.CreatedAt)
+	`,
+		chunk.ResourceID,
+		chunk.VersionID,
+		chunk.ChunkIndex,
+		chunk.SectionTitle,
+		chunk.Content,
+		chunk.Embedding,
+		chunk.SectionID,
+		chunk.SectionType,
+		chunk.ChunkRole,
+		chunk.WindowGroupID,
+		chunk.OrderInSection,
+		chunk.PageStart,
+		chunk.PageEnd,
+		normalizeJSONArgument(chunk.MetadataJSON, `{}`),
+	).Scan(&chunk.ID, &chunk.CreatedAt)
 }
 
 // CreateDocumentGraph 在单事务里写入资源、版本和全部 chunks，避免残留半成品资源。
@@ -254,12 +384,20 @@ func (r *ResourceRepo) CreateDocumentGraph(ctx context.Context, params CreateDoc
 
 	for _, chunk := range params.Chunks {
 		if err := createChunkTx(ctx, tx, &ResourceChunk{
-			ResourceID:   resource.ID,
-			VersionID:    version.ID,
-			ChunkIndex:   chunk.ChunkIndex,
-			SectionTitle: chunk.SectionTitle,
-			Content:      chunk.Content,
-			Embedding:    chunk.Embedding,
+			ResourceID:     resource.ID,
+			VersionID:      version.ID,
+			ChunkIndex:     chunk.ChunkIndex,
+			SectionTitle:   chunk.SectionTitle,
+			Content:        chunk.Content,
+			Embedding:      chunk.Embedding,
+			SectionID:      chunk.SectionID,
+			SectionType:    chunk.SectionType,
+			ChunkRole:      chunk.ChunkRole,
+			WindowGroupID:  chunk.WindowGroupID,
+			OrderInSection: chunk.OrderInSection,
+			PageStart:      chunk.PageStart,
+			PageEnd:        chunk.PageEnd,
+			MetadataJSON:   chunk.MetadataJSON,
 		}); err != nil {
 			return nil, nil, err
 		}
@@ -291,12 +429,69 @@ func (r *ResourceRepo) ReplaceVersionChunks(ctx context.Context, versionID strin
 
 	for _, chunk := range chunks {
 		if err := createChunkTx(ctx, tx, &ResourceChunk{
-			ResourceID:   resourceID,
-			VersionID:    versionID,
-			ChunkIndex:   chunk.ChunkIndex,
-			SectionTitle: chunk.SectionTitle,
-			Content:      chunk.Content,
-			Embedding:    chunk.Embedding,
+			ResourceID:     resourceID,
+			VersionID:      versionID,
+			ChunkIndex:     chunk.ChunkIndex,
+			SectionTitle:   chunk.SectionTitle,
+			Content:        chunk.Content,
+			Embedding:      chunk.Embedding,
+			SectionID:      chunk.SectionID,
+			SectionType:    chunk.SectionType,
+			ChunkRole:      chunk.ChunkRole,
+			WindowGroupID:  chunk.WindowGroupID,
+			OrderInSection: chunk.OrderInSection,
+			PageStart:      chunk.PageStart,
+			PageEnd:        chunk.PageEnd,
+			MetadataJSON:   chunk.MetadataJSON,
+		}); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// ReplaceVersionContentAndChunks 在单事务里同时替换版本正文与全部 chunk，避免修复脚本写出“正文已变但检索仍旧”的中间态。
+func (r *ResourceRepo) ReplaceVersionContentAndChunks(ctx context.Context, versionID string, resourceID string, content string, chunks []ResourceChunkInput) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE resource_versions
+		SET content = $2
+		WHERE id = $1
+	`, versionID, strings.TrimSpace(content)); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM resource_chunks
+		WHERE version_id = $1
+	`, versionID); err != nil {
+		return err
+	}
+
+	for _, chunk := range chunks {
+		if err := createChunkTx(ctx, tx, &ResourceChunk{
+			ResourceID:     resourceID,
+			VersionID:      versionID,
+			ChunkIndex:     chunk.ChunkIndex,
+			SectionTitle:   chunk.SectionTitle,
+			Content:        chunk.Content,
+			Embedding:      chunk.Embedding,
+			SectionID:      chunk.SectionID,
+			SectionType:    chunk.SectionType,
+			ChunkRole:      chunk.ChunkRole,
+			WindowGroupID:  chunk.WindowGroupID,
+			OrderInSection: chunk.OrderInSection,
+			PageStart:      chunk.PageStart,
+			PageEnd:        chunk.PageEnd,
+			MetadataJSON:   chunk.MetadataJSON,
 		}); err != nil {
 			return err
 		}
@@ -308,7 +503,22 @@ func (r *ResourceRepo) ReplaceVersionChunks(ctx context.Context, versionID strin
 // SearchChunks 使用 pgvector 距离排序，在全部资源范围内执行语义检索。
 func (r *ResourceRepo) SearchChunks(ctx context.Context, embedding pgvector.Vector, limit int) ([]ResourceChunk, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       chunk_index,
+		       section_title,
+		       content,
+		       embedding,
+		       section_id,
+		       section_type,
+		       chunk_role,
+		       window_group_id,
+		       order_in_section,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
 		FROM resource_chunks
 		ORDER BY embedding <=> $1
 		LIMIT $2
@@ -324,7 +534,22 @@ func (r *ResourceRepo) SearchChunks(ctx context.Context, embedding pgvector.Vect
 // SearchChunksByResource 把语义检索范围收敛到单个资源。
 func (r *ResourceRepo) SearchChunksByResource(ctx context.Context, embedding pgvector.Vector, limit int, resourceID string) ([]ResourceChunk, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       chunk_index,
+		       section_title,
+		       content,
+		       embedding,
+		       section_id,
+		       section_type,
+		       chunk_role,
+		       window_group_id,
+		       order_in_section,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
 		FROM resource_chunks
 		WHERE resource_id = $2
 		ORDER BY embedding <=> $1
@@ -341,7 +566,22 @@ func (r *ResourceRepo) SearchChunksByResource(ctx context.Context, embedding pgv
 // SearchChunksByVersion 把语义检索范围收敛到单个资源版本。
 func (r *ResourceRepo) SearchChunksByVersion(ctx context.Context, embedding pgvector.Vector, limit int, versionID string) ([]ResourceChunk, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       chunk_index,
+		       section_title,
+		       content,
+		       embedding,
+		       section_id,
+		       section_type,
+		       chunk_role,
+		       window_group_id,
+		       order_in_section,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
 		FROM resource_chunks
 		WHERE version_id = $2
 		ORDER BY embedding <=> $1
@@ -363,7 +603,22 @@ func (r *ResourceRepo) SearchChunksLexical(ctx context.Context, query string, li
 	}
 
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       chunk_index,
+		       section_title,
+		       content,
+		       embedding,
+		       section_id,
+		       section_type,
+		       chunk_role,
+		       window_group_id,
+		       order_in_section,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
 		FROM resource_chunks
 		WHERE lower(coalesce(section_title, '') || ' ' || content) LIKE '%' || $1 || '%'
 		   OR lower(coalesce(section_title, '') || ' ' || content) % $1
@@ -392,7 +647,22 @@ func (r *ResourceRepo) SearchChunksLexicalByResource(ctx context.Context, query 
 	}
 
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       chunk_index,
+		       section_title,
+		       content,
+		       embedding,
+		       section_id,
+		       section_type,
+		       chunk_role,
+		       window_group_id,
+		       order_in_section,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
 		FROM resource_chunks
 		WHERE resource_id = $2
 		  AND (
@@ -424,7 +694,22 @@ func (r *ResourceRepo) SearchChunksLexicalByVersion(ctx context.Context, query s
 	}
 
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, resource_id, version_id, chunk_index, section_title, content, embedding, created_at
+		SELECT id,
+		       resource_id,
+		       version_id,
+		       chunk_index,
+		       section_title,
+		       content,
+		       embedding,
+		       section_id,
+		       section_type,
+		       chunk_role,
+		       window_group_id,
+		       order_in_section,
+		       page_start,
+		       page_end,
+		       metadata_json,
+		       created_at
 		FROM resource_chunks
 		WHERE version_id = $2
 		  AND (
@@ -463,12 +748,45 @@ func collectResourceChunks(rows pgx.Rows) ([]ResourceChunk, error) {
 	return chunks, rows.Err()
 }
 
+// createChunkTx 在事务内写入单个 chunk 及其 grounded 字段，收口资源仓储的插入细节。
 func createChunkTx(ctx context.Context, tx pgx.Tx, chunk *ResourceChunk) error {
+	normalizeChunkForInsert(chunk)
+
 	return tx.QueryRow(ctx, `
-		INSERT INTO resource_chunks (resource_id, version_id, chunk_index, section_title, content, embedding)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO resource_chunks (
+		    resource_id,
+		    version_id,
+		    chunk_index,
+		    section_title,
+		    content,
+		    embedding,
+		    section_id,
+		    section_type,
+		    chunk_role,
+		    window_group_id,
+		    order_in_section,
+		    page_start,
+		    page_end,
+		    metadata_json
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
 		RETURNING id, created_at
-	`, chunk.ResourceID, chunk.VersionID, chunk.ChunkIndex, chunk.SectionTitle, chunk.Content, chunk.Embedding).Scan(&chunk.ID, &chunk.CreatedAt)
+	`,
+		chunk.ResourceID,
+		chunk.VersionID,
+		chunk.ChunkIndex,
+		chunk.SectionTitle,
+		chunk.Content,
+		chunk.Embedding,
+		chunk.SectionID,
+		chunk.SectionType,
+		chunk.ChunkRole,
+		chunk.WindowGroupID,
+		chunk.OrderInSection,
+		chunk.PageStart,
+		chunk.PageEnd,
+		normalizeJSONArgument(chunk.MetadataJSON, `{}`),
+	).Scan(&chunk.ID, &chunk.CreatedAt)
 }
 
 // scanResource 从单行结果中解析 Resource。
@@ -521,6 +839,14 @@ func scanResourceChunk(row pgx.Row) (ResourceChunk, error) {
 		&chunk.SectionTitle,
 		&chunk.Content,
 		&chunk.Embedding,
+		&chunk.SectionID,
+		&chunk.SectionType,
+		&chunk.ChunkRole,
+		&chunk.WindowGroupID,
+		&chunk.OrderInSection,
+		&chunk.PageStart,
+		&chunk.PageEnd,
+		&chunk.MetadataJSON,
 		&chunk.CreatedAt,
 	)
 	if err != nil {
@@ -530,6 +856,90 @@ func scanResourceChunk(row pgx.Row) (ResourceChunk, error) {
 	return chunk, nil
 }
 
+// normalizeLexicalQuery 归一化 `Lexical查询`，避免后续流程重复处理边界输入。
 func normalizeLexicalQuery(query string) string {
 	return strings.ToLower(strings.TrimSpace(query))
+}
+
+// normalizeChunkForInsert 在写入 chunk 前补齐 grounded 元数据默认值，保证显式 INSERT 也能满足线上非空列约束。
+func normalizeChunkForInsert(chunk *ResourceChunk) {
+	if chunk == nil {
+		return
+	}
+
+	chunk.SectionType = defaultChunkSectionType(chunk.SectionType, chunk.SectionTitle)
+	chunk.ChunkRole = defaultChunkRole(chunk.ChunkRole)
+	chunk.WindowGroupID = defaultChunkWindowGroupID(chunk.WindowGroupID, chunk.SectionID, chunk.SectionTitle)
+	chunk.PageStart, chunk.PageEnd = defaultChunkPages(chunk.PageStart, chunk.PageEnd)
+}
+
+// defaultChunkSectionType 为缺失的 chunk section type 提供兜底值，避免 legacy/fallback chunk 在首次写库时违反约束。
+func defaultChunkSectionType(current *string, sectionTitle string) *string {
+	if trimmed := optionalTrimmedText(derefOptionalString(current)); trimmed != nil {
+		return trimmed
+	}
+
+	defaultType := string(documentnormalize.SectionTypeSection)
+	title := strings.TrimSpace(sectionTitle)
+	if title == "" || title == sections.WholeDocumentTitle {
+		defaultType = string(documentnormalize.SectionTypeDocument)
+	}
+
+	return &defaultType
+}
+
+// defaultChunkRole 为缺失的 chunk role 统一补默认语义，保持检索和写库链路看到一致的 grounded 角色。
+func defaultChunkRole(current *string) *string {
+	if trimmed := optionalTrimmedText(derefOptionalString(current)); trimmed != nil {
+		return trimmed
+	}
+
+	defaultRole := "section_body"
+	return &defaultRole
+}
+
+// defaultChunkWindowGroupID 为缺失的窗口分组 ID 生成稳定兜底值，避免显式写 NULL 触发数据库非空错误。
+func defaultChunkWindowGroupID(current *string, sectionID *string, sectionTitle string) *string {
+	if trimmed := optionalTrimmedText(derefOptionalString(current)); trimmed != nil {
+		return trimmed
+	}
+	if trimmed := optionalTrimmedText(derefOptionalString(sectionID)); trimmed != nil {
+		return trimmed
+	}
+	if trimmed := optionalTrimmedText(sectionTitle); trimmed != nil {
+		return trimmed
+	}
+
+	empty := ""
+	return &empty
+}
+
+// defaultChunkPages 为缺失页码的 chunk 统一补齐开始页和结束页，保持 grounded 元数据契约完整。
+func defaultChunkPages(pageStart *int, pageEnd *int) (*int, *int) {
+	start := 0
+	end := 0
+
+	if pageStart != nil {
+		start = *pageStart
+	}
+	if pageEnd != nil {
+		end = *pageEnd
+	}
+	if pageStart == nil && pageEnd != nil {
+		start = end
+	}
+	if pageEnd == nil && pageStart != nil {
+		end = start
+	}
+
+	return &start, &end
+}
+
+// derefOptionalString 把可选字符串指针解引用成稳定文本值，减少调用方散落的 nil 判断。
+func derefOptionalString(value *string) string {
+	if value == nil {
+		return ""
+	}
+
+	return *value
 }

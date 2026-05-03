@@ -3,6 +3,8 @@ package chunker
 import (
 	"strings"
 	"testing"
+
+	"agent_project/apps/server/internal/knowledge/sections"
 )
 
 // TestChunkMarkdownBasic 验证普通二级标题会被切成有序分块。
@@ -90,5 +92,21 @@ func TestChunkMarkdownEmpty(t *testing.T) {
 
 	if len(chunks) != 0 {
 		t.Fatalf("expected no chunks, got %d", len(chunks))
+	}
+}
+
+// TestChunkMarkdownUsesWholeDocumentFallback 验证`chunkMarkdown`在依赖选择路径下的行为，防止同类回归。
+func TestChunkMarkdownUsesWholeDocumentFallback(t *testing.T) {
+	input := "这是没有二级标题的正文。"
+
+	chunks := ChunkMarkdown(input)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 fallback chunk, got %d", len(chunks))
+	}
+	if chunks[0].SectionTitle != sections.WholeDocumentTitle {
+		t.Fatalf("expected fallback section title %q, got %q", sections.WholeDocumentTitle, chunks[0].SectionTitle)
+	}
+	if chunks[0].Content != input {
+		t.Fatalf("expected fallback content %q, got %q", input, chunks[0].Content)
 	}
 }

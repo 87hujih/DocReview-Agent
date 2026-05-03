@@ -14,12 +14,14 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/google/uuid"
 )
 
 type assistantService interface {
 	ListSessions(ctx context.Context) ([]postgres.AssistantSession, error)
 	GetConversation(ctx context.Context, sessionID string) (*assistant.ConversationResult, error)
 	StartConversation(ctx context.Context, content string) (*assistant.ConversationResult, error)
+	StartConversationWithFile(ctx context.Context, fileName string, content []byte) (*assistant.UploadFileResult, error)
 	StartConversationStream(ctx context.Context, content string, emit func(assistant.StreamEvent) error) error
 	AppendMessage(ctx context.Context, sessionID string, content string) (*assistant.ConversationResult, error)
 	AppendMessageStream(ctx context.Context, sessionID string, content string, emit func(assistant.StreamEvent) error) error
@@ -44,10 +46,12 @@ type AssistantHandler struct {
 	uploadPolicy   assistantUploadPolicy
 }
 
+// assistantMessageRequest 定义助手接口接收的 JSON 请求体，收口当前接口需要的输入字段。
 type assistantMessageRequest struct {
 	Message string `json:"message"`
 }
 
+// assistantSessionResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type assistantSessionResponse struct {
 	ID               string    `json:"id"`
 	Title            string    `json:"title"`
@@ -57,6 +61,7 @@ type assistantSessionResponse struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
+// assistantMessageResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type assistantMessageResponse struct {
 	ID         string          `json:"id"`
 	Role       string          `json:"role"`
@@ -66,12 +71,14 @@ type assistantMessageResponse struct {
 	CreatedAt  time.Time       `json:"created_at"`
 }
 
+// assistantResourceResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type assistantResourceResponse struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`
 	SourceType string `json:"source_type"`
 }
 
+// assistantTaskResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type assistantTaskResponse struct {
 	ID          string    `json:"id"`
 	ResourceID  string    `json:"resource_id"`
@@ -80,15 +87,18 @@ type assistantTaskResponse struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// listAssistantSessionsResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type listAssistantSessionsResponse struct {
 	Sessions []assistantSessionResponse `json:"sessions"`
 }
 
+// assistantConversationResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type assistantConversationResponse struct {
 	Session  assistantSessionResponse   `json:"session"`
 	Messages []assistantMessageResponse `json:"messages"`
 }
 
+// assistantUploadResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type assistantUploadResponse struct {
 	Session      assistantSessionResponse   `json:"session"`
 	Resource     *assistantResourceResponse `json:"resource"`
@@ -96,6 +106,25 @@ type assistantUploadResponse struct {
 	ErrorMessage *string                    `json:"error_message"`
 }
 
+// assistantCapabilitiesResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
+type assistantCapabilitiesResponse struct {
+	Upload assistantUploadCapabilitiesResponse `json:"upload"`
+}
+
+// assistantUploadCapabilitiesResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
+type assistantUploadCapabilitiesResponse struct {
+	SupportedExtensions []string `json:"supported_extensions"`
+	Accept              string   `json:"accept"`
+	Hint                string   `json:"hint"`
+}
+
+// assistantUploadInput 收口助手文件上传入口解析后的结果，避免在 handler 间重复传递临时字段。
+type assistantUploadInput struct {
+	FileName string
+	Content  []byte
+}
+
+// confirmTaskSuggestionResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type confirmTaskSuggestionResponse struct {
 	Session      assistantSessionResponse   `json:"session"`
 	Task         *assistantTaskResponse     `json:"task"`
@@ -103,18 +132,22 @@ type confirmTaskSuggestionResponse struct {
 	ErrorMessage *string                    `json:"error_message"`
 }
 
+// assistantStreamSessionResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type assistantStreamSessionResponse struct {
 	Session assistantSessionResponse `json:"session"`
 }
 
+// assistantStreamMessageResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type assistantStreamMessageResponse struct {
 	Message assistantMessageResponse `json:"message"`
 }
 
+// assistantStreamDeltaResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type assistantStreamDeltaResponse struct {
 	Delta string `json:"delta"`
 }
 
+// assistantStreamErrorResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
 type assistantStreamErrorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -146,6 +179,7 @@ func NewAssistantHandlerWithUploadLimitAndPolicy(service assistantService, maxBy
 	}
 }
 
+// defaultAssistantUploadPolicy 根据当前解析能力选择默认上传策略，在未启用 Tika 时自动退回到纯文本上传约束。
 func defaultAssistantUploadPolicy() assistantUploadPolicy {
 	policy, err := documentparser.New(documentparser.Options{Mode: documentparser.ModeText})
 	if err != nil {
@@ -155,19 +189,58 @@ func defaultAssistantUploadPolicy() assistantUploadPolicy {
 	return policy
 }
 
+// textOnlyAssistantUploadPolicy 定义仅允许纯文本文件上传的策略实现，用于在未启用富文档解析时限制助手上传入口。
 type textOnlyAssistantUploadPolicy struct{}
 
+// SupportsFileName 判断文件名是否属于当前上传策略允许的纯文本扩展名。
 func (textOnlyAssistantUploadPolicy) SupportsFileName(fileName string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(fileName))
 	return strings.HasSuffix(normalized, ".md") || strings.HasSuffix(normalized, ".txt")
 }
 
+// SupportedExtensions 返回纯文本上传策略允许的扩展名列表，供接口响应和前端提示直接复用。
 func (textOnlyAssistantUploadPolicy) SupportedExtensions() []string {
 	return []string{".md", ".txt"}
 }
 
+// UnsupportedFileMessage 为纯文本上传策略生成统一错误提示，明确告知用户当前允许的文件类型。
 func (textOnlyAssistantUploadPolicy) UnsupportedFileMessage(string) string {
 	return "当前服务仅支持 md、txt；pdf/docx 等文件需要启用 Tika 解析。"
+}
+
+// buildAssistantUploadCapabilitiesResponse 把上传策略转换成前端可消费的能力描述，确保支持格式和错误提示与后端校验一致。
+func buildAssistantUploadCapabilitiesResponse(policy assistantUploadPolicy) assistantUploadCapabilitiesResponse {
+	supportedExtensions := append([]string(nil), policy.SupportedExtensions()...)
+	if supportedExtensions == nil {
+		supportedExtensions = []string{}
+	}
+
+	return assistantUploadCapabilitiesResponse{
+		SupportedExtensions: supportedExtensions,
+		Accept:              strings.Join(supportedExtensions, ","),
+		Hint:                buildAssistantUploadHint(supportedExtensions),
+	}
+}
+
+// buildAssistantUploadHint 根据允许上传的扩展名生成前端提示文案，避免页面展示能力和后端校验规则不一致。
+func buildAssistantUploadHint(supportedExtensions []string) string {
+	if len(supportedExtensions) == 0 {
+		return "当前服务未开放文件上传"
+	}
+
+	labels := make([]string, 0, len(supportedExtensions))
+	for _, extension := range supportedExtensions {
+		normalized := strings.TrimSpace(strings.TrimPrefix(extension, "."))
+		if normalized == "" {
+			continue
+		}
+		labels = append(labels, normalized)
+	}
+	if len(labels) == 0 {
+		return "当前服务未开放文件上传"
+	}
+
+	return "支持 " + strings.Join(labels, "、")
 }
 
 // ListSessions 返回左侧历史栏需要的会话摘要。
@@ -188,9 +261,21 @@ func (h *AssistantHandler) ListSessions(requestCtx context.Context, ctx *app.Req
 	ctx.JSON(consts.StatusOK, response)
 }
 
+// GetCapabilities 返回助手页需要的上传能力声明。
+func (h *AssistantHandler) GetCapabilities(_ context.Context, ctx *app.RequestContext) {
+	ctx.JSON(consts.StatusOK, assistantCapabilitiesResponse{
+		Upload: buildAssistantUploadCapabilitiesResponse(h.uploadPolicy),
+	})
+}
+
 // GetConversation 返回一个会话及完整消息流。
 func (h *AssistantHandler) GetConversation(requestCtx context.Context, ctx *app.RequestContext) {
-	result, err := h.service.GetConversation(requestCtx, ctx.Param("id"))
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	result, err := h.service.GetConversation(requestCtx, sessionID)
 	if err != nil {
 		h.writeAssistantError(ctx, err, "查询会话失败")
 		return
@@ -247,7 +332,12 @@ func (h *AssistantHandler) AppendMessage(requestCtx context.Context, ctx *app.Re
 		return
 	}
 
-	result, err := h.service.AppendMessage(requestCtx, ctx.Param("id"), request.Message)
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	result, err := h.service.AppendMessage(requestCtx, sessionID, request.Message)
 	if err != nil {
 		h.writeAssistantError(ctx, err, "追加消息失败")
 		return
@@ -271,46 +361,29 @@ func (h *AssistantHandler) AppendMessageStream(requestCtx context.Context, ctx *
 		return
 	}
 
-	if _, err := h.service.GetConversation(requestCtx, ctx.Param("id")); err != nil {
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	if _, err := h.service.GetConversation(requestCtx, sessionID); err != nil {
 		h.writeAssistantError(ctx, err, "查询会话失败")
 		return
 	}
 
 	h.streamAssistantEvents(ctx, func(emit func(assistant.StreamEvent) error) error {
-		return h.service.AppendMessageStream(requestCtx, ctx.Param("id"), request.Message, emit)
+		return h.service.AppendMessageStream(requestCtx, sessionID, request.Message, emit)
 	})
 }
 
-// UploadFile 接收一个文件并写入资源库与当前会话。
-func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.RequestContext) {
-	file, err := ctx.FormFile("file")
-	if err != nil {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "必须上传文件"})
-		return
-	}
-	if !h.uploadPolicy.SupportsFileName(file.Filename) {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": h.uploadPolicy.UnsupportedFileMessage(file.Filename)})
+// UploadConversationFile 在空白草稿会话中直接上传文件，并由服务端创建空会话。
+func (h *AssistantHandler) UploadConversationFile(requestCtx context.Context, ctx *app.RequestContext) {
+	input, ok := h.readAssistantUploadInput(ctx)
+	if !ok {
 		return
 	}
 
-	reader, err := file.Open()
-	if err != nil {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "读取上传文件失败"})
-		return
-	}
-	defer reader.Close()
-
-	content, err := io.ReadAll(io.LimitReader(reader, h.uploadMaxBytes+1))
-	if err != nil {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "读取上传文件失败"})
-		return
-	}
-	if int64(len(content)) > h.uploadMaxBytes {
-		ctx.JSON(consts.StatusRequestEntityTooLarge, map[string]string{"error": "上传文件过大"})
-		return
-	}
-
-	result, err := h.service.UploadFile(requestCtx, ctx.Param("id"), file.Filename, content)
+	result, err := h.service.StartConversationWithFile(requestCtx, input.FileName, input.Content)
 	if err != nil {
 		h.writeAssistantError(ctx, err, "上传文件失败")
 		return
@@ -324,9 +397,75 @@ func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.Reque
 	})
 }
 
+// UploadFile 接收一个文件并写入资源库与当前会话。
+func (h *AssistantHandler) UploadFile(requestCtx context.Context, ctx *app.RequestContext) {
+	input, ok := h.readAssistantUploadInput(ctx)
+	if !ok {
+		return
+	}
+
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	result, err := h.service.UploadFile(requestCtx, sessionID, input.FileName, input.Content)
+	if err != nil {
+		h.writeAssistantError(ctx, err, "上传文件失败")
+		return
+	}
+
+	ctx.JSON(consts.StatusOK, assistantUploadResponse{
+		Session:      toAssistantSessionResponse(result.Session),
+		Resource:     toAssistantResourceResponse(result.Resource),
+		Messages:     toAssistantMessageResponses(result.Messages),
+		ErrorMessage: result.ErrorMessage,
+	})
+}
+
+// readAssistantUploadInput 统一解析助手上传接口的 multipart 文件输入，并执行格式与大小校验。
+func (h *AssistantHandler) readAssistantUploadInput(ctx *app.RequestContext) (*assistantUploadInput, bool) {
+	file, err := ctx.FormFile("file")
+	if err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "必须上传文件"})
+		return nil, false
+	}
+	if !h.uploadPolicy.SupportsFileName(file.Filename) {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": h.uploadPolicy.UnsupportedFileMessage(file.Filename)})
+		return nil, false
+	}
+
+	reader, err := file.Open()
+	if err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "读取上传文件失败"})
+		return nil, false
+	}
+	defer reader.Close()
+
+	content, err := io.ReadAll(io.LimitReader(reader, h.uploadMaxBytes+1))
+	if err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "读取上传文件失败"})
+		return nil, false
+	}
+	if int64(len(content)) > h.uploadMaxBytes {
+		ctx.JSON(consts.StatusRequestEntityTooLarge, map[string]string{"error": "上传文件过大"})
+		return nil, false
+	}
+
+	return &assistantUploadInput{
+		FileName: file.Filename,
+		Content:  content,
+	}, true
+}
+
 // ConfirmTaskSuggestion 把一条任务建议落为真实任务。
 func (h *AssistantHandler) ConfirmTaskSuggestion(requestCtx context.Context, ctx *app.RequestContext) {
-	result, err := h.service.ConfirmTaskSuggestion(requestCtx, ctx.Param("id"))
+	messageID, ok := parseAssistantUUIDParam(ctx, "任务建议 ID")
+	if !ok {
+		return
+	}
+
+	result, err := h.service.ConfirmTaskSuggestion(requestCtx, messageID)
 	if err != nil {
 		h.writeAssistantError(ctx, err, "确认任务建议失败")
 		return
@@ -361,7 +500,12 @@ func (h *AssistantHandler) ToggleWebSearch(requestCtx context.Context, ctx *app.
 
 // DeleteSession 删除一个会话。
 func (h *AssistantHandler) DeleteSession(requestCtx context.Context, ctx *app.RequestContext) {
-	deleted, err := h.service.DeleteSession(requestCtx, ctx.Param("id"))
+	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
+	if !ok {
+		return
+	}
+
+	deleted, err := h.service.DeleteSession(requestCtx, sessionID)
 	if err != nil {
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "删除会话失败"})
 		return
@@ -374,6 +518,18 @@ func (h *AssistantHandler) DeleteSession(requestCtx context.Context, ctx *app.Re
 	ctx.Status(consts.StatusNoContent)
 }
 
+// parseAssistantUUIDParam 解析并校验助手相关路由参数中的 UUID，把参数错误收口到 handler 边界。
+func parseAssistantUUIDParam(ctx *app.RequestContext, field string) (string, bool) {
+	id := strings.TrimSpace(ctx.Param("id"))
+	if _, err := uuid.Parse(id); err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": field + " 非法"})
+		return "", false
+	}
+
+	return id, true
+}
+
+// writeAssistantError 把助手领域错误统一转换成 HTTP 响应，避免各个 handler 分散维护错误映射。
 func (h *AssistantHandler) writeAssistantError(ctx *app.RequestContext, err error, defaultMessage string) {
 	switch {
 	case errors.Is(err, assistant.ErrMessageRequired),
@@ -388,6 +544,7 @@ func (h *AssistantHandler) writeAssistantError(ctx *app.RequestContext, err erro
 	}
 }
 
+// streamAssistantEvents 把助手流式事件桥接到 SSE 响应，统一会话创建、增量回复和错误事件的写出顺序。
 func (h *AssistantHandler) streamAssistantEvents(
 	ctx *app.RequestContext,
 	run func(emit func(assistant.StreamEvent) error) error,
@@ -425,6 +582,7 @@ func (h *AssistantHandler) streamAssistantEvents(
 	}()
 }
 
+// toAssistantSessionResponse 把 `助手会话响应` 转换成助手接口需要的结构，避免上层直接感知内部模型。
 func toAssistantSessionResponse(session postgres.AssistantSession) assistantSessionResponse {
 	return assistantSessionResponse{
 		ID:               session.ID,
@@ -436,6 +594,7 @@ func toAssistantSessionResponse(session postgres.AssistantSession) assistantSess
 	}
 }
 
+// toAssistantMessageResponses 把 `助手消息Responses` 转换成助手接口需要的结构，避免上层直接感知内部模型。
 func toAssistantMessageResponses(messages []postgres.AssistantMessage) []assistantMessageResponse {
 	response := make([]assistantMessageResponse, 0, len(messages))
 	for _, message := range messages {
@@ -445,6 +604,7 @@ func toAssistantMessageResponses(messages []postgres.AssistantMessage) []assista
 	return response
 }
 
+// toAssistantMessageResponse 把 `助手消息响应` 转换成助手接口需要的结构，避免上层直接感知内部模型。
 func toAssistantMessageResponse(message postgres.AssistantMessage) assistantMessageResponse {
 	return assistantMessageResponse{
 		ID:         message.ID,
@@ -456,6 +616,7 @@ func toAssistantMessageResponse(message postgres.AssistantMessage) assistantMess
 	}
 }
 
+// toAssistantResourceResponse 把 `助手资源响应` 转换成助手接口需要的结构，避免上层直接感知内部模型。
 func toAssistantResourceResponse(resource *postgres.Resource) *assistantResourceResponse {
 	if resource == nil {
 		return nil
@@ -468,6 +629,7 @@ func toAssistantResourceResponse(resource *postgres.Resource) *assistantResource
 	}
 }
 
+// toAssistantTaskResponse 把 `助手任务响应` 转换成助手接口需要的结构，避免上层直接感知内部模型。
 func toAssistantTaskResponse(task *postgres.Task) *assistantTaskResponse {
 	if task == nil {
 		return nil
@@ -482,6 +644,7 @@ func toAssistantTaskResponse(task *postgres.Task) *assistantTaskResponse {
 	}
 }
 
+// writeAssistantStreamEvent 按事件类型把助手流式消息编码到 SSE，保持前端消费协议稳定。
 func writeAssistantStreamEvent(writer *io.PipeWriter, event assistant.StreamEvent) error {
 	switch event.Type {
 	case assistant.StreamEventSessionCreated:
@@ -495,7 +658,7 @@ func writeAssistantStreamEvent(writer *io.PipeWriter, event assistant.StreamEven
 		return writeAssistantSSEEvent(writer, event.Type, assistantStreamDeltaResponse{
 			Delta: event.Delta,
 		})
-	case assistant.StreamEventMessageCompleted, assistant.StreamEventTaskSuggestion:
+	case assistant.StreamEventSessionFile, assistant.StreamEventMessageCompleted, assistant.StreamEventTaskSuggestion:
 		if event.Message == nil {
 			return writeAssistantSSEEvent(writer, event.Type, struct{}{})
 		}
@@ -509,6 +672,7 @@ func writeAssistantStreamEvent(writer *io.PipeWriter, event assistant.StreamEven
 	}
 }
 
+// writeAssistantStreamError 把流式链路中的领域错误转换成 SSE error 事件，避免连接直接以裸错误中断。
 func writeAssistantStreamError(writer *io.PipeWriter, streamErr *assistant.StreamError) error {
 	if streamErr == nil {
 		streamErr = assistant.NewStreamError(
@@ -524,6 +688,7 @@ func writeAssistantStreamError(writer *io.PipeWriter, streamErr *assistant.Strea
 	})
 }
 
+// writeAssistantSSEEvent 向响应流写出单条 SSE 事件并立即刷新，确保前端能及时收到状态变化。
 func writeAssistantSSEEvent(writer *io.PipeWriter, eventType string, payload any) error {
 	body := []byte("{}")
 	if payload != nil {

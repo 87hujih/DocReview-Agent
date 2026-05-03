@@ -10,10 +10,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// stubTaskEventWriter 作为任务事件Writer的测试替身，用于在用例里提供可控的依赖行为。
 type stubTaskEventWriter struct {
 	lastInput postgres.TaskEventCreateParams
 }
 
+// Add 实现测试替身需要的 `Add` 接口方法，为用例分支提供可控返回。
 func (s *stubTaskEventWriter) Add(_ context.Context, input postgres.TaskEventCreateParams) (*postgres.TaskEvent, error) {
 	s.lastInput = input
 	return &postgres.TaskEvent{
@@ -29,6 +31,7 @@ func (s *stubTaskEventWriter) Add(_ context.Context, input postgres.TaskEventCre
 	}, nil
 }
 
+// AddTx 实现测试替身需要的 `AddTx` 接口方法，为用例分支提供可控返回。
 func (s *stubTaskEventWriter) AddTx(_ context.Context, _ pgx.Tx, input postgres.TaskEventCreateParams) (*postgres.TaskEvent, error) {
 	s.lastInput = input
 	return &postgres.TaskEvent{
@@ -44,6 +47,7 @@ func (s *stubTaskEventWriter) AddTx(_ context.Context, _ pgx.Tx, input postgres.
 	}, nil
 }
 
+// TestRecordMarshalsPayloadAndTrimsFields 验证`recordMarshalsPayloadAndTrimsFields`在特定边界条件下的行为，防止同类回归。
 func TestRecordMarshalsPayloadAndTrimsFields(t *testing.T) {
 	writer := &stubTaskEventWriter{}
 	service := New(writer)
@@ -88,6 +92,7 @@ func TestRecordMarshalsPayloadAndTrimsFields(t *testing.T) {
 	}
 }
 
+// TestRecordRejectsEmptyTaskID 验证`record`在非法输入或失败路径下的行为，防止同类回归。
 func TestRecordRejectsEmptyTaskID(t *testing.T) {
 	service := New(&stubTaskEventWriter{})
 
@@ -103,6 +108,7 @@ func TestRecordRejectsEmptyTaskID(t *testing.T) {
 	}
 }
 
+// TestRecordTxMarshalsPayloadAndTrimsFields 验证`recordTxMarshalsPayloadAndTrimsFields`在特定边界条件下的行为，防止同类回归。
 func TestRecordTxMarshalsPayloadAndTrimsFields(t *testing.T) {
 	writer := &stubTaskEventWriter{}
 	service := New(writer)
@@ -145,6 +151,7 @@ func TestRecordTxMarshalsPayloadAndTrimsFields(t *testing.T) {
 	}
 }
 
+// TestRecordTxRejectsEmptyTaskID 验证`recordTx`在非法输入或失败路径下的行为，防止同类回归。
 func TestRecordTxRejectsEmptyTaskID(t *testing.T) {
 	service := New(&stubTaskEventWriter{})
 

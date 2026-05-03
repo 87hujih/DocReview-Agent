@@ -72,6 +72,7 @@ func RequestContext(service string, logger *slog.Logger) app.HandlerFunc {
 	}
 }
 
+// newRequestID 创建请求ID，并补齐当前链路需要的默认依赖和缺省行为。
 func newRequestID() string {
 	buffer := make([]byte, 16)
 	if _, err := rand.Read(buffer); err != nil {

@@ -15,9 +15,63 @@ import (
 	"agent_project/apps/server/internal/knowledge/ingest"
 	"agent_project/apps/server/internal/knowledge/reranker"
 	"agent_project/apps/server/internal/storage/postgres"
+	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/pgvector/pgvector-go"
 )
+
+// TestShouldRunSearchIntegrationRequiresExplicitOptIn 验证`shouldRunSearchIntegration`在约束校验路径下的行为，防止同类回归。
+func TestShouldRunSearchIntegrationRequiresExplicitOptIn(t *testing.T) {
+	cfg := appconfig.Config{
+		DatabaseURL:       "postgres://postgres:postgres@127.0.0.1:55432/agent_project?sslmode=disable",
+		SiliconFlowAPIKey: "test-key",
+	}
+
+	t.Setenv("KNOWLEDGE_RETRIEVER_INTEGRATION", "")
+
+	shouldRun, reason := shouldRunSearchIntegration(cfg)
+	if shouldRun {
+		t.Fatal("expected integration test to require explicit opt-in")
+	}
+	if !strings.Contains(reason, "KNOWLEDGE_RETRIEVER_INTEGRATION=1") {
+		t.Fatalf("expected opt-in reason, got %q", reason)
+	}
+}
+
+// TestShouldRunSearchIntegrationAllowsExplicitOptInWithLocalDB 验证`shouldRunSearchIntegration`在合法输入或兼容路径下的行为，防止同类回归。
+func TestShouldRunSearchIntegrationAllowsExplicitOptInWithLocalDB(t *testing.T) {
+	cfg := appconfig.Config{
+		DatabaseURL:       "postgres://postgres:postgres@127.0.0.1:55432/agent_project?sslmode=disable",
+		SiliconFlowAPIKey: "test-key",
+	}
+
+	t.Setenv("KNOWLEDGE_RETRIEVER_INTEGRATION", "1")
+	t.Setenv("ALLOW_NONLOCAL_DB", "")
+
+	shouldRun, reason := shouldRunSearchIntegration(cfg)
+	if !shouldRun {
+		t.Fatalf("expected integration test to run, got reason %q", reason)
+	}
+}
+
+// TestShouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride 验证`shouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride`在特定边界条件下的行为，防止同类回归。
+func TestShouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride(t *testing.T) {
+	cfg := appconfig.Config{
+		DatabaseURL:       "postgres://postgres:postgres@10.0.0.8:5432/agent_project?sslmode=disable",
+		SiliconFlowAPIKey: "test-key",
+	}
+
+	t.Setenv("KNOWLEDGE_RETRIEVER_INTEGRATION", "1")
+	t.Setenv("ALLOW_NONLOCAL_DB", "")
+
+	shouldRun, reason := shouldRunSearchIntegration(cfg)
+	if shouldRun {
+		t.Fatal("expected nonlocal database to require explicit override")
+	}
+	if !strings.Contains(reason, "ALLOW_NONLOCAL_DB=1") {
+		t.Fatalf("expected nonlocal db reason, got %q", reason)
+	}
+}
 
 // TestBuildCitationsFromChunks 验证检索分块会被映射成稳定的 citation 结构。
 func TestBuildCitationsFromChunks(t *testing.T) {
@@ -46,6 +100,7 @@ func TestBuildCitationsFromChunks(t *testing.T) {
 	}
 }
 
+// TestMergeUniqueChunks 验证`mergeUniqueChunks`在特定边界条件下的行为，防止同类回归。
 func TestMergeUniqueChunks(t *testing.T) {
 	semantic := []postgres.ResourceChunk{
 		{ID: "chunk-1", Content: "alpha"},
@@ -69,6 +124,7 @@ func TestMergeUniqueChunks(t *testing.T) {
 	}
 }
 
+// TestRerankResultsToChunks 验证`rerankResultsToChunks`在特定边界条件下的行为，防止同类回归。
 func TestRerankResultsToChunks(t *testing.T) {
 	chunks := []postgres.ResourceChunk{
 		{ID: "chunk-1", Content: "alpha"},
@@ -95,6 +151,7 @@ func TestRerankResultsToChunks(t *testing.T) {
 	}
 }
 
+// TestSearchByResourceUsesCurrentVersionOnly 验证`searchByResource`在依赖选择路径下的行为，防止同类回归。
 func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
 	repo := &fakeRetrieverRepo{
 		currentVersion: &postgres.ResourceVersion{
@@ -148,29 +205,244 @@ func TestSearchByResourceUsesCurrentVersionOnly(t *testing.T) {
 	}
 }
 
+// TestSearchByResourceUsesTargetResolutionForProjectSections 验证`searchByResource`在依赖选择路径下的行为，防止同类回归。
+func TestSearchByResourceUsesTargetResolutionForProjectSections(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-grounded",
+			ResourceID: "resource-1",
+		},
+		sectionsByVersion: []postgres.ResourceSection{
+			{
+				ID:                  "section-campushub",
+				ResourceID:          "resource-1",
+				VersionID:           "version-grounded",
+				SectionKey:          "project-1",
+				SectionType:         "project",
+				SectionOrder:        1,
+				Title:               "CampusHub校园活动平台",
+				CanonicalEntityName: optionalRetrieverString("CampusHub"),
+				AliasesJSON:         []byte(`["CampusHub","CampusHub校园活动平台"]`),
+				Summary:             "面向校园活动的统一平台",
+				Content:             "负责活动发布、报名与签到全流程。",
+				MetadataJSON:        []byte(`{"tech_stack":["Go","Redis","gRPC"]}`),
+			},
+			{
+				ID:                  "section-shopflow",
+				ResourceID:          "resource-1",
+				VersionID:           "version-grounded",
+				SectionKey:          "project-2",
+				SectionType:         "project",
+				SectionOrder:        2,
+				Title:               "ShopFlow电商后台",
+				CanonicalEntityName: optionalRetrieverString("ShopFlow"),
+				AliasesJSON:         []byte(`["ShopFlow","ShopFlow电商后台"]`),
+				Summary:             "订单与库存管理后台",
+				Content:             "负责库存同步与售后流程治理。",
+				MetadataJSON:        []byte(`{"tech_stack":["Java","MySQL"]}`),
+			},
+		},
+		chunksByVersion: []postgres.ResourceChunk{
+			{
+				ID:             "chunk-project-1-summary",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "CampusHub校园活动平台",
+				Content:        "CampusHub校园活动平台\n面向校园活动的统一平台",
+				SectionID:      optionalRetrieverString("section-campushub"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("section_summary"),
+				WindowGroupID:  optionalRetrieverString("project-1"),
+				OrderInSection: optionalRetrieverInt(1),
+			},
+			{
+				ID:             "chunk-project-1-work",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "CampusHub校园活动平台",
+				Content:        "负责活动发布、报名与签到全流程。",
+				SectionID:      optionalRetrieverString("section-campushub"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("project_work"),
+				WindowGroupID:  optionalRetrieverString("project-1"),
+				OrderInSection: optionalRetrieverInt(5),
+			},
+			{
+				ID:             "chunk-project-1-tech",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "CampusHub校园活动平台",
+				Content:        "Go Redis gRPC",
+				SectionID:      optionalRetrieverString("section-campushub"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("tech_stack"),
+				WindowGroupID:  optionalRetrieverString("project-1"),
+				OrderInSection: optionalRetrieverInt(3),
+			},
+			{
+				ID:             "chunk-project-2-summary",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "ShopFlow电商后台",
+				Content:        "ShopFlow电商后台\n订单与库存管理后台",
+				SectionID:      optionalRetrieverString("section-shopflow"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("section_summary"),
+				WindowGroupID:  optionalRetrieverString("project-2"),
+				OrderInSection: optionalRetrieverInt(1),
+			},
+			{
+				ID:             "chunk-project-2-work",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "ShopFlow电商后台",
+				Content:        "负责库存同步与售后流程治理。",
+				SectionID:      optionalRetrieverString("section-shopflow"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("project_work"),
+				WindowGroupID:  optionalRetrieverString("project-2"),
+				OrderInSection: optionalRetrieverInt(5),
+			},
+			{
+				ID:             "chunk-project-2-tech",
+				ResourceID:     "resource-1",
+				VersionID:      "version-grounded",
+				SectionTitle:   "ShopFlow电商后台",
+				Content:        "Java MySQL",
+				SectionID:      optionalRetrieverString("section-shopflow"),
+				SectionType:    optionalRetrieverString("project"),
+				ChunkRole:      optionalRetrieverString("tech_stack"),
+				WindowGroupID:  optionalRetrieverString("project-2"),
+				OrderInSection: optionalRetrieverInt(3),
+			},
+		},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, nil)
+
+	t.Run("list sections", func(t *testing.T) {
+		citations, err := service.SearchByResource(context.Background(), "resource-1", "有哪些项目", 3)
+		if err != nil {
+			t.Fatalf("search by resource: %v", err)
+		}
+		if len(citations) != 2 {
+			t.Fatalf("expected 2 citations, got %d", len(citations))
+		}
+		if citations[0].SectionID != "section-campushub" || citations[1].SectionID != "section-shopflow" {
+			t.Fatalf("expected ordered section citations, got %#v", citations)
+		}
+	})
+
+	t.Run("detail by entity", func(t *testing.T) {
+		citations, err := service.SearchByResource(context.Background(), "resource-1", "CampusHub 做了什么", 3)
+		if err != nil {
+			t.Fatalf("search by resource: %v", err)
+		}
+		if len(citations) != 1 {
+			t.Fatalf("expected 1 citation, got %d", len(citations))
+		}
+		if citations[0].SectionID != "section-campushub" {
+			t.Fatalf("expected CampusHub section citation, got %#v", citations[0])
+		}
+		if citations[0].Window == nil || citations[0].Window.GroupID != "project-1" {
+			t.Fatalf("expected citation window to merge project-1, got %#v", citations[0].Window)
+		}
+		if !strings.Contains(citations[0].Snippet, "活动发布") {
+			t.Fatalf("expected merged section evidence, got %q", citations[0].Snippet)
+		}
+	})
+
+	t.Run("detail by ordinal", func(t *testing.T) {
+		citations, err := service.SearchByResource(context.Background(), "resource-1", "第一个项目做了什么", 3)
+		if err != nil {
+			t.Fatalf("search by resource: %v", err)
+		}
+		if len(citations) != 1 || citations[0].SectionID != "section-campushub" {
+			t.Fatalf("expected first project citation, got %#v", citations)
+		}
+	})
+
+	t.Run("aggregate tech stack", func(t *testing.T) {
+		citations, err := service.SearchByResource(context.Background(), "resource-1", "用了哪些技术栈", 3)
+		if err != nil {
+			t.Fatalf("search by resource: %v", err)
+		}
+		if len(citations) != 2 {
+			t.Fatalf("expected 2 citations, got %d", len(citations))
+		}
+		if !strings.Contains(citations[0].Snippet, "Go") || !strings.Contains(citations[1].Snippet, "Java") {
+			t.Fatalf("expected tech stack snippets, got %#v", citations)
+		}
+	})
+
+	if repo.currentVersionLookups != 4 {
+		t.Fatalf("expected 4 current version lookups, got %d", repo.currentVersionLookups)
+	}
+	if repo.listSectionsCalls != 4 {
+		t.Fatalf("expected 4 section lookups, got %d", repo.listSectionsCalls)
+	}
+	if repo.listChunksCalls != 3 {
+		t.Fatalf("expected 3 chunk lookups for detail/aggregate paths, got %d", repo.listChunksCalls)
+	}
+	if repo.searchByVersionCalls != 0 {
+		t.Fatalf("expected target-first retrieval to avoid legacy search, got %d calls", repo.searchByVersionCalls)
+	}
+}
+
+// TestSearchByResourceFallsBackToLegacyChunks 验证`searchByResource`在回退路径下的行为，防止同类回归。
+func TestSearchByResourceFallsBackToLegacyChunks(t *testing.T) {
+	repo := &fakeRetrieverRepo{
+		currentVersion: &postgres.ResourceVersion{
+			ID:         "version-current",
+			ResourceID: "resource-1",
+		},
+		semanticByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-current",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "旧资源没有 sections，只能走 legacy chunk 检索。",
+			},
+		},
+		lexicalByVersion: []postgres.ResourceChunk{
+			{
+				ID:           "chunk-current",
+				ResourceID:   "resource-1",
+				VersionID:    "version-current",
+				SectionTitle: "考勤管理",
+				Content:      "旧资源没有 sections，只能走 legacy chunk 检索。",
+			},
+		},
+	}
+	service := NewService(repo, fakeRetrieverEmbedder{}, fakeRetrieverReranker{
+		results: []reranker.Result{
+			{Index: 0, RelevanceScore: 0.99},
+		},
+	})
+
+	citations, err := service.SearchByResource(context.Background(), "resource-1", "考勤", 3)
+	if err != nil {
+		t.Fatalf("search by resource: %v", err)
+	}
+	if len(citations) != 1 {
+		t.Fatalf("expected 1 citation, got %d", len(citations))
+	}
+	if repo.searchByVersionCalls == 0 {
+		t.Fatal("expected legacy version-scoped search to be used as fallback")
+	}
+}
+
 // TestSearchIntegration 验证导入文档后能够通过真实 embedding、reranker 和数据库完成一次检索。
 func TestSearchIntegration(t *testing.T) {
 	cfg := appconfig.Load()
-	if strings.TrimSpace(cfg.SiliconFlowAPIKey) == "" {
-		t.Skip("skipping: SILICONFLOW_API_KEY not configured")
-	}
-
-	if strings.TrimSpace(cfg.DatabaseURL) == "" {
-		t.Skip("skipping: DATABASE_URL not configured")
+	if shouldRun, reason := shouldRunSearchIntegration(cfg); !shouldRun {
+		t.Skip(reason)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("skipping: database not available: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
+	pool := postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "knowledge_retriever", postgres.NewPool, postgres.RunMigrations)
 
 	repo := postgres.NewResourceRepo(pool)
 	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
@@ -232,50 +504,115 @@ func TestSearchIntegration(t *testing.T) {
 	}
 }
 
+// shouldRunSearchIntegration 为测试场景处理 `shouldRun搜索Integration` 的辅助步骤，减少重复搭建逻辑。
+func shouldRunSearchIntegration(cfg appconfig.Config) (bool, string) {
+	if strings.TrimSpace(os.Getenv("KNOWLEDGE_RETRIEVER_INTEGRATION")) != "1" {
+		return false, "skipping: integration test requires KNOWLEDGE_RETRIEVER_INTEGRATION=1"
+	}
+
+	if strings.TrimSpace(cfg.SiliconFlowAPIKey) == "" {
+		return false, "skipping: SILICONFLOW_API_KEY not configured"
+	}
+
+	if strings.TrimSpace(cfg.DatabaseURL) == "" {
+		return false, "skipping: DATABASE_URL not configured"
+	}
+
+	if !isLocalDatabaseHost(cfg.DatabaseURL) && strings.TrimSpace(os.Getenv("ALLOW_NONLOCAL_DB")) != "1" {
+		return false, "skipping: nonlocal database requires ALLOW_NONLOCAL_DB=1"
+	}
+
+	return true, ""
+}
+
+// isLocalDatabaseHost 为测试场景处理 `isLocalDatabaseHost` 的辅助步骤，减少重复搭建逻辑。
+func isLocalDatabaseHost(databaseURL string) bool {
+	lowerURL := strings.ToLower(strings.TrimSpace(databaseURL))
+	switch {
+	case strings.Contains(lowerURL, "@127.0.0.1:"),
+		strings.Contains(lowerURL, "@localhost:"),
+		strings.Contains(lowerURL, "@[::1]:"):
+		return true
+	default:
+		return false
+	}
+}
+
+// fakeRetrieverRepo 作为检索器仓储的测试替身，用于在用例里提供可控的依赖行为。
 type fakeRetrieverRepo struct {
 	currentVersion        *postgres.ResourceVersion
+	sectionsByVersion     []postgres.ResourceSection
+	chunksByVersion       []postgres.ResourceChunk
 	semanticByVersion     []postgres.ResourceChunk
 	lexicalByVersion      []postgres.ResourceChunk
 	currentVersionLookups int
+	listSectionsCalls     int
+	listChunksCalls       int
+	searchByVersionCalls  int
 	lastVersionID         string
 	searchByResourceCalls int
 }
 
+// GetCurrentVersion 实现测试替身需要的 `GetCurrentVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) GetCurrentVersion(context.Context, string) (*postgres.ResourceVersion, error) {
 	r.currentVersionLookups++
 	return r.currentVersion, nil
 }
 
+// SearchChunks 实现测试替身需要的 `SearchChunks` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunks(context.Context, pgvector.Vector, int) ([]postgres.ResourceChunk, error) {
 	return nil, nil
 }
 
+// SearchChunksLexical 实现测试替身需要的 `SearchChunksLexical` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunksLexical(context.Context, string, int) ([]postgres.ResourceChunk, error) {
 	return nil, nil
 }
 
+// SearchChunksByResource 实现测试替身需要的 `SearchChunksByResource` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunksByResource(context.Context, pgvector.Vector, int, string) ([]postgres.ResourceChunk, error) {
 	r.searchByResourceCalls++
 	return nil, nil
 }
 
+// SearchChunksLexicalByResource 实现测试替身需要的 `SearchChunksLexicalByResource` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunksLexicalByResource(context.Context, string, int, string) ([]postgres.ResourceChunk, error) {
 	r.searchByResourceCalls++
 	return nil, nil
 }
 
+// SearchChunksByVersion 实现测试替身需要的 `SearchChunksByVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunksByVersion(_ context.Context, _ pgvector.Vector, _ int, versionID string) ([]postgres.ResourceChunk, error) {
+	r.searchByVersionCalls++
 	r.lastVersionID = versionID
 	return r.semanticByVersion, nil
 }
 
+// SearchChunksLexicalByVersion 实现测试替身需要的 `SearchChunksLexicalByVersion` 接口方法，为用例分支提供可控返回。
 func (r *fakeRetrieverRepo) SearchChunksLexicalByVersion(_ context.Context, _ string, _ int, versionID string) ([]postgres.ResourceChunk, error) {
+	r.searchByVersionCalls++
 	r.lastVersionID = versionID
 	return r.lexicalByVersion, nil
 }
 
+// ListSectionsByVersion 实现测试替身需要的 `ListSectionsByVersion` 接口方法，为用例分支提供可控返回。
+func (r *fakeRetrieverRepo) ListSectionsByVersion(_ context.Context, versionID string) ([]postgres.ResourceSection, error) {
+	r.listSectionsCalls++
+	r.lastVersionID = versionID
+	return append([]postgres.ResourceSection(nil), r.sectionsByVersion...), nil
+}
+
+// ListChunksByVersion 实现测试替身需要的 `ListChunksByVersion` 接口方法，为用例分支提供可控返回。
+func (r *fakeRetrieverRepo) ListChunksByVersion(_ context.Context, versionID string) ([]postgres.ResourceChunk, error) {
+	r.listChunksCalls++
+	r.lastVersionID = versionID
+	return append([]postgres.ResourceChunk(nil), r.chunksByVersion...), nil
+}
+
+// fakeRetrieverEmbedder 作为检索器Embedder的测试替身，用于在用例里提供可控的依赖行为。
 type fakeRetrieverEmbedder struct{}
 
+// Embed 实现测试替身需要的 `Embed` 接口方法，为用例分支提供可控返回。
 func (fakeRetrieverEmbedder) Embed(context.Context, []string) ([][]float32, error) {
 	values := make([]float32, 1024)
 	for index := range values {
@@ -285,10 +622,31 @@ func (fakeRetrieverEmbedder) Embed(context.Context, []string) ([][]float32, erro
 	return [][]float32{values}, nil
 }
 
+// fakeRetrieverReranker 作为检索器Reranker的测试替身，用于在用例里提供可控的依赖行为。
 type fakeRetrieverReranker struct {
 	results []reranker.Result
 }
 
+// Rerank 实现测试替身需要的 `Rerank` 接口方法，为用例分支提供可控返回。
 func (r fakeRetrieverReranker) Rerank(context.Context, string, []string, int) ([]reranker.Result, error) {
 	return r.results, nil
+}
+
+// optionalRetrieverString 为测试场景处理 `optional检索器String` 的辅助步骤，减少重复搭建逻辑。
+func optionalRetrieverString(value string) *string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+
+	return &trimmed
+}
+
+// optionalRetrieverInt 为测试场景处理 `optional检索器Int` 的辅助步骤，减少重复搭建逻辑。
+func optionalRetrieverInt(value int) *int {
+	if value <= 0 {
+		return nil
+	}
+
+	return &value
 }

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -40,6 +41,29 @@ type TaskEventRepo struct {
 	pool *pgxpool.Pool
 }
 
+// monotonicTimestampClock 保证同一进程内生成的事件时间戳至少按微秒单调递增，避免数据库截断精度后顺序漂移。
+type monotonicTimestampClock struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+// Next 推进结果集游标到下一项，并报告是否还有可消费的数据。
+func (c *monotonicTimestampClock) Next(now time.Time) time.Time {
+	normalized := now.UTC().Truncate(time.Microsecond)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.last.IsZero() && !normalized.After(c.last) {
+		normalized = c.last.Add(time.Microsecond)
+	}
+
+	c.last = normalized
+	return normalized
+}
+
+var defaultTaskEventCreatedAtClock monotonicTimestampClock
+
 // NewTaskEventRepo 使用连接池创建任务事件仓储。
 func NewTaskEventRepo(pool *pgxpool.Pool) *TaskEventRepo {
 	return &TaskEventRepo{pool: pool}
@@ -65,6 +89,7 @@ func (r *TaskEventRepo) AddTx(ctx context.Context, tx pgx.Tx, params TaskEventCr
 	return &event, nil
 }
 
+// taskEventInsertArgs 组装写入 task_events 表所需的 SQL 参数，统一可空字段和 JSON 负载处理。
 func taskEventInsertArgs(params TaskEventCreateParams) []any {
 	payload := params.Payload
 	if len(payload) == 0 {
@@ -72,7 +97,9 @@ func taskEventInsertArgs(params TaskEventCreateParams) []any {
 	}
 	createdAt := params.CreatedAt
 	if createdAt.IsZero() {
-		createdAt = time.Now().UTC()
+		createdAt = defaultTaskEventCreatedAtClock.Next(time.Now().UTC())
+	} else {
+		createdAt = createdAt.UTC().Truncate(time.Microsecond)
 	}
 
 	return []any{
@@ -126,6 +153,7 @@ func (r *TaskEventRepo) ListByRunID(ctx context.Context, runID string) ([]TaskEv
 	return collectTaskEvents(rows)
 }
 
+// collectTaskEvents 遍历结果集收集 `任务事件`，把游标处理细节隔离在仓储层。
 func collectTaskEvents(rows pgx.Rows) ([]TaskEvent, error) {
 	events := make([]TaskEvent, 0)
 	for rows.Next() {
@@ -140,6 +168,7 @@ func collectTaskEvents(rows pgx.Rows) ([]TaskEvent, error) {
 	return events, rows.Err()
 }
 
+// scanTaskEvent 把当前数据库行扫描成 `任务事件`，统一查询结果到领域结构的映射。
 func scanTaskEvent(row pgx.Row) (TaskEvent, error) {
 	var event TaskEvent
 

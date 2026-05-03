@@ -50,4 +50,40 @@ describe("assistant layout css", () => {
     expect(navCss).toMatch(/\.nav\s*{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(navCss).toMatch(/\.body\s*{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);
   });
+
+  it("uses a wide assistant content flow without user avatar placeholders", () => {
+    const messageCss = readFileSync(
+      join(process.cwd(), "components", "assistant", "assistant-message-list.module.css"),
+      "utf8"
+    );
+
+    expect(messageCss).not.toContain(".avatar {");
+    expect(messageCss).not.toContain(".role {");
+    expect(messageCss).not.toMatch(/\.message\[data-role="assistant"\]\s*{[^}]*background:/s);
+    expect(messageCss).not.toMatch(/\.message\[data-role="assistant"\]\s*{[^}]*border:/s);
+    expect(messageCss).toMatch(/\.message\[data-role="assistant"\]\s*{[^}]*max-width:\s*100%;/s);
+    expect(messageCss).toMatch(/\.message\[data-role="user"\]\s*{[^}]*width:\s*min\(78%,\s*680px\);/s);
+    expect(messageCss).toContain(".assistantFooter");
+    expect(messageCss).toContain(".userCopyRail");
+  });
+
+  it("styles copy actions like subtle hover tools instead of outlined pills", () => {
+    const messageCss = readFileSync(
+      join(process.cwd(), "components", "assistant", "assistant-message-list.module.css"),
+      "utf8"
+    );
+
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*width:\s*28px;[^}]*height:\s*28px;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*min-height:\s*28px;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*padding:\s*0;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*gap:\s*0;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*flex:\s*0 0 28px;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*border:\s*none;/s);
+    expect(messageCss).toMatch(/\.copyAction\s*{[^}]*opacity:\s*1;/s);
+    expect(messageCss).not.toContain(".messageRow:hover .copyAction");
+    expect(messageCss).not.toContain(".messageRow:focus-within .copyAction");
+    expect(messageCss).toMatch(/\.copyAction:hover\s*{[^}]*background:\s*rgba\(148,\s*163,\s*184,\s*0\.14\);[^}]*outline:\s*none;/s);
+    expect(messageCss).toMatch(/\.copyAction:focus-visible\s*{[^}]*outline:\s*none;/s);
+    expect(messageCss).toMatch(/\.copyIcon\s*{[^}]*width:\s*20px;[^}]*height:\s*20px;/s);
+  });
 });

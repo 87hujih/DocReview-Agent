@@ -56,6 +56,7 @@ func registerResourceRoutes(engine *route.Engine, h *handlers.ResourceHandler) {
 	api := engine.Group("/api")
 	api.GET("/resources", h.List)
 	api.GET("/resources/:id", h.GetByID)
+	api.GET("/resources/:id/task-context", h.GetTaskContext)
 	api.GET("/resources/:id/export", h.ExportCurrentVersion)
 	api.GET("/resources/:id/search", h.Search)
 }
@@ -83,10 +84,12 @@ func registerApprovalRoutes(engine *route.Engine, h *handlers.ApprovalHandler) {
 // registerAssistantRoutes 注册助手会话相关 API 路由。
 func registerAssistantRoutes(engine *route.Engine, h *handlers.AssistantHandler) {
 	api := engine.Group("/api/assistant")
+	api.GET("/capabilities", h.GetCapabilities)
 	api.GET("/sessions", h.ListSessions)
 	api.GET("/sessions/:id", h.GetConversation)
 	api.DELETE("/sessions/:id", h.DeleteSession)
 	api.POST("/conversations", h.CreateConversation)
+	api.POST("/conversations/files", h.UploadConversationFile)
 	api.POST("/conversations/stream", h.CreateConversationStream)
 	api.POST("/sessions/:id/messages", h.AppendMessage)
 	api.POST("/sessions/:id/messages/stream", h.AppendMessageStream)
