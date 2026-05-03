@@ -3,7 +3,7 @@
 import Link from "next/link";
 
 import { getFileDownloadURL } from "../../lib/api/files";
-import type { AssistantRenderableMessage } from "../../lib/assistant/types";
+import type { AssistantRenderableMessage, AssistantWebSearchSummary } from "../../lib/assistant/types";
 import styles from "./assistant-message-list.module.css";
 
 type AssistantMessageListProps = {
@@ -126,6 +126,9 @@ export function AssistantMessageList({
 
         const isStreamingAssistant = message.kind === "local_text" && message.role === "assistant" && message.local_state === "streaming";
         const content = message.payload.content;
+        const webSearch = message.kind === "text" || message.kind === "local_text"
+          ? (message.payload as { content: string; web_search?: AssistantWebSearchSummary }).web_search
+          : undefined;
 
         return (
           <div key={message.id} className={styles.messageRow} data-role={message.role}>
@@ -149,6 +152,24 @@ export function AssistantMessageList({
               </div>
 
               {content ? <p className={styles.content}>{content}</p> : null}
+
+              {webSearch && webSearch.status === "searched_sufficient" && webSearch.sources && webSearch.sources.length > 0 ? (
+                <div className={styles.webSearchSources}>
+                  <p className={styles.webSearchLabel}>
+                    联网查证 · {webSearch.queries.join("、")}
+                  </p>
+                  <ul className={styles.webSearchList}>
+                    {webSearch.sources.map((src, i) => (
+                      <li key={i} className={styles.webSearchItem}>
+                        <a href={src.url} target="_blank" rel="noopener noreferrer" className={styles.webSearchLink}>
+                          {src.title}
+                        </a>
+                        {src.snippet ? <span className={styles.webSearchSnippet}> · {src.snippet}</span> : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
 
               {isStreamingAssistant ? (
                 <div className={styles.streamFooter}>

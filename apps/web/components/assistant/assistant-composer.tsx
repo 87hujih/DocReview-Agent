@@ -13,14 +13,18 @@ type AssistantComposerProps = {
   canUpload: boolean;
   isBusy?: boolean;
   onSubmitMessage: (message: string) => Promise<void> | void;
+  onToggleWebSearch?: () => void;
   onUploadFile: (file: File) => Promise<void> | void;
+  webSearchEnabled?: boolean;
 };
 
 export function AssistantComposer({
   canUpload,
   isBusy = false,
   onSubmitMessage,
-  onUploadFile
+  onToggleWebSearch,
+  onUploadFile,
+  webSearchEnabled = false
 }: AssistantComposerProps) {
   const [input, setInput] = useState("");
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
@@ -127,6 +131,24 @@ export function AssistantComposer({
                 : SUPPORTED_UPLOAD_HINT
               : `请先发送第一条消息后再上传 · ${SUPPORTED_UPLOAD_HINT}`}
           </span>
+          {onToggleWebSearch ? (
+            <button
+              aria-label={webSearchEnabled ? "关闭联网搜索" : "开启联网搜索"}
+              className={styles.webSearchBtn}
+              data-active={webSearchEnabled}
+              disabled={isBusy}
+              onClick={onToggleWebSearch}
+              title={webSearchEnabled ? "联网搜索已开启，点击关闭" : "开启联网搜索"}
+              type="button"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="2" y1="12" x2="22" y2="12" />
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+              </svg>
+              <span>{webSearchEnabled ? "联网中" : "联网"}</span>
+            </button>
+          ) : null}
           <button
             aria-label="发送"
             className={styles.sendBtn}

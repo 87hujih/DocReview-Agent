@@ -750,6 +750,17 @@ func (r *fakeSessionRepo) DeleteSession(_ context.Context, id string) (bool, err
 	return true, nil
 }
 
+func (r *fakeSessionRepo) UpdateSessionWebSearchEnabled(_ context.Context, sessionID string, enabled bool) error {
+	session, ok := r.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+
+	session.WebSearchEnabled = enabled
+	r.sessions[sessionID] = session
+	return nil
+}
+
 func (r *fakeSessionRepo) seedSession(title string) postgres.AssistantSession {
 	now := time.Now()
 	session := postgres.AssistantSession{

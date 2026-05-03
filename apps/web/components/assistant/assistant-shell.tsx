@@ -19,6 +19,7 @@ import {
   streamAssistantConversation,
   streamAssistantMessage,
   toAssistantTurnError,
+  toggleWebSearch,
   uploadAssistantFile
 } from "../../lib/api/assistant";
 import { getErrorMessage } from "../../lib/terminal";
@@ -43,6 +44,7 @@ export function AssistantShell() {
   const [activeTaskSuggestionId, setActiveTaskSuggestionId] = useState<string | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
   const [historyHost, setHistoryHost] = useState<HTMLElement | null>(null);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const localMessageCounterRef = useRef(0);
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -126,6 +128,7 @@ export function AssistantShell() {
       setActionNotice(null);
       setTurnStatus("idle");
       setStickToBottom(true);
+      setWebSearchEnabled(false);
     });
   }
 
@@ -140,12 +143,36 @@ export function AssistantShell() {
     try {
       const result = await getAssistantSession(sessionId);
       setCurrentSession(result.session);
+      setWebSearchEnabled(result.session.web_search_enabled);
       setMessages(result.messages);
       setStickToBottom(true);
       setTurnStatus("idle");
     } catch (error) {
       setActionNotice(getErrorMessage(error));
       setTurnStatus("idle");
+    }
+  }
+
+  async function handleToggleWebSearch() {
+    if (!currentSession || turnStatus !== "idle") {
+      return;
+    }
+
+    const next = !webSearchEnabled;
+    if (next) {
+      const confirmed = window.confirm(
+        "开启后，本会话可能把必要关键词发送到外部搜索服务。不会发送整份文档。你可以随时关闭。"
+      );
+      if (!confirmed) return;
+    }
+
+    try {
+      const updated = await toggleWebSearch(currentSession.id, next);
+      setWebSearchEnabled(updated.web_search_enabled);
+      setCurrentSession(updated);
+      setSessions((current) => upsertSession(current, updated));
+    } catch (error) {
+      setActionNotice(getErrorMessage(error));
     }
   }
 
@@ -397,7 +424,9 @@ export function AssistantShell() {
             canUpload={currentSession !== null}
             isBusy={isBusy}
             onSubmitMessage={(nextMessage) => handleSubmitMessage(nextMessage)}
+            onToggleWebSearch={currentSession ? () => void handleToggleWebSearch() : undefined}
             onUploadFile={(file) => handleUploadFile(file)}
+            webSearchEnabled={webSearchEnabled}
           />
         </section>
       </section>

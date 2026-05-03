@@ -55,6 +55,11 @@ type Config struct {
 	LogFormat    string
 	LogAddSource bool
 
+	// WebSearch 配置：全局开关、MCP sidecar 地址和认证令牌。
+	WebSearchEnabled      bool
+	WebSearchMCPURL       string
+	WebSearchMCPAuthToken string
+
 	LLMTimeoutMS        int
 	LLMRetryMax         int
 	LLMRetryBackoffMS   int
@@ -122,6 +127,10 @@ func Load() Config {
 		LogLevel:           resolveString("LOG_LEVEL", dotenvValues, defaults.Log.Level, defaultLogLevel),
 		LogFormat:          resolveString("LOG_FORMAT", dotenvValues, defaults.Log.Format, defaultLogFormat),
 		LogAddSource:       resolveBool("LOG_ADD_SOURCE", dotenvValues, defaults.Log.AddSource, false),
+
+		WebSearchEnabled:      resolveBool("WEB_SEARCH_ENABLED", dotenvValues, false, false),
+		WebSearchMCPURL:       resolveString("WEB_SEARCH_MCP_URL", dotenvValues, "", "http://127.0.0.1:18090/mcp"),
+		WebSearchMCPAuthToken: resolveString("WEB_SEARCH_MCP_AUTH_TOKEN", dotenvValues, "", ""),
 
 		LLMTimeoutMS:        resolveInt("LLM_TIMEOUT_MS", dotenvValues, 0, defaultLLMTimeoutMS),
 		LLMRetryMax:         resolveInt("LLM_RETRY_MAX", dotenvValues, 0, defaultLLMRetryMax),

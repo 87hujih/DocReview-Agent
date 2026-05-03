@@ -232,3 +232,7 @@ func (fakeAssistantRouterService) ConfirmTaskSuggestion(context.Context, string)
 func (fakeAssistantRouterService) DeleteSession(context.Context, string) (bool, error) {
 	return false, nil
 }
+
+func (fakeAssistantRouterService) ToggleWebSearch(context.Context, string, bool) (*postgres.AssistantSession, error) {
+	return nil, nil
+}

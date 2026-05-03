@@ -26,6 +26,7 @@ type assistantService interface {
 	UploadFile(ctx context.Context, sessionID string, fileName string, content []byte) (*assistant.UploadFileResult, error)
 	ConfirmTaskSuggestion(ctx context.Context, messageID string) (*assistant.ConfirmTaskResult, error)
 	DeleteSession(ctx context.Context, sessionID string) (bool, error)
+	ToggleWebSearch(ctx context.Context, sessionID string, enabled bool) (*postgres.AssistantSession, error)
 }
 
 type assistantUploadPolicy interface {
@@ -48,11 +49,12 @@ type assistantMessageRequest struct {
 }
 
 type assistantSessionResponse struct {
-	ID            string    `json:"id"`
-	Title         string    `json:"title"`
-	LastMessageAt time.Time `json:"last_message_at"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	WebSearchEnabled bool      `json:"web_search_enabled"`
+	LastMessageAt    time.Time `json:"last_message_at"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type assistantMessageResponse struct {
@@ -338,6 +340,25 @@ func (h *AssistantHandler) ConfirmTaskSuggestion(requestCtx context.Context, ctx
 	})
 }
 
+// ToggleWebSearch 更新会话的联网搜索开关状态。
+func (h *AssistantHandler) ToggleWebSearch(requestCtx context.Context, ctx *app.RequestContext) {
+	var request struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(ctx.Request.Body(), &request); err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "请求体格式错误"})
+		return
+	}
+
+	session, err := h.service.ToggleWebSearch(requestCtx, ctx.Param("id"), request.Enabled)
+	if err != nil {
+		h.writeAssistantError(ctx, err, "更新联网状态失败")
+		return
+	}
+
+	ctx.JSON(consts.StatusOK, toAssistantSessionResponse(*session))
+}
+
 // DeleteSession 删除一个会话。
 func (h *AssistantHandler) DeleteSession(requestCtx context.Context, ctx *app.RequestContext) {
 	deleted, err := h.service.DeleteSession(requestCtx, ctx.Param("id"))
@@ -406,11 +427,12 @@ func (h *AssistantHandler) streamAssistantEvents(
 
 func toAssistantSessionResponse(session postgres.AssistantSession) assistantSessionResponse {
 	return assistantSessionResponse{
-		ID:            session.ID,
-		Title:         session.Title,
-		LastMessageAt: session.LastMessageAt,
-		CreatedAt:     session.CreatedAt,
-		UpdatedAt:     session.UpdatedAt,
+		ID:               session.ID,
+		Title:            session.Title,
+		WebSearchEnabled: session.WebSearchEnabled,
+		LastMessageAt:    session.LastMessageAt,
+		CreatedAt:        session.CreatedAt,
+		UpdatedAt:        session.UpdatedAt,
 	}
 }
 

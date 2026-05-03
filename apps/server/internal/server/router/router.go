@@ -92,6 +92,7 @@ func registerAssistantRoutes(engine *route.Engine, h *handlers.AssistantHandler)
 	api.POST("/sessions/:id/messages/stream", h.AppendMessageStream)
 	api.POST("/sessions/:id/files", h.UploadFile)
 	api.POST("/task-suggestions/:id/confirm", h.ConfirmTaskSuggestion)
+	api.PATCH("/sessions/:id/web-search", h.ToggleWebSearch)
 }
 
 // registerFileRoutes 注册原始上传文件下载 API 路由。

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
+	"agent_project/apps/server/internal/assistant/websearch"
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/filestore"
 	"agent_project/apps/server/internal/storage/postgres"
@@ -35,6 +37,7 @@ type sessionRepository interface {
 	CreateSessionWithMessages(ctx context.Context, title string, inputs []postgres.AssistantMessageInput) (*postgres.AssistantSession, []postgres.AssistantMessage, error)
 	AppendMessages(ctx context.Context, sessionID string, inputs []postgres.AssistantMessageInput) ([]postgres.AssistantMessage, error)
 	DeleteSession(ctx context.Context, id string) (bool, error)
+	UpdateSessionWebSearchEnabled(ctx context.Context, sessionID string, enabled bool) error
 }
 
 type documentImporter interface {
@@ -58,18 +61,25 @@ type uploadedFileRepository interface {
 	UpdateResourceID(ctx context.Context, fileID string, resourceID string) error
 }
 
+// taskArtifactAppender 允许 assistant 服务在任务确认后写入产物（如联网证据溯源）。
+type taskArtifactAppender interface {
+	AddArtifact(ctx context.Context, taskID string, artifactType string, content []byte) (*postgres.TaskArtifact, error)
+}
+
 // ServiceOption 允许按需注入上传原文件存储等扩展能力。
 type ServiceOption func(*Service)
 
 // Service 负责会话消息流、文件导入和任务确认。
 type Service struct {
-	importer      documentImporter
-	repo          sessionRepository
-	retriever     resourceCitationRetriever
-	responder     chatResponder
-	tasks         taskCreator
-	fileStore     uploadedFileStore
-	uploadedFiles uploadedFileRepository
+	importer         documentImporter
+	repo             sessionRepository
+	retriever        resourceCitationRetriever
+	responder        chatResponder
+	tasks            taskCreator
+	fileStore        uploadedFileStore
+	uploadedFiles    uploadedFileRepository
+	webSearch        websearch.WebSearchProvider
+	artifactAppender taskArtifactAppender
 }
 
 // NewService 构造助手领域服务。
@@ -106,6 +116,20 @@ func WithUploadedFileStorage(store uploadedFileStore, repo uploadedFileRepositor
 	}
 }
 
+// WithWebSearchProvider 注入联网搜索 provider，默认为 nil（即禁用联网搜索）。
+func WithWebSearchProvider(provider websearch.WebSearchProvider) ServiceOption {
+	return func(service *Service) {
+		service.webSearch = provider
+	}
+}
+
+// WithTaskArtifactAppender 注入任务产物写入器，用于在任务确认后保存联网证据摘要。
+func WithTaskArtifactAppender(appender taskArtifactAppender) ServiceOption {
+	return func(service *Service) {
+		service.artifactAppender = appender
+	}
+}
+
 // ListSessions 返回会话列表。
 func (s *Service) ListSessions(ctx context.Context) ([]postgres.AssistantSession, error) {
 	return s.repo.ListSessions(ctx)
@@ -139,7 +163,7 @@ func (s *Service) StartConversation(ctx context.Context, content string) (*Conve
 		return nil, ErrMessageRequired
 	}
 
-	inputs, err := s.buildReplyInputs(ctx, nil, trimmed, nil)
+	inputs, err := s.buildReplyInputs(ctx, nil, trimmed, nil, false)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +204,7 @@ func (s *Service) AppendMessage(ctx context.Context, sessionID string, content s
 		return nil, err
 	}
 
-	inputs, err := s.buildReplyInputs(ctx, history, trimmed, resourceContext)
+	inputs, err := s.buildReplyInputs(ctx, history, trimmed, resourceContext, session.WebSearchEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -270,11 +294,12 @@ func (s *Service) AppendMessageStream(ctx context.Context, sessionID string, con
 	}
 
 	return s.streamAssistantReply(ctx, streamAssistantReplyInput{
-		content:   trimmed,
-		emit:      emit,
-		history:   history,
-		resource:  resourceContext,
-		sessionID: sessionID,
+		content:          trimmed,
+		emit:             emit,
+		history:          history,
+		resource:         resourceContext,
+		sessionID:        sessionID,
+		webSearchEnabled: session.WebSearchEnabled,
 	})
 }
 
@@ -423,6 +448,9 @@ func (s *Service) ConfirmTaskSuggestion(ctx context.Context, messageID string) (
 		}, nil
 	}
 
+	// 尽力而为：把本会话中最近搜索过的联网证据写入任务产物，供审批溯源。
+	s.saveWebEvidenceArtifact(ctx, task.ID, message.SessionID)
+
 	input, err := buildMessageInput(RoleAssistant, KindTaskCreated, TaskCreatedPayload{
 		DetailURL:           "/tasks/" + task.ID,
 		Instruction:         task.Instruction,
@@ -455,9 +483,120 @@ func (s *Service) ConfirmTaskSuggestion(ctx context.Context, messageID string) (
 	}, nil
 }
 
+// saveWebEvidenceArtifact 从会话历史消息中提取最近的联网搜索证据，写入任务产物。
+// 失败时记录日志但不影响主流程。
+func (s *Service) saveWebEvidenceArtifact(ctx context.Context, taskID string, sessionID string) {
+	if s.artifactAppender == nil {
+		return
+	}
+
+	sessionMessages, err := s.repo.ListMessages(ctx, sessionID)
+	if err != nil {
+		slog.WarnContext(ctx, "web evidence: failed to list session messages",
+			slog.String("session_id", sessionID),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+
+	// 从最近的助手文本消息中收集联网证据（最多往前扫描 20 条）
+	var allSources []WebSearchSource
+	var queries []string
+	var provider string
+	seen := make(map[string]struct{})
+	scanLimit := 20
+	scanned := 0
+
+	for i := len(sessionMessages) - 1; i >= 0 && scanned < scanLimit; i-- {
+		msg := sessionMessages[i]
+		if msg.Kind != KindText || msg.Role != RoleAssistant {
+			scanned++
+			continue
+		}
+		payload, parseErr := unmarshalTextPayload(msg.Payload)
+		if parseErr != nil || payload.WebSearch == nil {
+			scanned++
+			continue
+		}
+		ws := payload.WebSearch
+		if ws.Status != "searched_sufficient" || len(ws.Sources) == 0 {
+			scanned++
+			continue
+		}
+		if provider == "" {
+			provider = ws.Provider
+		}
+		for _, q := range ws.Queries {
+			if _, dup := seen["q:"+q]; !dup {
+				seen["q:"+q] = struct{}{}
+				queries = append(queries, q)
+			}
+		}
+		for _, src := range ws.Sources {
+			key := normalizeSourceURL(src.URL)
+			if _, dup := seen["u:"+key]; dup {
+				continue
+			}
+			seen["u:"+key] = struct{}{}
+			allSources = append(allSources, src)
+		}
+		scanned++
+	}
+
+	if len(allSources) == 0 {
+		return
+	}
+
+	artifact := WebEvidenceArtifact{
+		Queries:  queries,
+		Provider: provider,
+		Sources:  allSources,
+	}
+	body, err := json.Marshal(artifact)
+	if err != nil {
+		return
+	}
+
+	if _, err := s.artifactAppender.AddArtifact(ctx, taskID, "web_evidence", body); err != nil {
+		slog.WarnContext(ctx, "web evidence: failed to save artifact",
+			slog.String("task_id", taskID),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
+func normalizeSourceURL(raw string) string {
+	return strings.ToLower(strings.TrimRight(strings.TrimSpace(raw), "/"))
+}
+
 // DeleteSession 删除一个会话。
 func (s *Service) DeleteSession(ctx context.Context, sessionID string) (bool, error) {
 	return s.repo.DeleteSession(ctx, sessionID)
+}
+
+// ToggleWebSearch 更新会话的联网搜索开关，并返回更新后的会话。
+func (s *Service) ToggleWebSearch(ctx context.Context, sessionID string, enabled bool) (*postgres.AssistantSession, error) {
+	session, err := s.repo.GetSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if session == nil {
+		return nil, ErrSessionNotFound
+	}
+
+	if err := s.repo.UpdateSessionWebSearchEnabled(ctx, sessionID, enabled); err != nil {
+		return nil, err
+	}
+
+	updated, err := s.repo.GetSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if updated == nil {
+		return nil, ErrSessionNotFound
+	}
+
+	return updated, nil
 }
 
 func (s *Service) buildReplyInputs(
@@ -465,6 +604,7 @@ func (s *Service) buildReplyInputs(
 	history []postgres.AssistantMessage,
 	content string,
 	resource *resourceContext,
+	webSearchEnabled bool,
 ) ([]postgres.AssistantMessageInput, error) {
 	userInput, err := buildUserTextInput(content)
 	if err != nil {
@@ -480,17 +620,20 @@ func (s *Service) buildReplyInputs(
 		return nil, err
 	}
 
+	webSearchState := s.runWebSearchChain(ctx, content, history, webSearchEnabled)
+
 	reply, err := s.responder.Reply(ctx, ChatCompletionInput{
 		Citations: citations,
 		History:   history,
 		Message:   content,
 		Resource:  resource,
+		WebSearch: webSearchState,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	assistantInputs, err := buildAssistantReplyInputs(content, reply, resource)
+	assistantInputs, err := buildAssistantReplyInputs(content, reply, resource, webSearchState)
 	if err != nil {
 		return nil, err
 	}
@@ -577,13 +720,15 @@ func buildAssistantReplyInputs(
 	content string,
 	reply *ChatCompletionResult,
 	resource *resourceContext,
+	webSearch *WebSearchState,
 ) ([]postgres.AssistantMessageInput, error) {
 	if reply == nil || strings.TrimSpace(reply.Reply) == "" {
 		return nil, errors.New("助手模型返回了空回复")
 	}
 
 	assistantInput, err := buildMessageInput(RoleAssistant, KindText, TextPayload{
-		Content: strings.TrimSpace(reply.Reply),
+		Content:   strings.TrimSpace(reply.Reply),
+		WebSearch: webSearchStateToSummary(webSearch),
 	})
 	if err != nil {
 		return nil, err
@@ -733,11 +878,12 @@ func stringPointer(value string) *string {
 }
 
 type streamAssistantReplyInput struct {
-	content   string
-	emit      func(StreamEvent) error
-	history   []postgres.AssistantMessage
-	resource  *resourceContext
-	sessionID string
+	content          string
+	emit             func(StreamEvent) error
+	history          []postgres.AssistantMessage
+	resource         *resourceContext
+	sessionID        string
+	webSearchEnabled bool
 }
 
 func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistantReplyInput) error {
@@ -750,11 +896,14 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		return err
 	}
 
+	webSearchState := s.runWebSearchChain(ctx, input.content, input.history, input.webSearchEnabled)
+
 	stream, err := s.responder.Stream(ctx, ChatCompletionInput{
 		Citations: citations,
 		History:   input.history,
 		Message:   input.content,
 		Resource:  input.resource,
+		WebSearch: webSearchState,
 	})
 	if err != nil {
 		return mapAssistantStreamError(err)
@@ -800,7 +949,7 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 		}
 	}
 
-	assistantInputs, err := buildAssistantReplyInputs(input.content, result, input.resource)
+	assistantInputs, err := buildAssistantReplyInputs(input.content, result, input.resource, webSearchState)
 	if err != nil {
 		return NewStreamError(StreamErrorCodeEmptyReply, "本轮没有生成可展示内容。", err)
 	}
@@ -834,6 +983,88 @@ func (s *Service) streamAssistantReply(ctx context.Context, input streamAssistan
 	}
 
 	return nil
+}
+
+// runWebSearchChain 执行联网搜索决策链：门控 → query 规划 → 隐私检查 → 外部搜索 → 结果排序净化。
+func (s *Service) runWebSearchChain(ctx context.Context, content string, history []postgres.AssistantMessage, enabled bool) *WebSearchState {
+	if !enabled || s.webSearch == nil {
+		return &WebSearchState{Status: "unused"}
+	}
+
+	gateResult := websearch.AssessWebSearchNeed(content, history)
+	if !gateResult.Needed {
+		return &WebSearchState{Allowed: true, Status: "skipped_not_needed"}
+	}
+
+	queries := websearch.PlanSearchQuery(content)
+	if len(queries) == 0 {
+		return &WebSearchState{Allowed: true, Needed: true, Status: "skipped_not_needed"}
+	}
+
+	privacyResult := websearch.CheckQueryPrivacy(queries)
+	if privacyResult.Blocked {
+		slog.WarnContext(ctx, "web search blocked by privacy check",
+			slog.String("reason", privacyResult.Reason),
+		)
+		return &WebSearchState{Allowed: true, Needed: true, Status: "blocked_by_privacy"}
+	}
+
+	searchQuery := strings.Join(queries, " ")
+	resp, err := s.webSearch.Search(ctx, searchQuery, websearch.SearchOptions{Limit: 5})
+	if err != nil {
+		slog.WarnContext(ctx, "web search failed",
+			slog.String("query", searchQuery),
+			slog.String("error", err.Error()),
+		)
+		return &WebSearchState{
+			Allowed: true,
+			Needed:  true,
+			Queries: queries,
+			Status:  "search_failed",
+		}
+	}
+
+	// 排序去重 → snippet 净化 → 可信度标注
+	ranked := websearch.RankAndDedup(resp.Results)
+	sources := make([]WebSearchSource, 0, len(ranked))
+	for _, r := range ranked {
+		sources = append(sources, WebSearchSource{
+			Title:           r.Title,
+			URL:             r.URL,
+			Snippet:         websearch.SanitizeSnippet(r.Snippet),
+			ReliabilityHint: websearch.DomainReliabilityHint(r.URL),
+		})
+	}
+
+	slog.InfoContext(ctx, "web search completed",
+		slog.String("provider", resp.Provider),
+		slog.String("queries", strings.Join(queries, "|")),
+		slog.Int("sources", len(sources)),
+	)
+
+	return &WebSearchState{
+		Allowed:  true,
+		Needed:   true,
+		Used:     true,
+		Queries:  queries,
+		Provider: resp.Provider,
+		Status:   "searched_sufficient",
+		Sources:  sources,
+	}
+}
+
+// webSearchStateToSummary 将完整搜索状态转换为持久化摘要；未实际搜索时返回 nil。
+func webSearchStateToSummary(state *WebSearchState) *WebSearchSummary {
+	if state == nil || !state.Used {
+		return nil
+	}
+
+	return &WebSearchSummary{
+		Queries:  state.Queries,
+		Provider: state.Provider,
+		Status:   state.Status,
+		Sources:  state.Sources,
+	}
 }
 
 func mapAssistantStreamError(err error) error {

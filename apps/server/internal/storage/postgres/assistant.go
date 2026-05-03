@@ -11,11 +11,12 @@ import (
 
 // AssistantSession 表示一个可持久化的助手会话。
 type AssistantSession struct {
-	ID            string
-	Title         string
-	LastMessageAt time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID               string
+	Title            string
+	WebSearchEnabled bool
+	LastMessageAt    time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // AssistantMessage 表示会话内的一条结构化消息。
@@ -49,7 +50,7 @@ func NewAssistantRepo(pool *pgxpool.Pool) *AssistantRepo {
 // ListSessions 按最近消息时间倒序返回会话列表。
 func (r *AssistantRepo) ListSessions(ctx context.Context) ([]AssistantSession, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, title, last_message_at, created_at, updated_at
+		SELECT id, title, web_search_enabled, last_message_at, created_at, updated_at
 		FROM assistant_sessions
 		ORDER BY last_message_at DESC, id DESC
 	`)
@@ -74,7 +75,7 @@ func (r *AssistantRepo) ListSessions(ctx context.Context) ([]AssistantSession, e
 // GetSessionByID 在会话不存在时返回 nil。
 func (r *AssistantRepo) GetSessionByID(ctx context.Context, id string) (*AssistantSession, error) {
 	session, err := scanAssistantSession(r.pool.QueryRow(ctx, `
-		SELECT id, title, last_message_at, created_at, updated_at
+		SELECT id, title, web_search_enabled, last_message_at, created_at, updated_at
 		FROM assistant_sessions
 		WHERE id = $1
 	`, id))
@@ -152,7 +153,7 @@ func (r *AssistantRepo) CreateSessionWithMessages(ctx context.Context, title str
 	session, err := scanAssistantSession(tx.QueryRow(ctx, `
 		INSERT INTO assistant_sessions (title)
 		VALUES ($1)
-		RETURNING id, title, last_message_at, created_at, updated_at
+		RETURNING id, title, web_search_enabled, last_message_at, created_at, updated_at
 	`, title))
 	if err != nil {
 		return nil, nil, err
@@ -247,6 +248,17 @@ func (r *AssistantRepo) DeleteSession(ctx context.Context, id string) (bool, err
 	return result.RowsAffected() > 0, nil
 }
 
+// UpdateSessionWebSearchEnabled 更新会话的联网搜索开关状态。
+func (r *AssistantRepo) UpdateSessionWebSearchEnabled(ctx context.Context, sessionID string, enabled bool) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE assistant_sessions
+		SET web_search_enabled = $2,
+		    updated_at = now()
+		WHERE id = $1
+	`, sessionID, enabled)
+	return err
+}
+
 func insertAssistantMessages(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -280,7 +292,7 @@ func updateAssistantSessionTimestamp(ctx context.Context, tx pgx.Tx, sessionID s
 		SET last_message_at = $2,
 		    updated_at = $2
 		WHERE id = $1
-		RETURNING id, title, last_message_at, created_at, updated_at
+		RETURNING id, title, web_search_enabled, last_message_at, created_at, updated_at
 	`, sessionID, timestamp))
 }
 
@@ -290,6 +302,7 @@ func scanAssistantSession(row pgx.Row) (AssistantSession, error) {
 	err := row.Scan(
 		&session.ID,
 		&session.Title,
+		&session.WebSearchEnabled,
 		&session.LastMessageAt,
 		&session.CreatedAt,
 		&session.UpdatedAt,

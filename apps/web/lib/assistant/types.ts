@@ -4,10 +4,26 @@ export type AssistantSession = {
   last_message_at: string;
   title: string;
   updated_at: string;
+  web_search_enabled: boolean;
+};
+
+export type AssistantWebSearchSource = {
+  title: string;
+  url: string;
+  snippet?: string;
+  reliability_hint?: string;
+};
+
+export type AssistantWebSearchSummary = {
+  queries: string[];
+  provider: string;
+  status: string;
+  sources?: AssistantWebSearchSource[];
 };
 
 export type AssistantTextPayload = {
   content: string;
+  web_search?: AssistantWebSearchSummary;
 };
 
 export type AssistantTaskSuggestionPayload = {

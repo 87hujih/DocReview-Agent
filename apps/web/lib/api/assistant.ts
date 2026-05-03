@@ -63,3 +63,10 @@ export async function deleteAssistantSession(sessionId: string): Promise<void> {
     method: "DELETE"
   });
 }
+
+export async function toggleWebSearch(sessionId: string, enabled: boolean): Promise<AssistantSession> {
+  return apiFetch<AssistantSession>(`/api/assistant/sessions/${sessionId}/web-search`, {
+    body: JSON.stringify({ enabled }),
+    method: "PATCH"
+  });
+}

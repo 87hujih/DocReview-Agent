@@ -726,6 +726,10 @@ func (f fakeAssistantService) DeleteSession(context.Context, string) (bool, erro
 	return f.deleteSessionResult, f.deleteSessionErr
 }
 
+func (f fakeAssistantService) ToggleWebSearch(_ context.Context, _ string, _ bool) (*postgres.AssistantSession, error) {
+	return nil, nil
+}
+
 func mustMarshalHandlerJSON(t *testing.T, value any) []byte {
 	t.Helper()
 

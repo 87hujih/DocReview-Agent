@@ -14,6 +14,7 @@ import (
 	"agent_project/apps/server/internal/agent/reviewer"
 	"agent_project/apps/server/internal/approval"
 	"agent_project/apps/server/internal/assistant"
+	"agent_project/apps/server/internal/assistant/websearch"
 	appconfig "agent_project/apps/server/internal/config"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/job"
@@ -157,13 +158,27 @@ func main() {
 		log.Fatalf("助手对话模型初始化失败：%v", err)
 	}
 
+	assistantOptions := []assistant.ServiceOption{
+		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
+		assistant.WithTaskArtifactAppender(taskRepo),
+	}
+	// 若全局联网开关开启，装配 MCP 搜索 provider。
+	if cfg.WebSearchEnabled {
+		webSearchProvider := websearch.NewMCPWebSearchProvider(websearch.MCPConfig{
+			URL:       cfg.WebSearchMCPURL,
+			AuthToken: cfg.WebSearchMCPAuthToken,
+		})
+		assistantOptions = append(assistantOptions, assistant.WithWebSearchProvider(webSearchProvider))
+		log.Printf("信息：联网搜索已启用，MCP 地址：%s", cfg.WebSearchMCPURL)
+	}
+
 	assistantService := assistant.NewService(
 		assistantRepo,
 		assistant.NewIngestDocumentImporter(ingestService),
 		taskService,
 		assistantResponder,
 		retrieverService,
-		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
+		assistantOptions...,
 	)
 	assistantHandler := handlers.NewAssistantHandlerWithUploadLimitAndPolicy(
 		assistantService,

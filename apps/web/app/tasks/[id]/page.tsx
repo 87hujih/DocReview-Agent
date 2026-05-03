@@ -14,6 +14,7 @@ import {
   getCitationsArtifact,
   getDiffPreviewArtifact,
   getReviewSummaryArtifact,
+  getWebEvidenceArtifact,
   getTask,
   getTaskArtifacts,
   getTaskEvents,
@@ -111,6 +112,7 @@ export default function TaskDetailPage() {
   const citations = getCitationsArtifact(artifacts);
   const reviewSummary = getReviewSummaryArtifact(artifacts);
   const diffPreview = getDiffPreviewArtifact(artifacts);
+  const webEvidence = getWebEvidenceArtifact(artifacts);
   const hasCompletedResult = task?.status === "completed" && task.resource_id.trim() !== "";
 
   return (
@@ -168,7 +170,40 @@ export default function TaskDetailPage() {
 
       {diffPreview ? <DiffPreview sections={diffPreview.sections} /> : null}
 
-      {!isLoading && citations.length === 0 && !reviewSummary && !diffPreview ? (
+      {webEvidence ? (
+        <TerminalFrame
+          label="联网证据"
+          title="搜索溯源"
+        >
+          <p style={{ margin: "0 0 8px", color: "rgba(115,215,255,0.7)", fontSize: "0.78rem" }}>
+            关键词：{webEvidence.queries.join("、")}
+          </p>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "6px" }}>
+            {webEvidence.sources.map((src, i) => (
+              <li key={i} style={{ fontSize: "0.82rem", color: "rgba(206,224,235,0.72)" }}>
+                <a
+                  href={src.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: "rgba(0,200,165,0.85)", textDecoration: "none" }}
+                >
+                  {src.title}
+                </a>
+                {src.reliability_hint && src.reliability_hint !== "medium" ? (
+                  <span style={{ marginLeft: "6px", color: src.reliability_hint === "high" ? "#4ade80" : "#fb923c", fontSize: "0.72rem" }}>
+                    [{src.reliability_hint === "high" ? "高可信" : "低可信"}]
+                  </span>
+                ) : null}
+                {src.snippet ? (
+                  <span style={{ marginLeft: "6px", color: "rgba(148,163,184,0.6)" }}>{src.snippet.slice(0, 80)}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </TerminalFrame>
+      ) : null}
+
+      {!isLoading && citations.length === 0 && !reviewSummary && !diffPreview && !webEvidence ? (
         <TerminalFrame
           label="产物"
           title="等待产物生成"

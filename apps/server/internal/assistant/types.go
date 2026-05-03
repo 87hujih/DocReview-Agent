@@ -129,7 +129,8 @@ type ImportDocumentResult struct {
 
 // TextPayload 表示普通文本消息内容。
 type TextPayload struct {
-	Content string `json:"content"`
+	Content   string            `json:"content"`
+	WebSearch *WebSearchSummary `json:"web_search,omitempty"`
 }
 
 // TaskSuggestionPayload 表示任务建议卡片的结构化内容。
@@ -167,4 +168,38 @@ type SessionFilePayload struct {
 type SystemPayload struct {
 	Content string `json:"content"`
 	Level   string `json:"level"`
+}
+
+// WebSearchState 描述本轮联网搜索的完整状态，传递给对话模型并写入消息 payload。
+type WebSearchState struct {
+	Allowed  bool             `json:"allowed"`
+	Needed   bool             `json:"needed"`
+	Used     bool             `json:"used"`
+	Queries  []string         `json:"queries,omitempty"`
+	Provider string           `json:"provider,omitempty"`
+	Status   string           `json:"status"` // unused/skipped_not_needed/searched_sufficient/search_failed/blocked_by_privacy
+	Sources  []WebSearchSource `json:"sources,omitempty"`
+}
+
+// WebSearchSummary 持久化到消息 payload 的搜索摘要。
+type WebSearchSummary struct {
+	Queries  []string          `json:"queries"`
+	Provider string            `json:"provider"`
+	Status   string            `json:"status"`
+	Sources  []WebSearchSource `json:"sources,omitempty"`
+}
+
+// WebSearchSource 表示一条外部搜索结果摘要。
+type WebSearchSource struct {
+	Title           string `json:"title"`
+	URL             string `json:"url"`
+	Snippet         string `json:"snippet,omitempty"`
+	ReliabilityHint string `json:"reliability_hint,omitempty"` // "high"/"medium"/"low"
+}
+
+// WebEvidenceArtifact 是写入任务产物的联网证据摘要，供审批环节溯源。
+type WebEvidenceArtifact struct {
+	Queries  []string          `json:"queries"`
+	Provider string            `json:"provider"`
+	Sources  []WebSearchSource `json:"sources"`
 }
