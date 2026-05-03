@@ -22,3 +22,5 @@ task_plan.md
 /docs/
 docs/superpowers/
 scripts/dev/.local-dev-state.json
+.vite/
+*.pdf
