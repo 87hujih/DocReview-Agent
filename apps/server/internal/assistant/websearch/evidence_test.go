@@ -22,8 +22,11 @@ func TestSanitizeSnippetStripsInjectionPatterns(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := SanitizeSnippet(tc.input)
 			if tc.want == "" {
-				if strings.TrimSpace(got) != "" {
-					// 部分 injection 只清除攻击模式，保留周围文字
+				// 部分 injection 只清除攻击模式，保留周围文字，验证攻击模式已被移除
+				for _, re := range injectionPatterns {
+					if re.MatchString(got) {
+						t.Errorf("SanitizeSnippet(%q) = %q, still contains injection pattern %q", tc.input, got, re.String())
+					}
 				}
 			} else if got != tc.want {
 				t.Errorf("SanitizeSnippet(%q) = %q, want %q", tc.input, got, tc.want)
