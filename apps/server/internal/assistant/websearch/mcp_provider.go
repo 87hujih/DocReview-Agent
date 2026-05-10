@@ -24,6 +24,7 @@ type MCPConfig struct {
 	Timeout         time.Duration
 	AuthToken       string
 	Origin          string
+	MaxFetchBytes   int64
 }
 
 // MCPWebSearchProvider 通过 MCP tools/call 调用 web.search / web.fetch。
@@ -33,6 +34,8 @@ type MCPWebSearchProvider struct {
 	seq    atomic.Uint64
 }
 
+const defaultMaxFetchBytes = 2 << 20 // 2 MiB
+
 func NewMCPWebSearchProvider(cfg MCPConfig) *MCPWebSearchProvider {
 	if cfg.ProtocolVersion == "" {
 		cfg.ProtocolVersion = mcpwebsearch.ProtocolVersion
@@ -41,9 +44,13 @@ func NewMCPWebSearchProvider(cfg MCPConfig) *MCPWebSearchProvider {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 10 * time.Second
 	}
+	if cfg.MaxFetchBytes <= 0 {
+		cfg.MaxFetchBytes = defaultMaxFetchBytes
+	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout}
+		// 不设置 HTTP client 级别超时，由 callTool 中的 context timeout 控制
+		client = &http.Client{}
 	}
 	return &MCPWebSearchProvider{cfg: cfg, client: client}
 }
@@ -135,7 +142,7 @@ func (p *MCPWebSearchProvider) callTool(ctx context.Context, name string, args m
 	}
 	defer response.Body.Close()
 
-	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, p.cfg.MaxFetchBytes))
 	if err != nil {
 		return &ProviderError{Code: ErrorInvalidResponse, Message: "read MCP response failed", Err: err}
 	}
