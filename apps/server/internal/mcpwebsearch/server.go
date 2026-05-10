@@ -3,6 +3,7 @@ package mcpwebsearch
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,7 +53,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "origin not allowed", http.StatusForbidden)
 		return
 	}
-	if s.cfg.AuthToken != "" && r.Header.Get("Authorization") != "Bearer "+s.cfg.AuthToken {
+	if s.cfg.AuthToken != "" && !isValidBearerToken(r.Header.Get("Authorization"), s.cfg.AuthToken) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -264,6 +265,14 @@ func (s *Server) originAllowed(origin string) bool {
 		}
 	}
 	return false
+}
+
+func isValidBearerToken(header, token string) bool {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(header[len(prefix):]), []byte(token)) == 1
 }
 
 func toolDefinitions() []toolDefinition {
