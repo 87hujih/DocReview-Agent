@@ -26,7 +26,7 @@ func LoadConfigFromEnv() Config {
 		AllowedOrigins: getenvCSV("WEB_SEARCH_MCP_ALLOWED_ORIGINS"),
 		AuthToken:      strings.TrimSpace(os.Getenv("WEB_SEARCH_MCP_AUTH_TOKEN")),
 		ProviderName:   getenvString("WEB_SEARCH_PROVIDER", defaultProvider),
-		DefaultLimit:   getenvInt("WEB_SEARCH_MAX_RESULTS", defaultMaxResults),
+		DefaultLimit:   getenvInt("WEB_SEARCH_DEFAULT_LIMIT", defaultMaxResults),
 		MaxResults:     getenvInt("WEB_SEARCH_MAX_RESULTS", defaultMaxResults),
 		MaxFetchBytes:  int64(getenvInt("WEB_SEARCH_MAX_FETCH_BYTES", defaultMaxFetchBytes)),
 		MaxRedirects:   getenvInt("WEB_SEARCH_MAX_REDIRECTS", defaultMaxRedirects),
