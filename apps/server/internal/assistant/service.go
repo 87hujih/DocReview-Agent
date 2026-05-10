@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -2683,7 +2682,7 @@ func (s *Service) triggerSummaryRefresh(sessionID string) {
 
 	runner(func() {
 		if err := s.refreshRollingSummary(context.Background(), sessionID); err != nil {
-			log.Printf("警告：assistant rolling summary refresh failed: %v", err)
+			slog.Warn("assistant rolling summary refresh failed", "session_id", sessionID, "error", err)
 		}
 	})
 }
