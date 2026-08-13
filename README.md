@@ -115,14 +115,15 @@ MVP 最终应至少包含以下页面：
 当前仓库已规划为：
 
 - `CI`: `pull_request` 与 `push main` 触发
-- `CD`: `v*` tag 触发正式发布
-- 镜像仓库：`GHCR`
-- 部署方式：`SSH + Docker Compose`
+- `Release`: `v*` tag 触发镜像发布
+- `Deploy`: 手动触发生产部署或回滚
+- 生产部署方式：`SSH + Docker Compose`
+- 生产镜像源：区域 OCI registry，默认采用 `Tencent TCR`
 
 镜像命名约定：
 
-- `ghcr.io/87hujih/docreview-agent-server:<tag>`
-- `ghcr.io/87hujih/docreview-agent-web:<tag>`
+- `${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/docreview-agent-server:<tag>`
+- `${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/docreview-agent-web:<tag>`
 
 远程访问方式：
 
