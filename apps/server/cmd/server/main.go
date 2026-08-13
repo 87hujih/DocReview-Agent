@@ -7,18 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"agent_project/apps/server/internal/agent/editor"
-	"agent_project/apps/server/internal/agent/executor"
-	"agent_project/apps/server/internal/agent/llmclient"
-	"agent_project/apps/server/internal/agent/planner"
-	"agent_project/apps/server/internal/agent/reviewer"
-	"agent_project/apps/server/internal/approval"
 	"agent_project/apps/server/internal/assistant"
-	"agent_project/apps/server/internal/assistant/websearch"
 	appconfig "agent_project/apps/server/internal/config"
 	documentnormalize "agent_project/apps/server/internal/document/normalize"
 	documentparser "agent_project/apps/server/internal/document/parser"
-	"agent_project/apps/server/internal/job"
 	"agent_project/apps/server/internal/knowledge/embedder"
 	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/knowledge/ingest"
@@ -29,11 +21,7 @@ import (
 	"agent_project/apps/server/internal/server/router"
 	"agent_project/apps/server/internal/storage/filestore"
 	"agent_project/apps/server/internal/storage/postgres"
-	taskevents "agent_project/apps/server/internal/task/events"
-	taskservice "agent_project/apps/server/internal/task/service"
-	"agent_project/apps/server/internal/task/workflow"
-
-	"github.com/jackc/pgx/v5/pgxpool"
+	"agent_project/apps/server/internal/storage/postgres/agentops"
 )
 
 // main 负责装配配置、数据库、检索能力和 HTTP 服务入口
@@ -52,21 +40,10 @@ func main() {
 	}
 	defer pool.Close()
 
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		log.Fatalf("数据库迁移失败：%v", err)
-	}
-
 	resourceRepo := postgres.NewResourceRepo(pool)
 	resourceStructureRepo := postgres.NewResourceStructureRepo(pool)
-	taskRepo := postgres.NewTaskRepo(pool)
-	approvalRepo := postgres.NewApprovalRepo(pool)
-	jobRepo := postgres.NewJobRepo(pool)
-	eventRepo := postgres.NewTaskEventRepo(pool)
 	assistantRepo := postgres.NewAssistantRepo(pool)
-	sessionContextSnapshotRepo := postgres.NewSessionContextSnapshotRepo(pool)
 	uploadedFileRepo := postgres.NewUploadedFileRepo(pool)
-	eventService := taskevents.New(eventRepo)
-	runtimeLearning := buildAssistantRuntimeLearning(pool)
 
 	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
 	if err != nil {
@@ -74,6 +51,11 @@ func main() {
 	}
 
 	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
+	agentRuntime, err := buildAgentRuntimeCore(ctx, cfg, pool, emb, rerankerClient)
+	if err != nil {
+		log.Fatalf("Agent Runtime 初始化失败：%v", err)
+	}
+	agentRuntime.Start(ctx)
 	retrieverService := retriever.NewService(resourceRepo, emb, rerankerClient)
 	versionIndexer := indexer.NewService(resourceRepo, emb)
 	normalizeService := documentnormalize.NewService()
@@ -95,194 +77,44 @@ func main() {
 		ingest.WithNormalizer(normalizeService),
 	)
 
-	plannerAgent, err := planner.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
-		TimeoutMS: cfg.LLMTimeoutMS,
-		RetryMax:  cfg.LLMRetryMax,
-		BackoffMS: cfg.LLMRetryBackoffMS,
-	})
-	if err != nil {
-		log.Fatalf("规划代理初始化失败：%v", err)
-	}
-
-	reviewerAgent, err := reviewer.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
-		TimeoutMS: cfg.LLMTimeoutMS,
-		RetryMax:  cfg.LLMRetryMax,
-		BackoffMS: cfg.LLMRetryBackoffMS,
-	})
-	if err != nil {
-		log.Fatalf("评审代理初始化失败：%v", err)
-	}
-
-	editorAgent, err := editor.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
-		TimeoutMS: cfg.LLMTimeoutMS,
-		RetryMax:  cfg.LLMRetryMax,
-		BackoffMS: cfg.LLMRetryBackoffMS,
-	})
-	if err != nil {
-		log.Fatalf("编辑代理初始化失败：%v", err)
-	}
-
-	// 演示数据导入采用尽力而为策略，样例目录缺失不应阻塞本地启动。
-	if err := ingestService.ImportDirectory(ctx, demoDataDir()); err != nil {
-		log.Printf("警告：演示数据导入失败：%v", err)
-	}
-
 	uploadStore, err := filestore.NewLocalStore(projectPath(cfg.UploadStorageDir))
 	if err != nil {
 		log.Fatalf("原文件存储初始化失败：%v", err)
 	}
-	sessionContextProjector := assistant.NewSessionContextProjector(sessionContextSnapshotRepo)
-	assistantTaskNotificationRepo := postgres.NewAssistantTaskNotificationRepo(pool)
-	assistantTaskStatusNotifier := assistant.NewAssistantTaskStatusNotifier(assistantRepo, assistantTaskNotificationRepo)
-
-	exec := executor.New(taskRepo, resourceRepo, versionIndexer)
-	worker := job.New(jobRepo, exec, taskRepo, 100, eventService, sessionContextProjector, assistantTaskStatusNotifier)
-	worker.Start(ctx, 3)
-
-	// 服务启动时补发所有未处理的 pending job 信号，防止重启后 job 永久搁置（B4）
-	pendingJobs, err := jobRepo.ListPending(ctx)
-	if err != nil {
-		log.Printf("警告：扫描 pending jobs 失败：%v", err)
-	} else {
-		for range pendingJobs {
-			select {
-			case worker.JobCh() <- struct{}{}:
-			default:
-			}
-		}
-		if len(pendingJobs) > 0 {
-			log.Printf("信息：服务启动，已为 %d 个 pending job 补发执行信号", len(pendingJobs))
-		}
-	}
-
 	resourceHandler := handlers.NewResourceHandler(resourceRepo, retrieverService)
-	orchestrator := workflow.New(taskRepo, resourceRepo, approvalRepo, plannerAgent, reviewerAgent, editorAgent, retrieverService, eventService, cfg.TaskContextMaxRunes, sessionContextProjector, assistantTaskStatusNotifier)
-	runner := workflow.NewOrchestratorRunner(
-		cfg.WorkflowWorkers,
-		cfg.WorkflowQueueSize,
-		time.Duration(cfg.TaskStepTimeoutMS)*time.Millisecond,
-		orchestrator,
-		taskRepo,
-	)
-	runner.Start()
-	defer runner.Stop()
-	taskService := taskservice.New(taskRepo, resourceRepo, runner, eventService)
-	taskHandler := handlers.NewTaskHandler(taskService, taskRepo, eventRepo)
-	approvalService := approval.NewService(pool, approvalRepo, jobRepo, taskRepo, worker.JobCh(), eventService, sessionContextProjector, assistantTaskStatusNotifier)
-	approvalHandler := handlers.NewApprovalHandler(approvalService)
-	assistantResponder, err := assistant.NewChatResponder(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
-		TimeoutMS: cfg.LLMTimeoutMS,
-		RetryMax:  cfg.LLMRetryMax,
-		BackoffMS: cfg.LLMRetryBackoffMS,
-	})
-	if err != nil {
-		log.Fatalf("助手对话模型初始化失败：%v", err)
-	}
-
-	deliberationAgent, err := assistant.NewDeliberationAgent(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
-		TimeoutMS: cfg.LLMTimeoutMS,
-		RetryMax:  cfg.LLMRetryMax,
-		BackoffMS: cfg.LLMRetryBackoffMS,
-	})
-	if err != nil {
-		log.Fatalf("助手 deliberation agent 初始化失败：%v", err)
-	}
-	assistantWorkflowPlanner, err := assistant.NewWorkflowPlannerAgent(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
-		TimeoutMS: cfg.LLMTimeoutMS,
-		RetryMax:  cfg.LLMRetryMax,
-		BackoffMS: cfg.LLMRetryBackoffMS,
-	})
-	if err != nil {
-		log.Fatalf("助手 workflow planner 初始化失败：%v", err)
-	}
-	assistantWorkflowVerifier, err := assistant.NewWorkflowVerifierAgent(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
-		TimeoutMS: cfg.LLMTimeoutMS,
-		RetryMax:  cfg.LLMRetryMax,
-		BackoffMS: cfg.LLMRetryBackoffMS,
-	})
-	if err != nil {
-		log.Fatalf("助手 workflow verifier 初始化失败：%v", err)
-	}
-	conversationSummarizer, err := assistant.NewConversationSummarizer(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.LLMModel, llmclient.Config{
-		TimeoutMS: cfg.LLMTimeoutMS,
-		RetryMax:  cfg.LLMRetryMax,
-		BackoffMS: cfg.LLMRetryBackoffMS,
-	})
-	if err != nil {
-		log.Fatalf("助手会话摘要器初始化失败：%v", err)
-	}
 
 	assistantOptions := []assistant.ServiceOption{
 		assistant.WithUploadedFileStorage(uploadStore, uploadedFileRepo),
-		assistant.WithTaskArtifactAppender(taskRepo),
-	}
-	// 若全局联网开关开启，装配 MCP 搜索 provider。
-	if cfg.WebSearchEnabled {
-		webSearchProvider := websearch.NewMCPWebSearchProvider(websearch.MCPConfig{
-			URL:       cfg.WebSearchMCPURL,
-			AuthToken: cfg.WebSearchMCPAuthToken,
-		})
-		assistantOptions = append(assistantOptions, assistant.WithWebSearchProvider(webSearchProvider))
-		log.Printf("信息：联网搜索已启用，MCP 地址：%s", cfg.WebSearchMCPURL)
 	}
 
 	assistantService := assistant.NewService(
 		assistantRepo,
 		assistant.NewIngestDocumentImporter(ingestService),
-		taskService,
-		assistantResponder,
+		nil,
+		nil,
 		retrieverService,
-		append(assistantOptions,
-			assistant.WithDeliberationAgent(deliberationAgent),
-			assistant.WithWorkflowPlanner(assistantWorkflowPlanner),
-			assistant.WithWorkflowVerifier(assistantWorkflowVerifier),
-			assistant.WithConversationSummarizer(conversationSummarizer, sessionContextSnapshotRepo),
-			assistant.WithSessionContextProjector(sessionContextProjector),
-			assistant.WithSectionLocator(assistant.NewSectionLocator(resourceRepo)),
-			assistant.WithSectionReader(assistant.NewSectionReader(resourceRepo)),
-			assistant.WithCurrentDocumentLoader(assistant.NewCurrentDocumentLoader(resourceRepo)),
-			assistant.WithDeterministicReadResponder(assistant.NewDeterministicReadResponder()),
-			assistant.WithRuntimeLearning(runtimeLearning.eventService, runtimeLearning.projector),
-		)...,
+		assistantOptions...,
 	)
-	assistantHandler := handlers.NewAssistantHandlerWithUploadLimitAndPolicy(
-		assistantService,
-		int64(cfg.UploadMaxBytes),
-		docParser,
+	turnPipeline, err := agentRuntime.BuildTurnPipeline(handlers.NewConversationPublicProjector(assistantRepo))
+	if err != nil {
+		log.Fatalf("Agent Runtime Turn Pipeline 初始化失败：%v", err)
+	}
+	assistantHandler := handlers.NewAssistantHandlerWithTurnPipeline(
+		assistantService, int64(cfg.UploadMaxBytes), docParser, turnPipeline, agentRuntime.identity,
 	)
+	typedApprovalHandler := handlers.NewTypedApprovalHandler(agentRuntime.approvals, agentRuntime.identity)
+	agentRuntimeQueryHandler := handlers.NewAgentRuntimeQueryHandler(agentops.NewRepository(pool), agentRuntime.identity)
 	fileHandler := handlers.NewFileHandler(uploadedFileRepo, uploadStore)
 	h := router.New(cfg, logger, router.Deps{
-		ResourceHandler:  resourceHandler,
-		TaskHandler:      taskHandler,
-		ApprovalHandler:  approvalHandler,
-		AssistantHandler: assistantHandler,
-		FileHandler:      fileHandler,
+		ResourceHandler:          resourceHandler,
+		AgentRuntimeQueryHandler: agentRuntimeQueryHandler,
+		TypedApprovalHandler:     typedApprovalHandler,
+		AssistantHandler:         assistantHandler,
+		FileHandler:              fileHandler,
 	})
 
 	if err := h.Run(); err != nil {
 		log.Fatalf("服务退出：%v", err)
-	}
-}
-
-type assistantRuntimeLearningDeps struct {
-	eventRepo    *postgres.AssistantRuntimeEventRepo
-	sampleRepo   *postgres.AssistantRuntimeSampleRepo
-	eventService *assistant.RuntimeEventService
-	projector    *assistant.RuntimeLearningProjector
-}
-
-// buildAssistantRuntimeLearning 装配 assistant runtime learning 依赖，避免 main 入口继续散落 wiring 细节。
-func buildAssistantRuntimeLearning(pool *pgxpool.Pool) *assistantRuntimeLearningDeps {
-	eventRepo := postgres.NewAssistantRuntimeEventRepo(pool)
-	sampleRepo := postgres.NewAssistantRuntimeSampleRepo(pool)
-	eventService := assistant.NewRuntimeEventService(eventRepo)
-	projector := assistant.NewRuntimeLearningProjector(sampleRepo)
-
-	return &assistantRuntimeLearningDeps{
-		eventRepo:    eventRepo,
-		sampleRepo:   sampleRepo,
-		eventService: eventService,
-		projector:    projector,
 	}
 }
 
@@ -319,21 +151,4 @@ func findProjectRoot() string {
 
 		currentDir = parentDir
 	}
-}
-
-// demoDataDir 兼容从仓库根目录或 apps/server 目录启动服务。
-func demoDataDir() string {
-	candidates := []string{
-		filepath.Join("demo-data", "documents"),
-		filepath.Join("..", "..", "demo-data", "documents"),
-	}
-
-	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err == nil && info.IsDir() {
-			return candidate
-		}
-	}
-
-	return candidates[0]
 }

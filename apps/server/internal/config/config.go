@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,19 +26,19 @@ const (
 	defaultLogLevel           = "info"
 	defaultLogFormat          = "json"
 
-	defaultLLMTimeoutMS        = 90000
-	defaultLLMRetryMax         = 2
-	defaultLLMRetryBackoffMS   = 1000
-	defaultTaskStepTimeoutMS   = 120000
-	defaultTaskContextMaxRunes = 24000
-	defaultWorkflowWorkers     = 2
-	defaultWorkflowQueueSize   = 100
+	defaultLLMTimeoutMS           = 90000
+	defaultLLMRetryMax            = 2
+	defaultLLMRetryBackoffMS      = 1000
+	defaultAgentRuntimeMode       = "durable"
+	defaultTrustedIngressMaxAgeMS = 300000
 )
 
 // Config 保存从环境变量、.env 和默认 YAML 配置解析出的运行时参数。
 type Config struct {
-	ServerPort  string
-	DatabaseURL string
+	Environment        string
+	ServerPort         string
+	DatabaseURL        string
+	CORSAllowedOrigins []string
 
 	SiliconFlowAPIKey  string
 	SiliconFlowBaseURL string
@@ -60,13 +61,13 @@ type Config struct {
 	WebSearchMCPURL       string
 	WebSearchMCPAuthToken string
 
-	LLMTimeoutMS        int
-	LLMRetryMax         int
-	LLMRetryBackoffMS   int
-	TaskStepTimeoutMS   int
-	TaskContextMaxRunes int
-	WorkflowWorkers     int
-	WorkflowQueueSize   int
+	LLMTimeoutMS                       int
+	LLMRetryMax                        int
+	LLMRetryBackoffMS                  int
+	AgentRuntimeMode                   string
+	AgentRuntimeTrustedIngressSecret   string
+	AgentRuntimeTrustedIngressSource   string
+	AgentRuntimeTrustedIngressMaxAgeMS int
 }
 
 // fileConfig 对应默认 YAML 配置文件的顶层结构。
@@ -105,14 +106,16 @@ type logConfig struct {
 	AddSource bool   `yaml:"add_source"`
 }
 
-// Load 按“进程环境变量 -> .env -> config/default.yaml -> 硬编码默认值”的优先级解析配置。
+// 加载 按“进程环境变量 -> .env -> config/default.yaml -> 硬编码默认值”的优先级解析配置。
 func Load() Config {
 	defaults := loadDefaultFileConfig()
 	dotenvValues := loadDotEnvValues()
 
 	return Config{
+		Environment:        resolveString("APP_ENV", dotenvValues, "", "development"),
 		ServerPort:         resolveString("SERVER_PORT", dotenvValues, defaults.Server.Port, defaultServerPort),
 		DatabaseURL:        resolveString("DATABASE_URL", dotenvValues, "", ""),
+		CORSAllowedOrigins: parseCSV(resolveString("CORS_ALLOWED_ORIGINS", dotenvValues, "", "")),
 		SiliconFlowAPIKey:  resolveString("SILICONFLOW_API_KEY", dotenvValues, "", ""),
 		SiliconFlowBaseURL: resolveString("SILICONFLOW_BASE_URL", dotenvValues, defaults.AI.SiliconFlowBaseURL, defaultSiliconFlowBaseURL),
 		LLMModel:           resolveString("LLM_MODEL", dotenvValues, defaults.AI.LLMModel, defaultLLMModel),
@@ -132,13 +135,13 @@ func Load() Config {
 		WebSearchMCPURL:       resolveString("WEB_SEARCH_MCP_URL", dotenvValues, "", "http://127.0.0.1:18090/mcp"),
 		WebSearchMCPAuthToken: resolveString("WEB_SEARCH_MCP_AUTH_TOKEN", dotenvValues, "", ""),
 
-		LLMTimeoutMS:        resolveInt("LLM_TIMEOUT_MS", dotenvValues, 0, defaultLLMTimeoutMS),
-		LLMRetryMax:         resolveInt("LLM_RETRY_MAX", dotenvValues, 0, defaultLLMRetryMax),
-		LLMRetryBackoffMS:   resolveInt("LLM_RETRY_BACKOFF_MS", dotenvValues, 0, defaultLLMRetryBackoffMS),
-		TaskStepTimeoutMS:   resolveInt("TASK_STEP_TIMEOUT_MS", dotenvValues, 0, defaultTaskStepTimeoutMS),
-		TaskContextMaxRunes: resolveInt("TASK_CONTEXT_MAX_RUNES", dotenvValues, 0, defaultTaskContextMaxRunes),
-		WorkflowWorkers:     resolveInt("WORKFLOW_WORKERS", dotenvValues, 0, defaultWorkflowWorkers),
-		WorkflowQueueSize:   resolveInt("WORKFLOW_QUEUE_SIZE", dotenvValues, 0, defaultWorkflowQueueSize),
+		LLMTimeoutMS:                       resolveInt("LLM_TIMEOUT_MS", dotenvValues, 0, defaultLLMTimeoutMS),
+		LLMRetryMax:                        resolveInt("LLM_RETRY_MAX", dotenvValues, 0, defaultLLMRetryMax),
+		LLMRetryBackoffMS:                  resolveInt("LLM_RETRY_BACKOFF_MS", dotenvValues, 0, defaultLLMRetryBackoffMS),
+		AgentRuntimeMode:                   strings.ToLower(strings.TrimSpace(resolveString("AGENT_RUNTIME_MODE", dotenvValues, "", defaultAgentRuntimeMode))),
+		AgentRuntimeTrustedIngressSecret:   resolveString("AGENT_RUNTIME_TRUSTED_INGRESS_HMAC_SECRET", dotenvValues, "", ""),
+		AgentRuntimeTrustedIngressSource:   resolveString("AGENT_RUNTIME_TRUSTED_INGRESS_SOURCE", dotenvValues, "", ""),
+		AgentRuntimeTrustedIngressMaxAgeMS: resolveInt("AGENT_RUNTIME_TRUSTED_INGRESS_MAX_AGE_MS", dotenvValues, 0, defaultTrustedIngressMaxAgeMS),
 	}
 }
 
@@ -174,11 +177,28 @@ func (c Config) ValidateForServer() error {
 		return fmt.Errorf("缺少必填配置：%s", strings.Join(missing, ", "))
 	}
 
+	if strings.EqualFold(strings.TrimSpace(c.Environment), "production") && len(c.CORSAllowedOrigins) == 0 {
+		return fmt.Errorf("生产环境缺少必填配置：CORS_ALLOWED_ORIGINS")
+	}
+	for _, origin := range c.CORSAllowedOrigins {
+		if err := validateCORSOrigin(origin); err != nil {
+			return err
+		}
+	}
+
+	if strings.ToLower(strings.TrimSpace(c.AgentRuntimeMode)) != defaultAgentRuntimeMode {
+		return fmt.Errorf("AGENT_RUNTIME_MODE 全量切流后必须是 durable")
+	}
+	if err := c.validateRuntimeTrust(); err != nil {
+		return err
+	}
+
 	if c.EmbeddingDim <= 0 {
 		return fmt.Errorf("EMBEDDING_DIM 无效：%d", c.EmbeddingDim)
 	}
 
 	parserMode := strings.ToLower(strings.TrimSpace(c.DocumentParser))
+	// 根据当前状态或类型选择对应的处理分支。
 	switch parserMode {
 	case "", defaultDocumentParser:
 		return nil
@@ -194,6 +214,61 @@ func (c Config) ValidateForServer() error {
 		return fmt.Errorf("DOCUMENT_PARSER 无效：%s", c.DocumentParser)
 	}
 
+}
+
+// validateRuntimeTrust enforces the fail-closed identity boundary required by
+// every request after the global durable cutover.
+func (c Config) validateRuntimeTrust() error {
+	if len(c.AgentRuntimeTrustedIngressSecret) < 32 || strings.TrimSpace(c.AgentRuntimeTrustedIngressSource) == "" || c.AgentRuntimeTrustedIngressMaxAgeMS <= 0 {
+		return fmt.Errorf("durable 模式必须配置 AGENT_RUNTIME_TRUSTED_INGRESS_HMAC_SECRET、AGENT_RUNTIME_TRUSTED_INGRESS_SOURCE 和正数 AGENT_RUNTIME_TRUSTED_INGRESS_MAX_AGE_MS")
+	}
+	return nil
+}
+
+// ValidateForMigrations 仅校验迁移命令明确需要的配置。
+func (c Config) ValidateForMigrations() error {
+	if strings.TrimSpace(c.DatabaseURL) == "" {
+		return fmt.Errorf("缺少必填配置：DATABASE_URL")
+	}
+	return nil
+}
+
+// parseCSV 解析输入并返回类型化结果。
+func parseCSV(value string) []string {
+	values := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		values = append(values, item)
+	}
+	return values
+}
+
+// validateCORSOrigin 校验输入及领域约束。
+func validateCORSOrigin(origin string) error {
+	if origin == "*" {
+		return fmt.Errorf("CORS_ALLOWED_ORIGINS 不能包含通配符来源")
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Opaque != "" || parsed.Host == "" || parsed.User != nil {
+		return fmt.Errorf("CORS_ALLOWED_ORIGINS 包含无效来源")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("CORS_ALLOWED_ORIGINS 的来源协议必须是 http 或 https")
+	}
+	if parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("CORS_ALLOWED_ORIGINS 必须只包含来源，不能带路径、查询参数或片段")
+	}
+
+	return nil
 }
 
 // loadDefaultFileConfig 允许命令从仓库根目录或嵌套应用目录启动时都能读取 config/default.yaml。

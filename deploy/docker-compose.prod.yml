@@ -1,20 +1,39 @@
 services:
+  migrate:
+    image: ghcr.io/${GHCR_OWNER}/docreview-agent-server:${IMAGE_TAG}
+    restart: "no"
+    networks:
+      - agent-net
+    environment:
+      DATABASE_URL: "${DATABASE_URL}"
+    entrypoint: ["./migrate"]
+
   server:
     image: ghcr.io/${GHCR_OWNER}/docreview-agent-server:${IMAGE_TAG}
     restart: unless-stopped
     networks:
       - agent-net
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     ports:
-      - "${SERVER_PORT}:8080"
+      # 只有宿主机本地且受保护的反向代理可以访问后端端口。
+      - "127.0.0.1:${SERVER_PORT}:8080"
     environment:
+      APP_ENV: "production"
       PORT: "8080"
       DATABASE_URL: "${DATABASE_URL}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS}"
       SILICONFLOW_API_KEY: "${SILICONFLOW_API_KEY}"
       SILICONFLOW_BASE_URL: "${SILICONFLOW_BASE_URL}"
       LLM_MODEL: "${LLM_MODEL}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL}"
       EMBEDDING_DIM: "${EMBEDDING_DIM}"
       RERANKER_MODEL: "${RERANKER_MODEL}"
+      AGENT_RUNTIME_MODE: "${AGENT_RUNTIME_MODE:-durable}"
+      AGENT_RUNTIME_TRUSTED_INGRESS_HMAC_SECRET: "${AGENT_RUNTIME_TRUSTED_INGRESS_HMAC_SECRET:-}"
+      AGENT_RUNTIME_TRUSTED_INGRESS_SOURCE: "${AGENT_RUNTIME_TRUSTED_INGRESS_SOURCE:-}"
+      AGENT_RUNTIME_TRUSTED_INGRESS_MAX_AGE_MS: "${AGENT_RUNTIME_TRUSTED_INGRESS_MAX_AGE_MS:-300000}"
       LOG_LEVEL: "${LOG_LEVEL}"
       LOG_FORMAT: "${LOG_FORMAT}"
       LOG_ADD_SOURCE: "${LOG_ADD_SOURCE}"
@@ -31,9 +50,7 @@ services:
     environment:
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
-      # NEXT_PUBLIC_API_URL 必须是浏览器可访问的公网后端地址
-      # 本地开发: http://127.0.0.1:18080
-      # 云服务器初期: http://<server-ip>:8080（不能写容器内 service name 或服务器本机的 127.0.0.1）
+      # 公网流量必须通过受保护的反向代理进入，禁止直接暴露后端端口。
       NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL}"
 
 networks:

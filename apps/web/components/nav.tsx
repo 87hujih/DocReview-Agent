@@ -6,9 +6,10 @@ import { usePathname } from "next/navigation";
 import styles from "./nav.module.css";
 
 const NAV_ITEMS = [
-  { href: "/resources", icon: "resources", label: "资源库" },
-  { href: "/approvals", icon: "approvals", label: "审批中心" },
-  { href: "/", icon: "assistant", label: "助手" }
+	{ href: "/resources", icon: "resources", label: "资源库" },
+	{ href: "/", icon: "assistant", label: "助手" },
+	{ href: "/runs", icon: "runs", label: "运行记录" },
+	{ href: "/approvals", icon: "approvals", label: "审批" }
 ];
 
 type NavProps = {
@@ -47,6 +48,18 @@ function renderIcon(icon: string) {
           <path d="M8 16h5" />
         </svg>
       );
+	case "runs":
+	  return (
+		<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+		  <path d="M5 19V5" /><path d="M5 17h5V7h5v6h4" /><path d="m16 10 3 3-3 3" />
+		</svg>
+	  );
+	case "approvals":
+	  return (
+		<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+		  <path d="m5 12 4 4L19 6" /><path d="M4 4h16v16H4z" />
+		</svg>
+	  );
     default:
       return (
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -77,7 +90,7 @@ export default function Nav({ extraSlotId, variant = "sidebar" }: NavProps) {
       <div className={styles.identity}>
         <span className={styles.eyebrow}>AI Workspace</span>
         <span className={styles.product}>个人助手</span>
-        <span className={styles.caption}>让对话、资源与审批在同一条工作流里自然切换。</span>
+		<span className={styles.caption}>所有 Agent 请求统一进入持久化新运行时。</span>
       </div>
 
       <div className={styles.body}>

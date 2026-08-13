@@ -4,7 +4,6 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { AssistantShell } from "./assistant-shell";
 import { AppChrome } from "../app-chrome";
 import {
-  confirmAssistantTaskSuggestion,
   createAssistantConversationWithFile,
   deleteAssistantSession,
   getAssistantCapabilities,
@@ -21,7 +20,6 @@ vi.mock("../../lib/api/assistant", async () => {
   );
   return {
     ...actual,
-    confirmAssistantTaskSuggestion: vi.fn(),
     createAssistantConversationWithFile: vi.fn(),
     deleteAssistantSession: vi.fn(),
     getAssistantCapabilities: vi.fn(),
@@ -44,7 +42,6 @@ const mockedCreateAssistantConversationWithFile = vi.mocked(createAssistantConve
 const mockedStreamAssistantConversation = vi.mocked(streamAssistantConversation);
 const mockedStreamAssistantMessage = vi.mocked(streamAssistantMessage);
 const mockedUploadAssistantFile = vi.mocked(uploadAssistantFile);
-const mockedConfirmAssistantTaskSuggestion = vi.mocked(confirmAssistantTaskSuggestion);
 const mockedDeleteAssistantSession = vi.mocked(deleteAssistantSession);
 
 function renderAssistantShell(url = "/") {
@@ -68,7 +65,6 @@ describe("AssistantShell", () => {
     mockedStreamAssistantConversation.mockReset();
     mockedStreamAssistantMessage.mockReset();
     mockedUploadAssistantFile.mockReset();
-    mockedConfirmAssistantTaskSuggestion.mockReset();
     mockedDeleteAssistantSession.mockReset();
     mockedGetAssistantCapabilities.mockResolvedValue({
       upload: {
@@ -242,6 +238,49 @@ describe("AssistantShell", () => {
       expect(mockedGetAssistantSession).toHaveBeenCalledWith("session-1");
     });
     expect(await screen.findByText("这是指定会话里的历史消息")).toBeInTheDocument();
+  });
+
+  it("binds a new turn to the latest persisted ready session resource", async () => {
+	  mockedGetAssistantSessions.mockResolvedValue([]);
+	  mockedGetAssistantSession.mockResolvedValue({
+		  messages: [
+			  {
+				  created_at: "2026-04-10T10:05:00Z",
+				  id: "message-file",
+				  kind: "session_file",
+				  payload: {
+					  file_name: "policy.md",
+					  resource_id: "22222222-2222-4222-8222-222222222222",
+					  resource_title: "Policy",
+					  source_type: "upload",
+					  status: "ready"
+				  },
+				  role: "assistant",
+				  sequence_no: 1
+			  }
+		  ],
+		  session: {
+			  created_at: "2026-04-10T10:00:00Z",
+			  id: "session-1",
+			  last_message_at: "2026-04-10T10:05:00Z",
+			  title: "Policy",
+			  updated_at: "2026-04-10T10:05:00Z"
+		  }
+	  });
+	  mockedStreamAssistantMessage.mockResolvedValue({ status: "completed" });
+
+	  renderAssistantShell("/?session=session-1");
+	  await screen.findByText("policy.md");
+	  fireEvent.change(screen.getByLabelText("输入消息"), { target: { value: "revise it" } });
+	  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+	  await waitFor(() => {
+		  expect(mockedStreamAssistantMessage).toHaveBeenCalledWith(
+			  "session-1",
+			  "revise it",
+			  expect.objectContaining({ resourceId: "22222222-2222-4222-8222-222222222222" })
+		  );
+	  });
   });
 
   it("loads target session from session query even when history list does not include it yet", async () => {
@@ -709,7 +748,7 @@ describe("AssistantShell", () => {
     expect(screen.queryByText(/^提示：本轮没有生成可展示内容。$/)).not.toBeInTheDocument();
   });
 
-  it("marks the original suggestion card as consumed after confirming task creation", async () => {
+  it("renders historical task suggestions as read-only after durable cutover", async () => {
     mockedGetAssistantSessions.mockResolvedValue([]);
     let resolveStream: ((value: { status: "completed" }) => void) | null = null;
     let onEvent: ((event: any) => void) | null = null;
@@ -720,41 +759,6 @@ describe("AssistantShell", () => {
         resolveStream = resolve as (value: { status: "completed" }) => void;
       });
     });
-    mockedConfirmAssistantTaskSuggestion.mockResolvedValue({
-      error_message: null,
-      messages: [
-        {
-          created_at: "2026-04-10T10:30:02Z",
-          id: "message-created",
-          kind: "task_created",
-          payload: {
-            detail_url: "/tasks/task-1",
-            instruction: "请修订第二章",
-            resource_id: "resource-1",
-            status: "pending",
-            suggestion_message_id: "message-suggestion",
-            task_id: "task-1"
-          },
-          role: "assistant",
-          sequence_no: 3
-        }
-      ],
-      session: {
-        created_at: "2026-04-10T10:30:00Z",
-        id: "session-created",
-        last_message_at: "2026-04-10T10:30:02Z",
-        title: "请帮我梳理学生守则第二章",
-        updated_at: "2026-04-10T10:30:02Z"
-      },
-      task: {
-        created_at: "2026-04-10T10:30:02Z",
-        id: "task-1",
-        instruction: "请修订第二章",
-        resource_id: "resource-1",
-        status: "pending"
-      }
-    });
-
     renderAssistantShell();
 
     await waitFor(() => {
@@ -804,17 +808,9 @@ describe("AssistantShell", () => {
       resolveStream?.({ status: "completed" });
     });
 
-    const confirmButton = await screen.findByRole("button", { name: "确认创建任务" });
-    fireEvent.click(confirmButton);
-
-    await waitFor(() => {
-      expect(mockedConfirmAssistantTaskSuggestion).toHaveBeenCalledWith("message-suggestion");
-    });
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "任务已创建" })).toBeDisabled();
-    });
-    expect(screen.queryByRole("button", { name: "确认创建任务" })).not.toBeInTheDocument();
+    const disabledButton = await screen.findByRole("button", { name: "旧任务链路已停用" });
+    expect(disabledButton).toBeDisabled();
+    fireEvent.click(disabledButton);
   });
 
   it("keeps a fresh draft clean when reset aborts a streaming turn", async () => {

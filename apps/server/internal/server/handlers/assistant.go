@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"agent_project/apps/server/internal/agent/cutover"
+	"agent_project/apps/server/internal/agent/identity"
 	"agent_project/apps/server/internal/assistant"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/storage/postgres"
@@ -28,7 +33,6 @@ type assistantService interface {
 	UploadFile(ctx context.Context, sessionID string, fileName string, content []byte) (*assistant.UploadFileResult, error)
 	ConfirmTaskSuggestion(ctx context.Context, messageID string) (*assistant.ConfirmTaskResult, error)
 	DeleteSession(ctx context.Context, sessionID string) (bool, error)
-	ToggleWebSearch(ctx context.Context, sessionID string, enabled bool) (*postgres.AssistantSession, error)
 }
 
 type assistantUploadPolicy interface {
@@ -44,11 +48,26 @@ type AssistantHandler struct {
 	service        assistantService
 	uploadMaxBytes int64
 	uploadPolicy   assistantUploadPolicy
+	turnPipeline   assistantTurnPipeline
+	identity       identity.Adapter
+}
+
+type assistantTurnPipeline interface {
+	Execute(ctx context.Context, request cutover.Request, observe cutover.Observer) (cutover.Result, error)
+}
+
+var errDurableTurnPipelineUnavailable = errors.New("durable turn pipeline is unavailable")
+
+type unavailableAssistantTurnPipeline struct{}
+
+func (unavailableAssistantTurnPipeline) Execute(context.Context, cutover.Request, cutover.Observer) (cutover.Result, error) {
+	return cutover.Result{}, errDurableTurnPipelineUnavailable
 }
 
 // assistantMessageRequest 定义助手接口接收的 JSON 请求体，收口当前接口需要的输入字段。
 type assistantMessageRequest struct {
-	Message string `json:"message"`
+	Message    string `json:"message"`
+	ResourceID string `json:"resource_id,omitempty"`
 }
 
 // assistantSessionResponse 定义助手接口返回给前端的 JSON 结构，避免直接暴露内部模型。
@@ -179,6 +198,19 @@ func NewAssistantHandlerWithUploadLimitAndPolicy(service assistantService, maxBy
 	}
 }
 
+// NewAssistantHandlerWithTurnPipeline creates the production durable transport
+// seam. A missing pipeline is replaced with a fail-closed sentinel so this
+// constructor can never fall through to the compatibility implementation.
+func NewAssistantHandlerWithTurnPipeline(service assistantService, maxBytes int64, policy assistantUploadPolicy, pipeline assistantTurnPipeline, adapter identity.Adapter) *AssistantHandler {
+	handler := NewAssistantHandlerWithUploadLimitAndPolicy(service, maxBytes, policy)
+	if pipeline == nil {
+		pipeline = unavailableAssistantTurnPipeline{}
+	}
+	handler.turnPipeline = pipeline
+	handler.identity = adapter
+	return handler
+}
+
 // defaultAssistantUploadPolicy 根据当前解析能力选择默认上传策略，在未启用 Tika 时自动退回到纯文本上传约束。
 func defaultAssistantUploadPolicy() assistantUploadPolicy {
 	policy, err := documentparser.New(documentparser.Options{Mode: documentparser.ModeText})
@@ -294,6 +326,19 @@ func (h *AssistantHandler) CreateConversation(requestCtx context.Context, ctx *a
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "消息内容不能为空"})
 		return
 	}
+	if h.turnPipeline != nil {
+		turnRequest, ok := h.buildTurnRequest(requestCtx, ctx, "", request)
+		if !ok {
+			return
+		}
+		result, err := h.turnPipeline.Execute(requestCtx, turnRequest, nil)
+		if err != nil {
+			h.writeTurnPipelineError(ctx, err)
+			return
+		}
+		ctx.Data(consts.StatusCreated, "application/json; charset=utf-8", result.DTO)
+		return
+	}
 
 	result, err := h.service.StartConversation(requestCtx, request.Message)
 	if err != nil {
@@ -318,6 +363,14 @@ func (h *AssistantHandler) CreateConversationStream(requestCtx context.Context, 
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": assistant.ErrMessageRequired.Error()})
 		return
 	}
+	if h.turnPipeline != nil {
+		turnRequest, ok := h.buildTurnRequest(requestCtx, ctx, "", request)
+		if !ok {
+			return
+		}
+		h.streamTurnPipeline(requestCtx, ctx, turnRequest)
+		return
+	}
 
 	h.streamAssistantEvents(ctx, func(emit func(assistant.StreamEvent) error) error {
 		return h.service.StartConversationStream(requestCtx, request.Message, emit)
@@ -334,6 +387,19 @@ func (h *AssistantHandler) AppendMessage(requestCtx context.Context, ctx *app.Re
 
 	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
 	if !ok {
+		return
+	}
+	if h.turnPipeline != nil {
+		turnRequest, ok := h.buildTurnRequest(requestCtx, ctx, sessionID, request)
+		if !ok {
+			return
+		}
+		result, err := h.turnPipeline.Execute(requestCtx, turnRequest, nil)
+		if err != nil {
+			h.writeTurnPipelineError(ctx, err)
+			return
+		}
+		ctx.Data(consts.StatusOK, "application/json; charset=utf-8", result.DTO)
 		return
 	}
 
@@ -363,6 +429,14 @@ func (h *AssistantHandler) AppendMessageStream(requestCtx context.Context, ctx *
 
 	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
 	if !ok {
+		return
+	}
+	if h.turnPipeline != nil {
+		turnRequest, ok := h.buildTurnRequest(requestCtx, ctx, sessionID, request)
+		if !ok {
+			return
+		}
+		h.streamTurnPipeline(requestCtx, ctx, turnRequest)
 		return
 	}
 
@@ -479,25 +553,6 @@ func (h *AssistantHandler) ConfirmTaskSuggestion(requestCtx context.Context, ctx
 	})
 }
 
-// ToggleWebSearch 更新会话的联网搜索开关状态。
-func (h *AssistantHandler) ToggleWebSearch(requestCtx context.Context, ctx *app.RequestContext) {
-	var request struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := json.Unmarshal(ctx.Request.Body(), &request); err != nil {
-		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "请求体格式错误"})
-		return
-	}
-
-	session, err := h.service.ToggleWebSearch(requestCtx, ctx.Param("id"), request.Enabled)
-	if err != nil {
-		h.writeAssistantError(ctx, err, "更新联网状态失败")
-		return
-	}
-
-	ctx.JSON(consts.StatusOK, toAssistantSessionResponse(*session))
-}
-
 // DeleteSession 删除一个会话。
 func (h *AssistantHandler) DeleteSession(requestCtx context.Context, ctx *app.RequestContext) {
 	sessionID, ok := parseAssistantUUIDParam(ctx, "会话 ID")
@@ -531,6 +586,7 @@ func parseAssistantUUIDParam(ctx *app.RequestContext, field string) (string, boo
 
 // writeAssistantError 把助手领域错误统一转换成 HTTP 响应，避免各个 handler 分散维护错误映射。
 func (h *AssistantHandler) writeAssistantError(ctx *app.RequestContext, err error, defaultMessage string) {
+	// 根据当前状态或类型选择对应的处理分支。
 	switch {
 	case errors.Is(err, assistant.ErrMessageRequired),
 		errors.Is(err, assistant.ErrFileNameRequired),
@@ -542,6 +598,124 @@ func (h *AssistantHandler) writeAssistantError(ctx *app.RequestContext, err erro
 	default:
 		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": defaultMessage})
 	}
+}
+
+// buildTurnRequest 执行该函数负责的核心处理逻辑。
+func (h *AssistantHandler) buildTurnRequest(requestCtx context.Context, ctx *app.RequestContext, sessionID string, message assistantMessageRequest) (cutover.Request, bool) {
+	message.Message = strings.TrimSpace(message.Message)
+	message.ResourceID = strings.TrimSpace(message.ResourceID)
+	if message.Message == "" {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": assistant.ErrMessageRequired.Error()})
+		return cutover.Request{}, false
+	}
+	if message.ResourceID != "" {
+		if _, err := uuid.Parse(message.ResourceID); err != nil {
+			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "资源 ID 非法"})
+			return cutover.Request{}, false
+		}
+	}
+	requestID := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Request-ID")))
+	if value, exists := ctx.Get("request_id"); exists {
+		if persisted, ok := value.(string); ok && strings.TrimSpace(persisted) != "" {
+			requestID = strings.TrimSpace(persisted)
+		}
+	}
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	afterSequence := 0
+	if raw := strings.TrimSpace(string(ctx.Request.Header.Peek("Last-Event-ID"))); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "Last-Event-ID 非法"})
+			return cutover.Request{}, false
+		}
+		afterSequence = parsed
+	}
+	workspaceID := strings.TrimSpace(string(ctx.Request.Header.Peek(identity.HeaderWorkspaceID)))
+	var scope identity.WorkspaceScope
+	identityAttestationPresent := strings.TrimSpace(string(ctx.Request.Header.Peek(identity.HeaderSignature))) != ""
+	if h.identity == nil {
+		ctx.JSON(consts.StatusServiceUnavailable, map[string]string{"error": "durable identity adapter is not configured"})
+		return cutover.Request{}, false
+	}
+	if !identityAttestationPresent {
+		ctx.JSON(consts.StatusUnauthorized, map[string]string{"error": "durable identity is required"})
+		return cutover.Request{}, false
+	}
+	{
+		headers := make(http.Header)
+		ctx.Request.Header.VisitAll(func(key, value []byte) {
+			headers.Add(string(key), string(value))
+		})
+		var err error
+		scope, err = h.identity.Authenticate(requestCtx, identity.Request{
+			Method: string(ctx.Method()), Path: string(ctx.Path()), RequestID: requestID, Header: headers,
+		}, workspaceID)
+		if err != nil {
+			ctx.JSON(consts.StatusUnauthorized, map[string]string{"error": "durable identity is not trusted"})
+			return cutover.Request{}, false
+		}
+		workspaceID = scope.WorkspaceID
+	}
+	return cutover.Request{
+		RequestID: requestID, TraceID: requestID, SessionID: sessionID, Message: message.Message,
+		WorkspaceID: workspaceID, ResourceID: message.ResourceID, AfterSequence: afterSequence, Scope: scope,
+	}, true
+}
+
+// writeTurnPipelineError 执行该函数负责的核心处理逻辑。
+func (h *AssistantHandler) writeTurnPipelineError(ctx *app.RequestContext, err error) {
+	// 根据当前状态或类型选择对应的处理分支。
+	switch {
+	case errors.Is(err, errDurableTurnPipelineUnavailable):
+		ctx.JSON(consts.StatusServiceUnavailable, map[string]string{"error": "durable agent runtime is unavailable"})
+	case errors.Is(err, identity.ErrUntrustedIdentity):
+		ctx.JSON(consts.StatusUnauthorized, map[string]string{"error": "durable identity is not trusted"})
+	case errors.Is(err, cutover.ErrUntrustedDurableScope):
+		ctx.JSON(consts.StatusForbidden, map[string]string{"error": "durable workspace scope is not trusted"})
+	case errors.Is(err, cutover.ErrTurnNotDeterministic):
+		ctx.JSON(consts.StatusServiceUnavailable, map[string]string{"error": "durable turn state is not ready; retry with the same request id"})
+	default:
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "处理助手请求失败"})
+	}
+}
+
+// streamTurnPipeline 执行该函数负责的核心处理逻辑。
+func (h *AssistantHandler) streamTurnPipeline(requestCtx context.Context, ctx *app.RequestContext, request cutover.Request) {
+	reader, writer := io.Pipe()
+	ctx.SetStatusCode(consts.StatusOK)
+	ctx.SetBodyStream(reader, -1)
+	ctx.Response.ImmediateHeaderFlush = true
+	ctx.Header("Cache-Control", "no-cache")
+	ctx.Header("Connection", "keep-alive")
+	ctx.SetContentType("text/event-stream; charset=utf-8")
+
+	// 启动并发任务，并由外围同步机制负责回收。
+	go func() {
+		defer writer.Close()
+		terminal := false
+		_, err := h.turnPipeline.Execute(requestCtx, request, func(event cutover.Event) error {
+			isTerminal, writeErr := writeCutoverStreamEvent(writer, event)
+			terminal = terminal || isTerminal
+			if errors.Is(writeErr, io.ErrClosedPipe) {
+				return context.Canceled
+			}
+			return writeErr
+		})
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			_ = writeAssistantSSEEventWithID(writer, request.AfterSequence, assistant.StreamEventError, assistantStreamErrorResponse{
+				Code: assistant.StreamErrorCodeInternal, Message: "助手暂时不可用，请使用相同 request_id 重试。",
+			})
+			return
+		}
+		if !terminal {
+			_ = writeAssistantSSEEventWithID(writer, request.AfterSequence, assistant.StreamEventDone, struct{}{})
+		}
+	}()
 }
 
 // streamAssistantEvents 把助手流式事件桥接到 SSE 响应，统一会话创建、增量回复和错误事件的写出顺序。
@@ -557,6 +731,7 @@ func (h *AssistantHandler) streamAssistantEvents(
 	ctx.Header("Connection", "keep-alive")
 	ctx.SetContentType("text/event-stream; charset=utf-8")
 
+	// 启动并发任务，并由外围同步机制负责回收。
 	go func() {
 		defer writer.Close()
 
@@ -646,6 +821,7 @@ func toAssistantTaskResponse(task *postgres.Task) *assistantTaskResponse {
 
 // writeAssistantStreamEvent 按事件类型把助手流式消息编码到 SSE，保持前端消费协议稳定。
 func writeAssistantStreamEvent(writer *io.PipeWriter, event assistant.StreamEvent) error {
+	// 根据当前状态或类型选择对应的处理分支。
 	switch event.Type {
 	case assistant.StreamEventSessionCreated:
 		if event.Session == nil {
@@ -672,7 +848,7 @@ func writeAssistantStreamEvent(writer *io.PipeWriter, event assistant.StreamEven
 	}
 }
 
-// writeAssistantStreamError 把流式链路中的领域错误转换成 SSE error 事件，避免连接直接以裸错误中断。
+// writeAssistantStreamError 把流式链路中的领域错误转换成 SSE 错误 事件，避免连接直接以裸错误中断。
 func writeAssistantStreamError(writer *io.PipeWriter, streamErr *assistant.StreamError) error {
 	if streamErr == nil {
 		streamErr = assistant.NewStreamError(
@@ -699,6 +875,77 @@ func writeAssistantSSEEvent(writer *io.PipeWriter, eventType string, payload any
 		body = marshaled
 	}
 
+	if _, err := io.WriteString(writer, "event: "+eventType+"\n"); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(writer, "data: "); err != nil {
+		return err
+	}
+	if _, err := writer.Write(body); err != nil {
+		return err
+	}
+	_, err := io.WriteString(writer, "\n\n")
+	return err
+}
+
+// writeCutoverStreamEvent 执行该函数负责的核心处理逻辑。
+func writeCutoverStreamEvent(writer *io.PipeWriter, event cutover.Event) (bool, error) {
+	payload := event.Payload
+	if len(payload) == 0 || !json.Valid(payload) {
+		payload = json.RawMessage(`{}`)
+	}
+	// 根据当前状态或类型选择对应的处理分支。
+	switch event.Type {
+	case "assistant.message":
+		var envelope map[string]json.RawMessage
+		_ = json.Unmarshal(payload, &envelope)
+		if _, wrapped := envelope["message"]; !wrapped {
+			payload, _ = json.Marshal(map[string]json.RawMessage{"message": payload})
+		}
+		return false, writeAssistantSSEEventWithID(writer, event.Sequence, assistant.StreamEventMessageCompleted, payload)
+	case "turn.succeeded":
+		return true, writeAssistantSSEEventWithID(writer, event.Sequence, assistant.StreamEventDone, struct{}{})
+	case "turn.failed", "turn.cancelled":
+		if err := writeAssistantSSEEventWithID(writer, event.Sequence, assistant.StreamEventError, assistantStreamErrorResponse{
+			Code: assistant.StreamErrorCodeInternal, Message: "持久化轮次结束，但没有可恢复的结果",
+		}); err != nil {
+			return true, err
+		}
+		return true, writeAssistantSSEEventWithID(writer, event.Sequence, assistant.StreamEventDone, struct{}{})
+	case "turn.waiting_input", "turn.waiting_approval":
+		if err := writeAssistantSSEEventWithID(writer, event.Sequence, "turn_state", payload); err != nil {
+			return true, err
+		}
+		return true, writeAssistantSSEEventWithID(writer, event.Sequence, assistant.StreamEventDone, struct{}{})
+	case "turn.accepted", "turn.running", "run.queued":
+		return false, writeAssistantSSEEventWithID(writer, event.Sequence, "turn_state", payload)
+	default:
+		if strings.ContainsAny(event.Type, "\r\n") || strings.TrimSpace(event.Type) == "" {
+			return false, fmt.Errorf("无效的持久化ed SSE 事件类型")
+		}
+		terminal := event.Type == assistant.StreamEventDone
+		return terminal, writeAssistantSSEEventWithID(writer, event.Sequence, event.Type, payload)
+	}
+}
+
+// writeAssistantSSEEventWithID 执行该函数负责的核心处理逻辑。
+func writeAssistantSSEEventWithID(writer *io.PipeWriter, sequence int, eventType string, payload any) error {
+	body := []byte("{}")
+	if raw, ok := payload.(json.RawMessage); ok {
+		body = raw
+	} else if payload != nil {
+		marshaled, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		body = marshaled
+	}
+	if sequence < 0 || strings.ContainsAny(eventType, "\r\n") {
+		return fmt.Errorf("无效的持久化ed SSE 事件标识")
+	}
+	if _, err := io.WriteString(writer, "id: "+strconv.Itoa(sequence)+"\n"); err != nil {
+		return err
+	}
 	if _, err := io.WriteString(writer, "event: "+eventType+"\n"); err != nil {
 		return err
 	}

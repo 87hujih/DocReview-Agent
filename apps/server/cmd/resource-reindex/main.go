@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// reindexMode 承载资源重建索引命令的目标选择结果，明确本次运行是按资源重建还是补齐缺失 current version。
+// reindexMode 承载资源重建索引命令的目标选择结果，明确本次运行是按资源重建还是补齐缺失 current 版本。
 type reindexMode struct {
 	ResourceID     string
 	MissingCurrent bool
@@ -41,10 +41,6 @@ func main() {
 		log.Fatalf("数据库连接失败：%v", err)
 	}
 	defer pool.Close()
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		log.Fatalf("数据库迁移失败：%v", err)
-	}
 
 	resourceRepo := postgres.NewResourceRepo(pool)
 	resourceStructureRepo := postgres.NewResourceStructureRepo(pool)
@@ -149,7 +145,7 @@ func reindexSingleCurrentVersion(ctx context.Context, repo *postgres.ResourceRep
 	})
 }
 
-// reindexMissingCurrentVersions 扫描缺失 current version 结果的资源，并为它们补做索引初始化。
+// reindexMissingCurrentVersions 扫描缺失 current 版本结果的资源，并为它们补做索引初始化。
 func reindexMissingCurrentVersions(ctx context.Context, repo *postgres.ResourceRepo, structureRepo *postgres.ResourceStructureRepo, versionIndexer *indexer.Service) (int, error) {
 	resources, err := repo.List(ctx)
 	if err != nil {

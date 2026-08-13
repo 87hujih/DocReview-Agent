@@ -77,7 +77,8 @@ else
   echo "Using preloaded local images for IMAGE_TAG=$IMAGE_TAG"
 fi
 
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm migrate
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-deps server web
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
 
 if [ -n "$SERVER_IMAGE_ARCHIVE" ] && [ -n "$WEB_IMAGE_ARCHIVE" ]; then

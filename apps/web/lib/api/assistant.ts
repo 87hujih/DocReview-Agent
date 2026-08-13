@@ -1,6 +1,5 @@
 import type {
   AssistantCapabilities,
-  AssistantConfirmTaskResult,
   AssistantConversation,
   AssistantSession,
   AssistantUploadResult
@@ -67,23 +66,8 @@ export async function uploadAssistantFile(
   });
 }
 
-export async function confirmAssistantTaskSuggestion(
-  messageId: string
-): Promise<AssistantConfirmTaskResult> {
-  return apiFetch<AssistantConfirmTaskResult>(`/api/assistant/task-suggestions/${messageId}/confirm`, {
-    method: "POST"
-  });
-}
-
 export async function deleteAssistantSession(sessionId: string): Promise<void> {
   await apiFetch<void>(`/api/assistant/sessions/${sessionId}`, {
     method: "DELETE"
-  });
-}
-
-export async function toggleWebSearch(sessionId: string, enabled: boolean): Promise<AssistantSession> {
-  return apiFetch<AssistantSession>(`/api/assistant/sessions/${sessionId}/web-search`, {
-    body: JSON.stringify({ enabled }),
-    method: "PATCH"
   });
 }

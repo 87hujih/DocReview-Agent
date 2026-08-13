@@ -1,51 +1,51 @@
 import { apiFetch } from "./client";
 
-export interface Approval {
+export type Approval = {
   id: string;
-  task_id: string;
+  workspace_id: string;
+  run_id: string;
+  step_id: string;
+  resource_id?: string;
+  session_id?: string;
+  objective: string;
+  tool_name: string;
+  tool_version: string;
+  reason: string;
   status: string;
-  reject_reason?: string | null;
+  resources: unknown;
+  payload: unknown;
+  decision_reason?: string;
+  created_at: string;
   decided_at?: string | null;
-  created_at: string;
-}
+};
 
-export interface ExecutionJob {
-  id: string;
-  task_id: string;
-  approval_id: string;
-  status: string;
-  error_message?: string | null;
-  new_version_id?: string | null;
-  started_at?: string | null;
-  completed_at?: string | null;
-  created_at: string;
-}
+export type ApprovalDecision = Pick<Approval, "id" | "status">;
 
-export function getApprovals(status?: string): Promise<Approval[]> {
-  const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
-  return apiFetch<{ approvals: Approval[] }>(`/api/approvals${suffix}`).then(
+export function getApprovals(status = "pending", limit = 50): Promise<Approval[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (status) {
+    params.set("status", status);
+  }
+  return apiFetch<{ approvals: Approval[] }>(`/api/agent/approvals?${params.toString()}`).then(
     (response) => response.approvals
   );
 }
 
 export function getApproval(id: string): Promise<Approval> {
-  return apiFetch<{ approval: Approval }>(`/api/approvals/${id}`).then(
+  return apiFetch<{ approval: Approval }>(`/api/agent/approvals/${id}`).then(
     (response) => response.approval
   );
 }
 
-export function getJob(id: string): Promise<ExecutionJob> {
-  return apiFetch<{ job: ExecutionJob }>(`/api/jobs/${id}`).then((response) => response.job);
-}
-
-export function approveApproval(id: string): Promise<Approval> {
-  return apiFetch<{ approval: Approval }>(`/api/approvals/${id}/approve`, {
+export function approveApproval(id: string, reason: string): Promise<ApprovalDecision> {
+  return apiFetch<{ approval: ApprovalDecision }>(`/api/agent/approvals/${id}/approve`, {
+    body: JSON.stringify({ reason }),
     method: "POST"
   }).then((response) => response.approval);
 }
 
-export function rejectApproval(id: string, reason: string): Promise<Approval> {
-  return apiFetch<{ approval: Approval }>(`/api/approvals/${id}/reject`, {
+export function rejectApproval(id: string, reason: string): Promise<ApprovalDecision> {
+  return apiFetch<{ approval: ApprovalDecision }>(`/api/agent/approvals/${id}/reject`, {
     body: JSON.stringify({ reason }),
     method: "POST"
   }).then((response) => response.approval);

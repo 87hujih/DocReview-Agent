@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -12,7 +11,6 @@ import (
 	"agent_project/apps/server/internal/agent/editor"
 	"agent_project/apps/server/internal/agent/planner"
 	"agent_project/apps/server/internal/assistant"
-	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
@@ -57,7 +55,7 @@ func TestOrchestratorRecordsCoreTaskEvents(t *testing.T) {
 		fakeEditorAgent{},
 		fakeRetrieverService{},
 		eventService,
-		0, // use default contextMaxRunes
+		0, // 说明： use default contextMaxRunes
 		nil,
 		nil,
 	)
@@ -320,7 +318,7 @@ func TestOrchestratorProjectsSnapshotStatusTransitions(t *testing.T) {
 			taskRepo,
 			resourceRepo,
 			approvalRepo,
-			failingPlannerAgent{err: fmt.Errorf("planner boom")},
+			failingPlannerAgent{err: fmt.Errorf("处理失败：planner boom")},
 			fakeReviewerAgent{},
 			fakeEditorAgent{},
 			fakeRetrieverService{},
@@ -487,13 +485,8 @@ func (r *recordingWorkflowNotifier) Notify(_ context.Context, _ *postgres.Task, 
 func newWorkflowTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
-		t.Skip("database not available")
-	}
-
 	ctx := workflowTestContext(t)
-	cfg := appconfig.Load()
-	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "task_workflow", postgres.NewPool, postgres.RunMigrations)
+	return postgrestest.NewIsolatedPool(t, ctx, "task_workflow", postgres.NewPool, postgres.RunMigrations)
 }
 
 // workflowCleanupResource 为测试场景处理 `工作流Cleanup资源` 的辅助步骤，减少重复搭建逻辑。

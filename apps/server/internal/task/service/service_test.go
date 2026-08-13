@@ -2,14 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
-	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/workflow"
@@ -18,6 +16,32 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// TestAfterTaskCreatedShadowRecordingDoesNotChangeLegacyAvailability 验证对应场景下的正常路径与失败路径。
+func TestAfterTaskCreatedShadowRecordingDoesNotChangeLegacyAvailability(t *testing.T) {
+	recorder := &fakeRuntimeShadowRecorder{err: errors.New("处理失败：影子不可用")}
+	service := New(nil, nil, nil, nil, WithRuntimeShadowRecorder(recorder))
+	task := &postgres.Task{ID: "task-1", ResourceID: "resource-1", Instruction: "improve"}
+
+	got, err := service.afterTaskCreated(context.Background(), task)
+	if err != nil || got != task {
+		t.Fatalf("shadow failure must not fail legacy task: task=%#v err=%v", got, err)
+	}
+	if recorder.calls != 1 {
+		t.Fatalf("expected one shadow recording attempt, got %d", recorder.calls)
+	}
+}
+
+type fakeRuntimeShadowRecorder struct {
+	calls int
+	err   error
+}
+
+// RecordLegacyTask 按领域约束持久化数据。
+func (r *fakeRuntimeShadowRecorder) RecordLegacyTask(context.Context, string, string, string) (string, bool, error) {
+	r.calls++
+	return "", false, r.err
+}
 
 // TestCreateTaskRecordsCreatedEvent 验证`createTask`在写入或副作用路径下的行为，防止同类回归。
 func TestCreateTaskRecordsCreatedEvent(t *testing.T) {
@@ -215,13 +239,8 @@ func TestCreateTaskFromAssistantSuggestionReturnsExistingTaskOnDuplicate(t *test
 func newTaskServiceTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
-		t.Skip("database not available")
-	}
-
 	ctx := taskServiceTestContext(t)
-	cfg := appconfig.Load()
-	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "task_service", postgres.NewPool, postgres.RunMigrations)
+	return postgrestest.NewIsolatedPool(t, ctx, "task_service", postgres.NewPool, postgres.RunMigrations)
 }
 
 // cleanupTaskServiceResource 为测试场景清理 `任务服务资源`，避免不同用例之间互相污染。
@@ -258,7 +277,7 @@ func taskServiceUniqueSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
-// assertTaskCreateFailedResult 封装 `任务创建Failed结果` 的断言逻辑，避免用例重复展开校验细节。
+// assertTaskCreateFailedResult 封装 `任务创建失败结果` 的断言逻辑，避免用例重复展开校验细节。
 func assertTaskCreateFailedResult(t *testing.T, task *postgres.Task, expectedError string) {
 	t.Helper()
 
@@ -270,7 +289,7 @@ func assertTaskCreateFailedResult(t *testing.T, task *postgres.Task, expectedErr
 	}
 }
 
-// assertStoredTaskFailed 封装 `Stored任务Failed` 的断言逻辑，避免用例重复展开校验细节。
+// assertStoredTaskFailed 封装 `Stored任务失败` 的断言逻辑，避免用例重复展开校验细节。
 func assertStoredTaskFailed(t *testing.T, ctx context.Context, taskRepo *postgres.TaskRepo, taskID string, expectedError string) {
 	t.Helper()
 

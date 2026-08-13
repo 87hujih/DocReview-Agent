@@ -91,11 +91,17 @@ jobs:
             | gzip -1 \
             | ssh -p ${{ secrets.DEPLOY_PORT }} ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "gunzip | docker load"
 
+      - name: Run database migrations
+        run: |
+          ssh -p ${{ secrets.DEPLOY_PORT }} ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "IMAGE_TAG=${{ env.IMAGE_TAG }} GHCR_OWNER=${{ github.repository_owner }} \
+            docker compose -f /opt/agent-project/docker-compose.prod.yml --env-file /opt/agent-project/.env run --rm migrate"
+
       - name: Start containers
         run: |
           ssh -p ${{ secrets.DEPLOY_PORT }} ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
             "IMAGE_TAG=${{ env.IMAGE_TAG }} GHCR_OWNER=${{ github.repository_owner }} \
-            docker compose -f /opt/agent-project/docker-compose.prod.yml --env-file /opt/agent-project/.env up -d"
+            docker compose -f /opt/agent-project/docker-compose.prod.yml --env-file /opt/agent-project/.env up -d --no-deps server web"
 
       - name: Verify server health
         run: |

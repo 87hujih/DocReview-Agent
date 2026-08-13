@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "dataset_version": "retrieval-eval-v1",
+  "cases": [
+    {
+      "id": "hybrid-current-policy",
+      "query": "runtime policy",
+      "limit": 3,
+      "relevant_node_ids": ["node-policy"],
+      "minimum_recall": 1.0,
+      "lexical": [
+        {"node_id": "node-distractor", "content": "runtime overview", "score": 0.9},
+        {"node_id": "node-policy", "content": "runtime policy is deterministic", "score": 0.7}
+      ],
+      "semantic": [
+        {"node_id": "node-policy", "content": "runtime policy is deterministic", "score": 0.95}
+      ]
+    },
+    {
+      "id": "long-document-semantic-recall",
+      "query": "lease generation fencing",
+      "limit": 5,
+      "relevant_node_ids": ["node-lease-fence"],
+      "minimum_recall": 1.0,
+      "synthetic_distractors": 40,
+      "semantic": [
+        {"node_id": "node-lease-fence", "content": "lease generation prevents stale completion", "score": 0.99}
+      ]
+    },
+    {
+      "id": "lexical-tool-failure-degradation",
+      "query": "citation node mapping",
+      "limit": 3,
+      "relevant_node_ids": ["node-citation"],
+      "minimum_recall": 1.0,
+      "degrade_channel": "lexical",
+      "semantic": [
+        {"node_id": "node-citation", "content": "citations retain canonical node ids", "score": 0.91}
+      ]
+    }
+  ]
+}

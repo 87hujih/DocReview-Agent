@@ -15,7 +15,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: agent_project
+          POSTGRES_DB: agent_project_test
         ports:
           - 5432:5432
         options: >-
@@ -32,10 +32,27 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Run offline Agent Runtime evaluation
+        run: >-
+          go run ./apps/server/cmd/agent-eval
+          -dataset apps/server/internal/agent/evaluation/testdata/agent_runtime_eval_v1.json
+          -candidate apps/server/internal/agent/evaluation/testdata/agent_runtime_candidate_v1.json
+          -report "$RUNNER_TEMP/agent-runtime-eval-report.json"
+
+      - name: Upload Agent Runtime evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-runtime-eval-report
+          path: ${{ runner.temp }}/agent-runtime-eval-report.json
+          if-no-files-found: error
+
       - name: Run server tests
         run: go test ./apps/server/...
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/agent_project?sslmode=disable
+          ALLOW_DB_TESTS: "1"
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/agent_project_test?sslmode=disable
+          TEST_DATABASE_HOST_ALLOWLIST: localhost
 
   web-lint:
     runs-on: ubuntu-latest
@@ -55,6 +72,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Run web tests
+        run: npm test -- --run
 
       - name: Run web lint
         run: npm run lint

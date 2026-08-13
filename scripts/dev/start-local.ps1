@@ -30,7 +30,12 @@ try {
     throw "Tika 未在 45 秒内就绪。请检查 docker compose 服务 tika。"
   }
 
-  $serverCommand = "& { Set-Location '$repoRoot'; `$env:SERVER_PORT='18080'; go run ./apps/server/cmd/server }"
+  & go run ./apps/server/cmd/migrate
+  if ($LASTEXITCODE -ne 0) {
+    throw "数据库迁移失败，未启动后端。"
+  }
+
+  $serverCommand = "& { Set-Location '$repoRoot'; `$env:APP_ENV='development'; `$env:SERVER_PORT='18080'; `$env:CORS_ALLOWED_ORIGINS='http://127.0.0.1:3000'; go run ./apps/server/cmd/server }"
   $serverProcess = Start-Process `
     -FilePath $pwshPath `
     -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $serverCommand) `

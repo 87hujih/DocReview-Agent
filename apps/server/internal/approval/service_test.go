@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"agent_project/apps/server/internal/assistant"
-	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
 	"agent_project/apps/server/internal/task/models"
@@ -74,7 +72,7 @@ func TestApproveCreatesJobAndUpdatesTask(t *testing.T) {
 		t.Fatal("expected decided_at to be set")
 	}
 
-	// 验证 worker 信号已发出
+	// 验证 工作进程 信号已发出
 	select {
 	case <-jobCh:
 	default:
@@ -558,6 +556,7 @@ func TestApproveConcurrentOnlyOneSucceeds(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
+		// 启动并发任务，并由外围同步机制负责回收。
 		go func() {
 			defer wg.Done()
 			<-startCh
@@ -572,6 +571,7 @@ func TestApproveConcurrentOnlyOneSucceeds(t *testing.T) {
 
 	var successCount, alreadyDecidedCount int
 	for err := range errCh {
+		// 根据当前状态或类型选择对应的处理分支。
 		switch {
 		case err == nil:
 			successCount++
@@ -646,6 +646,7 @@ func TestApproveAndRejectConcurrentOnlyOneSucceeds(t *testing.T) {
 	var wg sync.WaitGroup
 
 	wg.Add(1)
+	// 启动并发任务，并由外围同步机制负责回收。
 	go func() {
 		defer wg.Done()
 		<-startCh
@@ -654,6 +655,7 @@ func TestApproveAndRejectConcurrentOnlyOneSucceeds(t *testing.T) {
 	}()
 
 	wg.Add(1)
+	// 启动并发任务，并由外围同步机制负责回收。
 	go func() {
 		defer wg.Done()
 		<-startCh
@@ -667,6 +669,7 @@ func TestApproveAndRejectConcurrentOnlyOneSucceeds(t *testing.T) {
 
 	var successCount, alreadyDecidedCount int
 	for err := range errCh {
+		// 根据当前状态或类型选择对应的处理分支。
 		switch {
 		case err == nil:
 			successCount++
@@ -701,6 +704,7 @@ func TestApproveAndRejectConcurrentOnlyOneSucceeds(t *testing.T) {
 		t.Fatalf("get job by approval id: %v", err)
 	}
 
+	// 根据当前状态或类型选择对应的处理分支。
 	switch updatedApproval.Status {
 	case "approved":
 		if updatedTask.Status != models.StatusExecuting {
@@ -822,13 +826,8 @@ func TestGetJobReturnsRecord(t *testing.T) {
 func newApprovalTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
-		t.Skip("database not available")
-	}
-
 	ctx := approvalTestContext(t)
-	cfg := appconfig.Load()
-	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "approval_service", postgres.NewPool, postgres.RunMigrations)
+	return postgrestest.NewIsolatedPool(t, ctx, "approval_service", postgres.NewPool, postgres.RunMigrations)
 }
 
 // clearApprovalBaseVersionID 为测试场景清理 `审批Base版本ID`，避免不同用例之间互相污染。

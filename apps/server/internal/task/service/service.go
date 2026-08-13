@@ -25,10 +25,24 @@ var (
 
 // Service 协调任务创建、查询和后台编排启动。
 type Service struct {
-	taskRepo     *postgres.TaskRepo
-	resourceRepo *postgres.ResourceRepo
-	runner       *workflow.WorkflowRunner
-	eventService *taskevents.Service
+	taskRepo      *postgres.TaskRepo
+	resourceRepo  *postgres.ResourceRepo
+	runner        *workflow.WorkflowRunner
+	eventService  *taskevents.Service
+	runtimeShadow RuntimeShadowRecorder
+}
+
+type RuntimeShadowRecorder interface {
+	RecordLegacyTask(context.Context, string, string, string) (runID string, recorded bool, err error)
+}
+
+type Option func(*Service)
+
+// WithRuntimeShadowRecorder 执行该函数负责的核心处理逻辑。
+func WithRuntimeShadowRecorder(recorder RuntimeShadowRecorder) Option {
+	return func(service *Service) {
+		service.runtimeShadow = recorder
+	}
 }
 
 // New 创建任务服务。
@@ -37,13 +51,20 @@ func New(
 	resourceRepo *postgres.ResourceRepo,
 	runner *workflow.WorkflowRunner,
 	eventService *taskevents.Service,
+	options ...Option,
 ) *Service {
-	return &Service{
+	service := &Service{
 		taskRepo:     taskRepo,
 		resourceRepo: resourceRepo,
 		runner:       runner,
 		eventService: eventService,
 	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service
 }
 
 // CreateTask 创建任务，并在生产接线中异步启动编排器。
@@ -168,10 +189,21 @@ func (s *Service) afterTaskCreated(ctx context.Context, task *postgres.Task) (*p
 			"status":      task.Status,
 		},
 	})
-
 	if s.runner != nil {
 		if err := s.runner.Enqueue(task.ID); err != nil {
 			return s.failCreatedTask(ctx, task, err)
+		}
+	}
+	if s.runtimeShadow != nil {
+		runID, recorded, err := s.runtimeShadow.RecordLegacyTask(ctx, task.ID, task.ResourceID, task.Instruction)
+		if err != nil {
+			log.Printf("警告：记录 Agent Runtime shadow 失败：task=%s err=%v", task.ID, err)
+		} else if recorded {
+			s.recordEvent(ctx, taskevents.RecordInput{
+				TaskID: task.ID, Source: "agent_runtime_shadow", Level: "info",
+				EventType: "agent_runtime.shadow_recorded", Message: "任务已写入 Agent Runtime shadow",
+				Payload: map[string]any{"run_id": runID, "mode": "shadow"},
+			})
 		}
 	}
 
@@ -222,6 +254,7 @@ func (s *Service) failCreatedTask(ctx context.Context, task *postgres.Task, enqu
 
 // taskEnqueueFailureDetail 整理 `任务入队失败` 的细节描述，便于上层统一返回错误或状态说明。
 func taskEnqueueFailureDetail(err error) (string, string) {
+	// 根据当前状态或类型选择对应的处理分支。
 	switch {
 	case errors.Is(err, workflow.ErrQueueFull):
 		return "任务队列已满，无法调度执行", "queue_full"

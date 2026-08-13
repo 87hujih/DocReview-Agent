@@ -36,26 +36,28 @@ func TestRegisterExposesHealthEndpoint(t *testing.T) {
 	}
 }
 
-// TestNewRegistersApprovalRoutesWhenHandlerProvided 验证`newRegistersApprovalRoutesWhenHandlerProvided`在特定边界条件下的行为，防止同类回归。
-func TestNewRegistersApprovalRoutesWhenHandlerProvided(t *testing.T) {
+// TestNewDoesNotExposeLegacyTaskApprovalOrJobRoutes verifies the old execution
+// surface cannot be re-enabled through router dependency injection.
+func TestNewDoesNotExposeLegacyTaskApprovalOrJobRoutes(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{})
+	for _, path := range []string{"/api/tasks", "/api/approvals", "/api/jobs/00000000-0000-0000-0000-000000000000"} {
+		response := ut.PerformRequest(h.Engine, "GET", path, nil).Result()
+		if response.StatusCode() != consts.StatusNotFound {
+			t.Fatalf("legacy route %s must stay disabled, got %d", path, response.StatusCode())
+		}
+	}
+}
+
+func TestNewRegistersAgentRuntimeQueryRoutesWhenHandlerProvided(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
-		ApprovalHandler: handlers.NewApprovalHandler(nil),
+		AgentRuntimeQueryHandler: handlers.NewAgentRuntimeQueryHandler(nil, nil),
 	})
 
-	response := ut.PerformRequest(h.Engine, "GET", "/api/approvals", nil).Result()
-
-	if response.StatusCode() != consts.StatusInternalServerError {
-		t.Fatalf("expected status %d when approval route is registered without service, got %d", consts.StatusInternalServerError, response.StatusCode())
-	}
-
-	approvalDetailResponse := ut.PerformRequest(h.Engine, "GET", "/api/approvals/00000000-0000-0000-0000-000000000000", nil).Result()
-	if approvalDetailResponse.StatusCode() != consts.StatusInternalServerError {
-		t.Fatalf("expected status %d for registered approval detail route, got %d", consts.StatusInternalServerError, approvalDetailResponse.StatusCode())
-	}
-
-	jobDetailResponse := ut.PerformRequest(h.Engine, "GET", "/api/jobs/00000000-0000-0000-0000-000000000000", nil).Result()
-	if jobDetailResponse.StatusCode() != consts.StatusInternalServerError {
-		t.Fatalf("expected status %d for registered job detail route, got %d", consts.StatusInternalServerError, jobDetailResponse.StatusCode())
+	for _, path := range []string{"/api/agent/runs", "/api/agent/approvals"} {
+		response := ut.PerformRequest(h.Engine, "GET", path, nil).Result()
+		if response.StatusCode() != consts.StatusServiceUnavailable {
+			t.Fatalf("new agent route %s was not registered, got %d", path, response.StatusCode())
+		}
 	}
 }
 
@@ -98,47 +100,44 @@ func TestNewRegistersResourceListRouteWhenHandlerProvided(t *testing.T) {
 	}
 }
 
-// TestNewRegistersResourceTaskContextRouteWhenHandlerProvided 验证`newRegistersResourceTaskContextRouteWhenHandlerProvided`在特定边界条件下的行为，防止同类回归。
-func TestNewRegistersResourceTaskContextRouteWhenHandlerProvided(t *testing.T) {
+// TestNewDoesNotExposeLegacyResourceTaskContext verifies task-oriented resource
+// projection is no longer part of the production HTTP surface.
+func TestNewDoesNotExposeLegacyResourceTaskContext(t *testing.T) {
 	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
 		ResourceHandler: handlers.NewResourceHandler(nil, nil),
 	})
 
 	response := ut.PerformRequest(h.Engine, "GET", "/api/resources/resource-1/task-context", nil).Result()
-	if response.StatusCode() != consts.StatusInternalServerError {
-		t.Fatalf("expected status %d when resource task context route is registered without repo, got %d", consts.StatusInternalServerError, response.StatusCode())
+	if response.StatusCode() != consts.StatusNotFound {
+		t.Fatalf("legacy task-context route must stay disabled, got %d", response.StatusCode())
 	}
 }
 
 // TestNewAddsCORSHeadersToAPIResponses 验证`new`在写入或副作用路径下的行为，防止同类回归。
 func TestNewAddsCORSHeadersToAPIResponses(t *testing.T) {
-	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
-		ApprovalHandler: handlers.NewApprovalHandler(nil),
-	})
+	h := New(appconfig.Config{ServerPort: "0", CORSAllowedOrigins: []string{"http://127.0.0.1:3000"}}, nil, Deps{})
 
 	response := ut.PerformRequest(
 		h.Engine,
 		"GET",
-		"/api/approvals",
+		"/api/not-found",
 		nil,
 		ut.Header{Key: "Origin", Value: "http://127.0.0.1:3000"},
 	).Result()
 
-	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "*" {
-		t.Fatalf("expected Access-Control-Allow-Origin header '*', got %q", value)
+	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "http://127.0.0.1:3000" {
+		t.Fatalf("expected allowlisted Access-Control-Allow-Origin, got %q", value)
 	}
 }
 
 // TestNewHandlesAssistantPreflightOPTIONS 验证`new`在格式处理路径下的行为，防止同类回归。
 func TestNewHandlesAssistantPreflightOPTIONS(t *testing.T) {
-	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
-		ApprovalHandler: handlers.NewApprovalHandler(nil),
-	})
+	h := New(appconfig.Config{ServerPort: "0", CORSAllowedOrigins: []string{"http://127.0.0.1:3000"}}, nil, Deps{})
 
 	response := ut.PerformRequest(
 		h.Engine,
 		"OPTIONS",
-		"/api/approvals/test-approval/approve",
+		"/api/agent/approvals/test-approval/approve",
 		nil,
 		ut.Header{Key: "Origin", Value: "http://127.0.0.1:3000"},
 		ut.Header{Key: "Access-Control-Request-Method", Value: "POST"},
@@ -149,8 +148,8 @@ func TestNewHandlesAssistantPreflightOPTIONS(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", consts.StatusNoContent, response.StatusCode())
 	}
 
-	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "*" {
-		t.Fatalf("expected Access-Control-Allow-Origin header '*', got %q", value)
+	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "http://127.0.0.1:3000" {
+		t.Fatalf("expected allowlisted Access-Control-Allow-Origin, got %q", value)
 	}
 
 	if value := string(response.Header.Peek("Access-Control-Allow-Methods")); !strings.Contains(value, "POST") {
@@ -160,7 +159,7 @@ func TestNewHandlesAssistantPreflightOPTIONS(t *testing.T) {
 
 // TestNewAddsRequestIDToPreflightOPTIONS 验证`new`在写入或副作用路径下的行为，防止同类回归。
 func TestNewAddsRequestIDToPreflightOPTIONS(t *testing.T) {
-	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{})
+	h := New(appconfig.Config{ServerPort: "0", CORSAllowedOrigins: []string{"http://127.0.0.1:3000"}}, nil, Deps{})
 
 	response := ut.PerformRequest(
 		h.Engine,
@@ -179,8 +178,50 @@ func TestNewAddsRequestIDToPreflightOPTIONS(t *testing.T) {
 		t.Fatal("expected X-Request-ID on preflight response")
 	}
 
-	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "*" {
-		t.Fatalf("expected Access-Control-Allow-Origin header '*', got %q", value)
+	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "http://127.0.0.1:3000" {
+		t.Fatalf("expected allowlisted Access-Control-Allow-Origin, got %q", value)
+	}
+}
+
+// TestNewRejectsDisallowedCORSPreflight 验证对应场景下的正常路径与失败路径。
+func TestNewRejectsDisallowedCORSPreflight(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0", CORSAllowedOrigins: []string{"https://app.example.com"}}, nil, Deps{})
+
+	response := ut.PerformRequest(
+		h.Engine,
+		"OPTIONS",
+		"/api/resources",
+		nil,
+		ut.Header{Key: "Origin", Value: "https://evil.example.com"},
+		ut.Header{Key: "Access-Control-Request-Method", Value: "GET"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", consts.StatusForbidden, response.StatusCode())
+	}
+	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "" {
+		t.Fatalf("expected no allow-origin header for rejected origin, got %q", value)
+	}
+}
+
+// TestNewAllowsPatchCORSPreflight 验证对应场景下的正常路径与失败路径。
+func TestNewAllowsPatchCORSPreflight(t *testing.T) {
+	h := New(appconfig.Config{ServerPort: "0", CORSAllowedOrigins: []string{"https://app.example.com"}}, nil, Deps{})
+
+	response := ut.PerformRequest(
+		h.Engine,
+		"OPTIONS",
+		"/api/assistant/sessions/session-1/web-search",
+		nil,
+		ut.Header{Key: "Origin", Value: "https://app.example.com"},
+		ut.Header{Key: "Access-Control-Request-Method", Value: "PATCH"},
+	).Result()
+
+	if response.StatusCode() != consts.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", consts.StatusNoContent, response.StatusCode())
+	}
+	if value := string(response.Header.Peek("Access-Control-Allow-Methods")); !strings.Contains(value, "PATCH") {
+		t.Fatalf("expected Access-Control-Allow-Methods to contain PATCH, got %q", value)
 	}
 }
 
@@ -223,7 +264,7 @@ func TestNewRegistersAssistantStreamingRoutesWhenHandlerProvided(t *testing.T) {
 
 // TestNewAddsCORSHeadersToAssistantStreamingResponses 验证`new`在写入或副作用路径下的行为，防止同类回归。
 func TestNewAddsCORSHeadersToAssistantStreamingResponses(t *testing.T) {
-	h := New(appconfig.Config{ServerPort: "0"}, nil, Deps{
+	h := New(appconfig.Config{ServerPort: "0", CORSAllowedOrigins: []string{"http://127.0.0.1:3000"}}, nil, Deps{
 		AssistantHandler: handlers.NewAssistantHandler(fakeAssistantRouterService{}),
 	})
 
@@ -235,8 +276,8 @@ func TestNewAddsCORSHeadersToAssistantStreamingResponses(t *testing.T) {
 		ut.Header{Key: "Origin", Value: "http://127.0.0.1:3000"},
 	).Result()
 
-	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "*" {
-		t.Fatalf("expected Access-Control-Allow-Origin header '*', got %q", value)
+	if value := string(response.Header.Peek("Access-Control-Allow-Origin")); value != "http://127.0.0.1:3000" {
+		t.Fatalf("expected allowlisted Access-Control-Allow-Origin, got %q", value)
 	}
 }
 
@@ -257,7 +298,7 @@ func TestNewRegistersAssistantCapabilitiesRouteWhenHandlerProvided(t *testing.T)
 	}
 }
 
-// fakeAssistantRouterService 作为助手Router服务的测试替身，用于在用例里提供可控的依赖行为。
+// fakeAssistantRouterService 作为助手路由器服务的测试替身，用于在用例里提供可控的依赖行为。
 type fakeAssistantRouterService struct{}
 
 // ListSessions 实现测试替身需要的 `ListSessions` 接口方法，为用例分支提供可控返回。
@@ -310,6 +351,7 @@ func (fakeAssistantRouterService) DeleteSession(context.Context, string) (bool, 
 	return false, nil
 }
 
+// ToggleWebSearch 执行该函数负责的核心处理逻辑。
 func (fakeAssistantRouterService) ToggleWebSearch(context.Context, string, bool) (*postgres.AssistantSession, error) {
 	return nil, nil
 }

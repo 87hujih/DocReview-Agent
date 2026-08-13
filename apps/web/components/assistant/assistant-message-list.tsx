@@ -10,9 +10,9 @@ import { AssistantMarkdown } from "./assistant-markdown";
 import styles from "./assistant-message-list.module.css";
 
 type AssistantMessageListProps = {
-  activeTaskSuggestionId: string | null;
+  activeTaskSuggestionId?: string | null;
   messages: AssistantRenderableMessage[];
-  onConfirmTaskSuggestion: (messageId: string) => Promise<void> | void;
+  onConfirmTaskSuggestion?: (messageId: string) => Promise<void> | void;
   onStopGeneration?: () => void;
   showStopAction?: boolean;
   stopActionLabel?: string;
@@ -134,7 +134,7 @@ function CopyActionIcon({ state }: CopyActionIconProps) {
 }
 
 export function AssistantMessageList({
-  activeTaskSuggestionId,
+  activeTaskSuggestionId = null,
   messages,
   onConfirmTaskSuggestion,
   onStopGeneration,
@@ -227,6 +227,7 @@ export function AssistantMessageList({
         if (message.kind === "task_suggestion") {
           const isConsumed = consumedSuggestionIds.has(message.id);
           const isCreating = activeTaskSuggestionId === message.id;
+          const isLegacyActionDisabled = !onConfirmTaskSuggestion;
 
           return (
             <section key={message.id} className={styles.card}>
@@ -241,11 +242,17 @@ export function AssistantMessageList({
               <p className={styles.cardMeta}>{message.payload.resource_label}</p>
               <p className={styles.cardStatus}>{message.payload.status_message}</p>
               <button
-                disabled={!message.payload.can_create || isCreating || isConsumed}
-                onClick={() => void onConfirmTaskSuggestion(message.id)}
+                disabled={!message.payload.can_create || isCreating || isConsumed || isLegacyActionDisabled}
+                onClick={() => void onConfirmTaskSuggestion?.(message.id)}
                 type="button"
               >
-                {isCreating ? "正在创建任务" : isConsumed ? "任务已创建" : message.payload.action_label}
+                {isLegacyActionDisabled
+                  ? "旧任务链路已停用"
+                  : isCreating
+                    ? "正在创建任务"
+                    : isConsumed
+                      ? "任务已创建"
+                      : message.payload.action_label}
               </button>
             </section>
           );

@@ -24,13 +24,15 @@ findings.md
 progress.md
 task_plan.md
 /a.html
-/AGENTS.md
 /CLAUDE.md
 /首页布局.md
 /链路分析.md
 /Go后端开发实习生_马华恩_18860331316.pdf
 /tasks/
-/docs/
+/docs/*
+!/docs/agent-runtime-learning-guide.md
+!/docs/remediation/
+!/docs/remediation/**
 docs/superpowers/
 scripts/dev/.local-dev-state.json
 .vite/

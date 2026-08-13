@@ -1,23 +1,31 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"testing"
 
-// TestMainWiresAssistantRuntimeEventServiceAndProjector 验证 server main 会显式装配 assistant runtime learning 依赖。
-func TestMainWiresAssistantRuntimeEventServiceAndProjector(t *testing.T) {
-	deps := buildAssistantRuntimeLearning(nil)
-	if deps == nil {
-		t.Fatal("expected runtime learning deps to be wired")
+	"agent_project/apps/server/internal/agent/cutover"
+)
+
+// TestServerWiresDurableOnlyTurnPipeline guards the production seam against
+// accidentally reintroducing a legacy or shadow runner.
+func TestServerWiresDurableOnlyTurnPipeline(t *testing.T) {
+	runner := serverTestRunner{}
+	pipeline, err := buildDurableOnlyTurnPipeline(runner)
+	if err != nil {
+		t.Fatalf("build durable-only turn pipeline: %v", err)
 	}
-	if deps.eventRepo == nil {
-		t.Fatal("expected runtime event repo to be wired")
+	result, err := pipeline.Execute(context.Background(), cutover.Request{RequestID: "request-1", Message: "review"}, nil)
+	if err != nil {
+		t.Fatalf("execute durable-only turn pipeline: %v", err)
 	}
-	if deps.sampleRepo == nil {
-		t.Fatal("expected runtime sample repo to be wired")
+	if result.Mode != cutover.ModeDurable {
+		t.Fatalf("expected durable mode, got %q", result.Mode)
 	}
-	if deps.eventService == nil {
-		t.Fatal("expected runtime event service to be wired")
-	}
-	if deps.projector == nil {
-		t.Fatal("expected runtime learning projector to be wired")
-	}
+}
+
+type serverTestRunner struct{}
+
+func (serverTestRunner) Execute(context.Context, cutover.Request, cutover.Observer) (cutover.Result, error) {
+	return cutover.Result{}, nil
 }

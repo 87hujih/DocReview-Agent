@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -100,15 +99,6 @@ func newAssistantIntegrationPool(t *testing.T) *pgxpool.Pool {
 		t.Skip("assistant repo integration test requires ASSISTANT_DB_INTEGRATION=1")
 	}
 
-	cfg := appconfig.Load()
-	if strings.TrimSpace(cfg.DatabaseURL) == "" {
-		t.Skip("database not available")
-	}
-
-	if !isLocalDatabaseHost(cfg.DatabaseURL) && strings.TrimSpace(os.Getenv("ALLOW_NONLOCAL_DB")) != "1" {
-		t.Skip("nonlocal database requires ALLOW_NONLOCAL_DB=1")
-	}
-
 	ctx := assistantTestContext(t)
-	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "storage_postgres_assistant_integration", NewPool, RunMigrations)
+	return postgrestest.NewIsolatedPool(t, ctx, "storage_postgres_assistant_integration", NewPool, RunMigrations)
 }

@@ -199,6 +199,10 @@ export type AssistantStreamEvent =
       type: "error";
     }
   | {
+      status: "running" | "waiting_input" | "waiting_approval" | "succeeded" | "failed" | "cancelled";
+      type: "turn_state";
+    }
+  | {
       type: "done";
     };
 

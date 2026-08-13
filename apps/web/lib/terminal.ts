@@ -1,7 +1,7 @@
-const SUCCESS_STATUSES = new Set(["approved", "completed"]);
-const RUNNING_STATUSES = new Set(["drafting", "executing", "planning", "retrieving", "running"]);
-const WARNING_STATUSES = new Set(["awaiting_approval", "pending", "rejected"]);
-const ERROR_STATUSES = new Set(["error", "failed"]);
+const SUCCESS_STATUSES = new Set(["approved", "completed", "succeeded"]);
+const RUNNING_STATUSES = new Set(["drafting", "executing", "planning", "queued", "retrieving", "running"]);
+const WARNING_STATUSES = new Set(["awaiting_approval", "pending", "rejected", "waiting_approval", "waiting_input"]);
+const ERROR_STATUSES = new Set(["cancelled", "error", "failed"]);
 
 const LOCALIZED_STATUS_LABELS: Record<string, string> = {
   approved: "已批准",
@@ -16,6 +16,11 @@ const LOCALIZED_STATUS_LABELS: Record<string, string> = {
   rejected: "已拒绝",
   retrieving: "检索中",
   running: "运行中",
+  queued: "排队中",
+  succeeded: "已完成",
+  waiting_approval: "待审批",
+  waiting_input: "待输入",
+  cancelled: "已取消",
   unknown: "未知"
 };
 

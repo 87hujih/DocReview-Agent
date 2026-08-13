@@ -3,9 +3,159 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
+
+// TestLoadReadsExplicitCORSAllowedOrigins 验证对应场景下的正常路径与失败路径。
+func TestLoadReadsExplicitCORSAllowedOrigins(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("CORS_ALLOWED_ORIGINS", "http://127.0.0.1:3000, https://app.example.com")
+
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	cfg := Load()
+	want := []string{"http://127.0.0.1:3000", "https://app.example.com"}
+	if !slices.Equal(cfg.CORSAllowedOrigins, want) {
+		t.Fatalf("expected CORS origins %#v, got %#v", want, cfg.CORSAllowedOrigins)
+	}
+	if cfg.Environment != "development" {
+		t.Fatalf("expected environment %q, got %q", "development", cfg.Environment)
+	}
+}
+
+// TestValidateForServerRejectsProductionWithoutCORSOrigins 验证对应场景下的正常路径与失败路径。
+func TestValidateForServerRejectsProductionWithoutCORSOrigins(t *testing.T) {
+	cfg := validServerConfigForCORSTest()
+	cfg.Environment = "production"
+	cfg.CORSAllowedOrigins = nil
+
+	err := cfg.ValidateForServer()
+	if err == nil || !strings.Contains(err.Error(), "CORS_ALLOWED_ORIGINS") {
+		t.Fatalf("生产环境缺少 CORS 允许列表时应返回错误，实际错误：%v", err)
+	}
+}
+
+// TestValidateForServerRejectsWildcardCORSOrigin 验证对应场景下的正常路径与失败路径。
+func TestValidateForServerRejectsWildcardCORSOrigin(t *testing.T) {
+	cfg := validServerConfigForCORSTest()
+	cfg.CORSAllowedOrigins = []string{"*"}
+
+	err := cfg.ValidateForServer()
+	if err == nil || !strings.Contains(err.Error(), "通配符") {
+		t.Fatalf("CORS 来源包含通配符时应返回错误，实际错误：%v", err)
+	}
+}
+
+// TestValidateForServerRejectsCORSOriginWithPath 验证对应场景下的正常路径与失败路径。
+func TestValidateForServerRejectsCORSOriginWithPath(t *testing.T) {
+	cfg := validServerConfigForCORSTest()
+	cfg.CORSAllowedOrigins = []string{"https://app.example.com/path"}
+
+	err := cfg.ValidateForServer()
+	if err == nil || !strings.Contains(err.Error(), "不能带路径") {
+		t.Fatalf("CORS 来源包含路径时应返回错误，实际错误：%v", err)
+	}
+}
+
+// TestValidateForServerAcceptsProductionCORSAllowlist 验证对应场景下的正常路径与失败路径。
+func TestValidateForServerAcceptsProductionCORSAllowlist(t *testing.T) {
+	cfg := validServerConfigForCORSTest()
+	cfg.Environment = "production"
+	cfg.CORSAllowedOrigins = []string{"https://app.example.com"}
+
+	if err := cfg.ValidateForServer(); err != nil {
+		t.Fatalf("有效的生产 CORS 允许列表应通过校验，实际错误：%v", err)
+	}
+}
+
+// TestValidateForServerRejectsDurableRuntimeWithoutExplicitDoubleCohort 验证对应场景下的正常路径与失败路径。
+func TestValidateForServerAcceptsGlobalDurableRuntimeWithoutCohort(t *testing.T) {
+	cfg := validServerConfigForCORSTest()
+	cfg.AgentRuntimeMode = "durable"
+	cfg.AgentRuntimeTrustedIngressSecret = "0123456789abcdef0123456789abcdef"
+	cfg.AgentRuntimeTrustedIngressSource = "edge-hmac-v1"
+	cfg.AgentRuntimeTrustedIngressMaxAgeMS = 300000
+
+	if err := cfg.ValidateForServer(); err != nil {
+		t.Fatalf("全量持久化模式不应再要求 cohort，实际错误：%v", err)
+	}
+}
+
+// TestValidateForServerRejectsDurableRuntimeWithoutTrustedIngress 验证对应场景下的正常路径与失败路径。
+func TestValidateForServerRejectsDurableRuntimeWithoutTrustedIngress(t *testing.T) {
+	cfg := validServerConfigForCORSTest()
+	cfg.AgentRuntimeMode = "durable"
+	cfg.AgentRuntimeTrustedIngressSecret = ""
+	cfg.AgentRuntimeTrustedIngressSource = ""
+
+	err := cfg.ValidateForServer()
+	if err == nil || !strings.Contains(err.Error(), "TRUSTED_INGRESS") {
+		t.Fatalf("持久化模式缺少可信入口时应闭锁失败，实际错误：%v", err)
+	}
+}
+
+// TestValidateForServerAcceptsExplicitDurableCohortWithTrustedIngress 验证对应场景下的正常路径与失败路径。
+func TestValidateForServerRejectsLegacyAndShadowAfterGlobalCutover(t *testing.T) {
+	for _, mode := range []string{"legacy", "shadow"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := validServerConfigForCORSTest()
+			cfg.AgentRuntimeMode = mode
+			err := cfg.ValidateForServer()
+			if err == nil || !strings.Contains(err.Error(), "durable") {
+				t.Fatalf("模式 %q 应在全量切流后被拒绝，实际错误：%v", mode, err)
+			}
+		})
+	}
+}
+
+func TestLoadDefaultsToDurableRuntime(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	cfg := Load()
+	if cfg.AgentRuntimeMode != "durable" {
+		t.Fatalf("全量切流后默认模式应为 durable，实际为 %q", cfg.AgentRuntimeMode)
+	}
+}
+
+// TestValidateForMigrationsRequiresDatabaseURL 验证对应场景下的正常路径与失败路径。
+func TestValidateForMigrationsRequiresDatabaseURL(t *testing.T) {
+	err := (Config{}).ValidateForMigrations()
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("expected DATABASE_URL error, got %v", err)
+	}
+}
+
+// TestValidateForMigrationsDoesNotRequireServerOrAIConfig 验证对应场景下的正常路径与失败路径。
+func TestValidateForMigrationsDoesNotRequireServerOrAIConfig(t *testing.T) {
+	cfg := Config{DatabaseURL: "postgres://database.example/agent_project"}
+	if err := cfg.ValidateForMigrations(); err != nil {
+		t.Fatalf("expected database-only config to pass, got %v", err)
+	}
+}
+
+// validServerConfigForCORSTest 执行该函数负责的核心处理逻辑。
+func validServerConfigForCORSTest() Config {
+	return Config{
+		ServerPort:                         "8080",
+		DatabaseURL:                        "postgres://example",
+		SiliconFlowAPIKey:                  "test-key",
+		LLMModel:                           "llm-model",
+		EmbeddingModel:                     "embedding-model",
+		EmbeddingDim:                       1024,
+		RerankerModel:                      "reranker-model",
+		DocumentParser:                     "text",
+		CORSAllowedOrigins:                 []string{"http://127.0.0.1:3000"},
+		AgentRuntimeMode:                   "durable",
+		AgentRuntimeTrustedIngressSecret:   "0123456789abcdef0123456789abcdef",
+		AgentRuntimeTrustedIngressSource:   "edge-hmac-v1",
+		AgentRuntimeTrustedIngressMaxAgeMS: 300000,
+	}
+}
 
 // TestLoadUsesYAMLDefaults 验证未被覆盖时会读取 YAML 默认配置。
 func TestLoadUsesYAMLDefaults(t *testing.T) {
@@ -190,7 +340,7 @@ func TestLoadUsesEnvironmentOverridesOverDotEnv(t *testing.T) {
 	}
 }
 
-// TestLoadUsesHardcodedLLMDefault 验证`load`在依赖选择路径下的行为，防止同类回归。
+// TestLoadUsesHardcodedLLMDefault 验证`加载`在依赖选择路径下的行为，防止同类回归。
 func TestLoadUsesHardcodedLLMDefault(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -226,7 +376,7 @@ func TestLoadUsesHardcodedLLMDefault(t *testing.T) {
 	}
 }
 
-// TestLoadUsesDocumentParserOverrides 验证`load`在依赖选择路径下的行为，防止同类回归。
+// TestLoadUsesDocumentParserOverrides 验证`加载`在依赖选择路径下的行为，防止同类回归。
 func TestLoadUsesDocumentParserOverrides(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -267,7 +417,7 @@ func TestLoadUsesDocumentParserOverrides(t *testing.T) {
 	}
 }
 
-// TestLoadStopsDotEnvSearchAtWorktreeRoot 验证`load`在流程控制路径下的行为，防止同类回归。
+// TestLoadStopsDotEnvSearchAtWorktreeRoot 验证`加载`在流程控制路径下的行为，防止同类回归。
 func TestLoadStopsDotEnvSearchAtWorktreeRoot(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -316,7 +466,7 @@ func TestLoadStopsDotEnvSearchAtWorktreeRoot(t *testing.T) {
 	}
 }
 
-// TestLoadUsesLogDefaultsFromYAML 验证`load`在依赖选择路径下的行为，防止同类回归。
+// TestLoadUsesLogDefaultsFromYAML 验证`加载`在依赖选择路径下的行为，防止同类回归。
 func TestLoadUsesLogDefaultsFromYAML(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -361,7 +511,7 @@ func TestLoadUsesLogDefaultsFromYAML(t *testing.T) {
 	}
 }
 
-// TestLoadUsesEnvironmentOverridesForLogging 验证`load`在依赖选择路径下的行为，防止同类回归。
+// TestLoadUsesEnvironmentOverridesForLogging 验证`加载`在依赖选择路径下的行为，防止同类回归。
 func TestLoadUsesEnvironmentOverridesForLogging(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("DATABASE_URL", "")
@@ -422,15 +572,7 @@ func TestValidateForServerRequiresDatabaseURL(t *testing.T) {
 
 // TestValidateForServerAcceptsValidConfig 验证完整配置可以通过服务启动前校验。
 func TestValidateForServerAcceptsValidConfig(t *testing.T) {
-	cfg := Config{
-		ServerPort:        "8080",
-		DatabaseURL:       "postgres://example",
-		SiliconFlowAPIKey: "api-key",
-		LLMModel:          "llm-model",
-		EmbeddingModel:    "embedding-model",
-		EmbeddingDim:      1024,
-		RerankerModel:     "reranker-model",
-	}
+	cfg := validServerConfigForCORSTest()
 
 	if err := cfg.ValidateForServer(); err != nil {
 		t.Fatalf("expected valid config, got %v", err)
@@ -504,16 +646,8 @@ func TestValidateForServerRequiresLLMModel(t *testing.T) {
 
 // TestValidateForServerAllowsTextParserWithoutTika 验证`validateForServer`在合法输入或兼容路径下的行为，防止同类回归。
 func TestValidateForServerAllowsTextParserWithoutTika(t *testing.T) {
-	cfg := Config{
-		ServerPort:        "8080",
-		DatabaseURL:       "postgres://example",
-		SiliconFlowAPIKey: "api-key",
-		LLMModel:          "llm-model",
-		EmbeddingModel:    "embedding-model",
-		EmbeddingDim:      1024,
-		RerankerModel:     "reranker-model",
-		DocumentParser:    "text",
-	}
+	cfg := validServerConfigForCORSTest()
+	cfg.DocumentParser = "text"
 
 	if err := cfg.ValidateForServer(); err != nil {
 		t.Fatalf("expected valid text parser config, got %v", err)
@@ -522,17 +656,10 @@ func TestValidateForServerAllowsTextParserWithoutTika(t *testing.T) {
 
 // TestValidateForServerRequiresTikaURLWhenTikaParserEnabled 验证`validateForServer`在约束校验路径下的行为，防止同类回归。
 func TestValidateForServerRequiresTikaURLWhenTikaParserEnabled(t *testing.T) {
-	cfg := Config{
-		ServerPort:        "8080",
-		DatabaseURL:       "postgres://example",
-		SiliconFlowAPIKey: "api-key",
-		LLMModel:          "llm-model",
-		EmbeddingModel:    "embedding-model",
-		EmbeddingDim:      1024,
-		RerankerModel:     "reranker-model",
-		DocumentParser:    "tika",
-		TikaTimeoutMS:     30000,
-	}
+	cfg := validServerConfigForCORSTest()
+	cfg.DocumentParser = "tika"
+	cfg.TikaURL = ""
+	cfg.TikaTimeoutMS = 30000
 
 	err := cfg.ValidateForServer()
 	if err == nil {
@@ -546,18 +673,10 @@ func TestValidateForServerRequiresTikaURLWhenTikaParserEnabled(t *testing.T) {
 
 // TestValidateForServerRequiresPositiveTikaTimeout 验证`validateForServer`在约束校验路径下的行为，防止同类回归。
 func TestValidateForServerRequiresPositiveTikaTimeout(t *testing.T) {
-	cfg := Config{
-		ServerPort:        "8080",
-		DatabaseURL:       "postgres://example",
-		SiliconFlowAPIKey: "api-key",
-		LLMModel:          "llm-model",
-		EmbeddingModel:    "embedding-model",
-		EmbeddingDim:      1024,
-		RerankerModel:     "reranker-model",
-		DocumentParser:    "tika",
-		TikaURL:           "http://127.0.0.1:9998",
-		TikaTimeoutMS:     0,
-	}
+	cfg := validServerConfigForCORSTest()
+	cfg.DocumentParser = "tika"
+	cfg.TikaURL = "http://127.0.0.1:9998"
+	cfg.TikaTimeoutMS = 0
 
 	err := cfg.ValidateForServer()
 	if err == nil {

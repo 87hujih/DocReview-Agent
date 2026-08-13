@@ -1,15 +1,5 @@
-import TaskCreatePageClient from "./task-create-client";
+import { redirect } from "next/navigation";
 
-type TaskCreatePageProps = {
-  searchParams?: {
-    resource_id?: string | string[];
-  };
-};
-
-export default function TaskCreatePage({ searchParams }: TaskCreatePageProps) {
-  const resourceId = Array.isArray(searchParams?.resource_id)
-    ? searchParams?.resource_id[0] || ""
-    : searchParams?.resource_id || "";
-
-  return <TaskCreatePageClient resourceId={resourceId} />;
+export default function DeprecatedTaskCreatePage() {
+  redirect("/");
 }

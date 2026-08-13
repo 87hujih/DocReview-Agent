@@ -13,7 +13,6 @@ import (
 	executoragent "agent_project/apps/server/internal/agent/executor"
 	"agent_project/apps/server/internal/approval"
 	"agent_project/apps/server/internal/assistant"
-	appconfig "agent_project/apps/server/internal/config"
 	documentparser "agent_project/apps/server/internal/document/parser"
 	"agent_project/apps/server/internal/job"
 	"agent_project/apps/server/internal/knowledge/indexer"
@@ -307,13 +306,8 @@ func cleanupFlowData(t *testing.T, pool *pgxpool.Pool, resourceID string, sessio
 func newFlowTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	cfg := appconfig.Load()
-	if strings.TrimSpace(cfg.DatabaseURL) == "" {
-		t.Skip("database not available")
-	}
-
 	ctx := flowTestContext(t)
-	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "server_files_flow", postgres.NewPool, postgres.RunMigrations)
+	return postgrestest.NewIsolatedPool(t, ctx, "server_files_flow", postgres.NewPool, postgres.RunMigrations)
 }
 
 // flowTestContext 构造测试上下文，统一附带当前用例需要的取消和超时能力。

@@ -10,18 +10,38 @@ import (
 
 const (
 	allowHeaders = "Content-Type, X-Request-ID"
-	allowMethods = "GET, POST, DELETE, OPTIONS"
+	allowMethods = "GET, POST, PATCH, DELETE, OPTIONS"
 )
 
-// CORS 为当前前后端分离的本地运行方式补齐浏览器跨域头和预检处理。
-func CORS() app.HandlerFunc {
+// CORS only emits cross-origin permissions 用于 一个 exact 已配置的 origin match.
+func CORS(allowedOrigins []string) app.HandlerFunc {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		origin = strings.TrimSpace(origin)
+		if origin != "" {
+			allowed[origin] = struct{}{}
+		}
+	}
+
 	return func(ctx context.Context, requestCtx *app.RequestContext) {
-		requestCtx.Header("Access-Control-Allow-Origin", "*")
-		requestCtx.Header("Access-Control-Allow-Methods", allowMethods)
-		requestCtx.Header("Access-Control-Allow-Headers", allowHeaders)
-		requestCtx.Header("Access-Control-Expose-Headers", requestIDHeader)
+		origin := strings.TrimSpace(string(requestCtx.Request.Header.Peek("Origin")))
+		_, originAllowed := allowed[origin]
+		if origin != "" {
+			requestCtx.Header("Vary", "Origin")
+		}
+
+		if originAllowed {
+			requestCtx.Header("Access-Control-Allow-Origin", origin)
+			requestCtx.Header("Access-Control-Allow-Methods", allowMethods)
+			requestCtx.Header("Access-Control-Allow-Headers", allowHeaders)
+			requestCtx.Header("Access-Control-Expose-Headers", requestIDHeader)
+		}
 
 		if strings.EqualFold(string(requestCtx.Method()), consts.MethodOptions) {
+			if origin != "" && !originAllowed {
+				requestCtx.AbortWithStatus(consts.StatusForbidden)
+				return
+			}
 			requestCtx.AbortWithStatus(consts.StatusNoContent)
 			return
 		}
