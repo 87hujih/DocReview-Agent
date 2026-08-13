@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/knowledge/embedder"
 	"agent_project/apps/server/internal/knowledge/ingest"
@@ -22,9 +22,8 @@ import (
 
 // TestShouldRunSearchIntegrationRequiresExplicitOptIn 验证`shouldRunSearchIntegration`在约束校验路径下的行为，防止同类回归。
 func TestShouldRunSearchIntegrationRequiresExplicitOptIn(t *testing.T) {
-	cfg := appconfig.Config{
-		DatabaseURL:       "postgres://postgres:postgres@127.0.0.1:55432/agent_project?sslmode=disable",
-		SiliconFlowAPIKey: "test-key",
+	cfg := searchIntegrationConfig{
+		siliconFlowAPIKey: "test-key",
 	}
 
 	t.Setenv("KNOWLEDGE_RETRIEVER_INTEGRATION", "")
@@ -38,15 +37,13 @@ func TestShouldRunSearchIntegrationRequiresExplicitOptIn(t *testing.T) {
 	}
 }
 
-// TestShouldRunSearchIntegrationAllowsExplicitOptInWithLocalDB 验证`shouldRunSearchIntegration`在合法输入或兼容路径下的行为，防止同类回归。
-func TestShouldRunSearchIntegrationAllowsExplicitOptInWithLocalDB(t *testing.T) {
-	cfg := appconfig.Config{
-		DatabaseURL:       "postgres://postgres:postgres@127.0.0.1:55432/agent_project?sslmode=disable",
-		SiliconFlowAPIKey: "test-key",
+// TestShouldRunSearchIntegrationAllowsExplicitOptInWithAPIKey 验证联网集成测试需要显式开关和进程环境中的 API 键。
+func TestShouldRunSearchIntegrationAllowsExplicitOptInWithAPIKey(t *testing.T) {
+	cfg := searchIntegrationConfig{
+		siliconFlowAPIKey: "test-key",
 	}
 
 	t.Setenv("KNOWLEDGE_RETRIEVER_INTEGRATION", "1")
-	t.Setenv("ALLOW_NONLOCAL_DB", "")
 
 	shouldRun, reason := shouldRunSearchIntegration(cfg)
 	if !shouldRun {
@@ -54,22 +51,17 @@ func TestShouldRunSearchIntegrationAllowsExplicitOptInWithLocalDB(t *testing.T) 
 	}
 }
 
-// TestShouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride 验证`shouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride`在特定边界条件下的行为，防止同类回归。
-func TestShouldRunSearchIntegrationBlocksNonLocalDBWithoutOverride(t *testing.T) {
-	cfg := appconfig.Config{
-		DatabaseURL:       "postgres://postgres:postgres@10.0.0.8:5432/agent_project?sslmode=disable",
-		SiliconFlowAPIKey: "test-key",
-	}
-
+// TestShouldRunSearchIntegrationRequiresExplicitAPIKey 确保测试不会从仓库 dotenv 隐式取得外部服务凭据。
+func TestShouldRunSearchIntegrationRequiresExplicitAPIKey(t *testing.T) {
+	cfg := searchIntegrationConfig{}
 	t.Setenv("KNOWLEDGE_RETRIEVER_INTEGRATION", "1")
-	t.Setenv("ALLOW_NONLOCAL_DB", "")
 
 	shouldRun, reason := shouldRunSearchIntegration(cfg)
 	if shouldRun {
-		t.Fatal("expected nonlocal database to require explicit override")
+		t.Fatal("expected integration test to require an explicit API key")
 	}
-	if !strings.Contains(reason, "ALLOW_NONLOCAL_DB=1") {
-		t.Fatalf("expected nonlocal db reason, got %q", reason)
+	if !strings.Contains(reason, "SILICONFLOW_API_KEY") {
+		t.Fatalf("expected API key reason, got %q", reason)
 	}
 }
 
@@ -434,7 +426,7 @@ func TestSearchByResourceFallsBackToLegacyChunks(t *testing.T) {
 
 // TestSearchIntegration 验证导入文档后能够通过真实 embedding、reranker 和数据库完成一次检索。
 func TestSearchIntegration(t *testing.T) {
-	cfg := appconfig.Load()
+	cfg := loadSearchIntegrationConfigFromEnvironment()
 	if shouldRun, reason := shouldRunSearchIntegration(cfg); !shouldRun {
 		t.Skip(reason)
 	}
@@ -442,14 +434,14 @@ func TestSearchIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	pool := postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "knowledge_retriever", postgres.NewPool, postgres.RunMigrations)
+	pool := postgrestest.NewIsolatedPool(t, ctx, "knowledge_retriever", postgres.NewPool, postgres.RunMigrations)
 
 	repo := postgres.NewResourceRepo(pool)
-	emb, err := embedder.New(ctx, cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDim)
+	emb, err := embedder.New(ctx, cfg.siliconFlowBaseURL, cfg.siliconFlowAPIKey, cfg.embeddingModel, cfg.embeddingDim)
 	if err != nil {
 		t.Fatalf("new embedder: %v", err)
 	}
-	rerankerClient := reranker.New(cfg.SiliconFlowBaseURL, cfg.SiliconFlowAPIKey, cfg.RerankerModel)
+	rerankerClient := reranker.New(cfg.siliconFlowBaseURL, cfg.siliconFlowAPIKey, cfg.rerankerModel)
 
 	tempDir := t.TempDir()
 	markdownPath := filepath.Join(tempDir, "attendance-policy.md")
@@ -504,38 +496,49 @@ func TestSearchIntegration(t *testing.T) {
 	}
 }
 
-// shouldRunSearchIntegration 为测试场景处理 `shouldRun搜索Integration` 的辅助步骤，减少重复搭建逻辑。
-func shouldRunSearchIntegration(cfg appconfig.Config) (bool, string) {
+type searchIntegrationConfig struct {
+	siliconFlowAPIKey  string
+	siliconFlowBaseURL string
+	embeddingModel     string
+	embeddingDim       int
+	rerankerModel      string
+}
+
+// shouldRunSearchIntegration keeps external-服务 opt-位于 separate 来自 the shared 数据库 fuse.
+func shouldRunSearchIntegration(cfg searchIntegrationConfig) (bool, string) {
 	if strings.TrimSpace(os.Getenv("KNOWLEDGE_RETRIEVER_INTEGRATION")) != "1" {
 		return false, "skipping: integration test requires KNOWLEDGE_RETRIEVER_INTEGRATION=1"
 	}
 
-	if strings.TrimSpace(cfg.SiliconFlowAPIKey) == "" {
+	if strings.TrimSpace(cfg.siliconFlowAPIKey) == "" {
 		return false, "skipping: SILICONFLOW_API_KEY not configured"
-	}
-
-	if strings.TrimSpace(cfg.DatabaseURL) == "" {
-		return false, "skipping: DATABASE_URL not configured"
-	}
-
-	if !isLocalDatabaseHost(cfg.DatabaseURL) && strings.TrimSpace(os.Getenv("ALLOW_NONLOCAL_DB")) != "1" {
-		return false, "skipping: nonlocal database requires ALLOW_NONLOCAL_DB=1"
 	}
 
 	return true, ""
 }
 
-// isLocalDatabaseHost 为测试场景处理 `isLocalDatabaseHost` 的辅助步骤，减少重复搭建逻辑。
-func isLocalDatabaseHost(databaseURL string) bool {
-	lowerURL := strings.ToLower(strings.TrimSpace(databaseURL))
-	switch {
-	case strings.Contains(lowerURL, "@127.0.0.1:"),
-		strings.Contains(lowerURL, "@localhost:"),
-		strings.Contains(lowerURL, "@[::1]:"):
-		return true
-	default:
-		return false
+// 处理失败： loadSearchIntegrationConfigFromEnvironment intentionally bypasses dotenv-backed production config.
+func loadSearchIntegrationConfigFromEnvironment() searchIntegrationConfig {
+	embeddingDim := 1024
+	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("EMBEDDING_DIM"))); err == nil && value > 0 {
+		embeddingDim = value
 	}
+
+	return searchIntegrationConfig{
+		siliconFlowAPIKey:  strings.TrimSpace(os.Getenv("SILICONFLOW_API_KEY")),
+		siliconFlowBaseURL: testEnvOrDefault("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"),
+		embeddingModel:     testEnvOrDefault("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B"),
+		embeddingDim:       embeddingDim,
+		rerankerModel:      testEnvOrDefault("RERANKER_MODEL", "Qwen/Qwen3-Reranker-8B"),
+	}
+}
+
+// testEnvOrDefault 执行该函数负责的核心处理逻辑。
+func testEnvOrDefault(key string, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 // fakeRetrieverRepo 作为检索器仓储的测试替身，用于在用例里提供可控的依赖行为。
@@ -627,7 +630,7 @@ type fakeRetrieverReranker struct {
 	results []reranker.Result
 }
 
-// Rerank 实现测试替身需要的 `Rerank` 接口方法，为用例分支提供可控返回。
+// 重排 实现测试替身需要的 `重排` 接口方法，为用例分支提供可控返回。
 func (r fakeRetrieverReranker) Rerank(context.Context, string, []string, int) ([]reranker.Result, error) {
 	return r.results, nil
 }

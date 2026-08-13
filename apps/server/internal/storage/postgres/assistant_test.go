@@ -2,13 +2,9 @@ package postgres
 
 import (
 	"context"
-	"net/url"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
-	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/testsupport/postgrestest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -194,47 +190,12 @@ func TestAssistantRepoListMessagesAfterSequenceReturnsAscendingWindow(t *testing
 	}
 }
 
-// TestAssistantRepoDatabaseHostGateOnlyAllowsLoopback 验证`assistantRepoDatabaseHostGateOnly`在合法输入或兼容路径下的行为，防止同类回归。
-func TestAssistantRepoDatabaseHostGateOnlyAllowsLoopback(t *testing.T) {
-	allowed := []string{
-		"postgres://user:pass@127.0.0.1:5432/app",
-		"postgres://user:pass@localhost:5432/app",
-		"postgres://user:pass@[::1]:5432/app",
-	}
-	for _, databaseURL := range allowed {
-		if !isLocalDatabaseHost(databaseURL) {
-			t.Fatalf("expected %s to be treated as local", databaseURL)
-		}
-	}
-
-	blocked := []string{
-		"postgres://user:pass@10.0.0.2:5432/app",
-		"postgres://user:pass@192.168.1.20:5432/app",
-		"postgres://user:pass@106.52.42.194:5432/app",
-		"postgres://user:pass@db.internal:5432/app",
-	}
-	for _, databaseURL := range blocked {
-		if isLocalDatabaseHost(databaseURL) {
-			t.Fatalf("expected %s to require explicit nonlocal opt-in", databaseURL)
-		}
-	}
-}
-
 // newAssistantTestPool 创建测试用隔离数据库连接池，统一初始化与清理约束。
 func newAssistantTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
-		t.Skip("database not available")
-	}
-
-	cfg := appconfig.Load()
-	if !isLocalDatabaseHost(cfg.DatabaseURL) {
-		t.Skip("assistant repo integration test only runs against local database hosts")
-	}
-
 	ctx := assistantTestContext(t)
-	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "storage_postgres_assistant", NewPool, RunMigrations)
+	return postgrestest.NewIsolatedPool(t, ctx, "storage_postgres_assistant", NewPool, RunMigrations)
 }
 
 // assistantTestContext 构造测试上下文，统一附带当前用例需要的取消和超时能力。
@@ -253,21 +214,5 @@ func mustAssistantMessageInput(t *testing.T, role string, kind string, payload s
 		Role:    role,
 		Kind:    kind,
 		Payload: []byte(payload),
-	}
-}
-
-// isLocalDatabaseHost 为测试场景处理 `isLocalDatabaseHost` 的辅助步骤，减少重复搭建逻辑。
-func isLocalDatabaseHost(databaseURL string) bool {
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		return false
-	}
-
-	host := strings.ToLower(parsed.Hostname())
-	switch host {
-	case "127.0.0.1", "localhost", "::1":
-		return true
-	default:
-		return false
 	}
 }

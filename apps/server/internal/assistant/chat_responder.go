@@ -78,6 +78,7 @@ type ChatCompletionInput struct {
 	CurrentDocument          *CurrentDocument
 	Decision                 *DeliberationDecision
 	TaskSuggestionDecision   *TaskSuggestionDecision
+	WebSearch                *WebSearchState
 }
 
 // ChatCompletionResult 表示模型返回的自然语言回复。
@@ -368,6 +369,22 @@ func buildRuntimeContext(input ChatCompletionInput) string {
 		sections = append(sections, strings.Join(lines, "\n"))
 	} else if state.ActiveResource != nil && (state.CurrentDocument == nil || !state.CurrentDocument.Ready) {
 		sections = append(sections, "当前已有资源，但本轮没有命中直接证据片段；若用户追问资源细节，请明确说明信息不足。")
+	}
+
+	if input.WebSearch != nil && input.WebSearch.Used && len(input.WebSearch.Sources) > 0 {
+		lines := make([]string, 0, len(input.WebSearch.Sources)+1)
+		lines = append(lines, fmt.Sprintf(
+			"以下是本轮联网搜索（关键词：%s）的外部公开资料，仅供参考：",
+			strings.Join(input.WebSearch.Queries, "、"),
+		))
+		for i, src := range input.WebSearch.Sources {
+			snippet := strings.TrimSpace(src.Snippet)
+			if len([]rune(snippet)) > 200 {
+				snippet = string([]rune(snippet)[:200]) + "…"
+			}
+			lines = append(lines, fmt.Sprintf("%d. 【%s】 %s", i+1, src.Title, snippet))
+		}
+		sections = append(sections, strings.Join(lines, "\n"))
 	}
 
 	return strings.Join(sections, "\n\n")

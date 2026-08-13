@@ -3,14 +3,12 @@ package job
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	executoragent "agent_project/apps/server/internal/agent/executor"
 	"agent_project/apps/server/internal/assistant"
-	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/indexer"
 	"agent_project/apps/server/internal/storage/postgres"
 	taskevents "agent_project/apps/server/internal/task/events"
@@ -153,7 +151,7 @@ func TestWorkerProcessesJob(t *testing.T) {
 	t.Fatal("timed out waiting for worker to process job")
 }
 
-// TestWorkerMarksTaskFailedWhenExecutionFails 验证`worker`在流程控制路径下的行为，防止同类回归。
+// TestWorkerMarksTaskFailedWhenExecutionFails 验证`工作进程`在流程控制路径下的行为，防止同类回归。
 func TestWorkerMarksTaskFailedWhenExecutionFails(t *testing.T) {
 	pool := newJobTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -373,7 +371,7 @@ func TestWorkerProcessesJobProjectsCompletedSnapshot(t *testing.T) {
 	t.Fatal("timed out waiting for worker to project completed snapshot")
 }
 
-// TestWorkerMarksTaskFailedProjectsFailedSnapshot 验证`worker`在流程控制路径下的行为，防止同类回归。
+// TestWorkerMarksTaskFailedProjectsFailedSnapshot 验证`工作进程`在流程控制路径下的行为，防止同类回归。
 func TestWorkerMarksTaskFailedProjectsFailedSnapshot(t *testing.T) {
 	pool := newJobTestPool(t)
 	resourceRepo := postgres.NewResourceRepo(pool)
@@ -592,13 +590,8 @@ func TestWorkerFailsLegacyJobWithoutBaseVersion(t *testing.T) {
 func newJobTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
-		t.Skip("database not available")
-	}
-
 	ctx := jobTestContext(t)
-	cfg := appconfig.Load()
-	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "job_worker", postgres.NewPool, postgres.RunMigrations)
+	return postgrestest.NewIsolatedPool(t, ctx, "job_worker", postgres.NewPool, postgres.RunMigrations)
 }
 
 // cleanupJobResource 为测试场景清理 `作业资源`，避免不同用例之间互相污染。

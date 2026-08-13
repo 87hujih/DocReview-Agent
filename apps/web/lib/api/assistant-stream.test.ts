@@ -275,6 +275,26 @@ describe("assistant-stream", () => {
       message: "本轮没有生成可展示内容。"
     });
   });
+
+  it("resumes an interrupted persisted stream with the same request id and event cursor", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(createResponse("id: 2\nevent: turn_state\ndata: {\"status\":\"running\"}\n\n"))
+      .mockResolvedValueOnce(createResponse("id: 5\nevent: done\ndata: {}\n\n"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await streamAssistantConversation("继续", {
+      maxResumeAttempts: 1,
+      requestId: "request-stable"
+    });
+
+    expect(result.status).toBe("completed");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstHeaders = new Headers(fetchMock.mock.calls[0][1].headers);
+    const secondHeaders = new Headers(fetchMock.mock.calls[1][1].headers);
+    expect(firstHeaders.get("X-Request-ID")).toBe("request-stable");
+    expect(secondHeaders.get("X-Request-ID")).toBe("request-stable");
+    expect(secondHeaders.get("Last-Event-ID")).toBe("2");
+  });
 });
 
 function createResponse(

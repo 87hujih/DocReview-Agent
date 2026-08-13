@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { MetaRow } from "../../components/ui/meta-row";
 import { StatusChip } from "../../components/ui/status-chip";
@@ -15,220 +15,142 @@ import {
 import { getErrorMessage, toIsoSeconds, truncateId } from "../../lib/terminal";
 import styles from "./page.module.css";
 
+const APPROVAL_STATUSES = [
+  { label: "待处理", value: "pending" },
+  { label: "全部", value: "" },
+  { label: "已批准", value: "approved" },
+  { label: "已拒绝", value: "rejected" },
+  { label: "已取消", value: "cancelled" }
+];
+
 export default function ApprovalsPage() {
-  const [activeApprovalId, setActiveApprovalId] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [status, setStatus] = useState("pending");
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [busyID, setBusyID] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [loadErrorMessage, setLoadErrorMessage] = useState<string | null>(null);
-  const [rejectingId, setRejectingId] = useState<string | null>(null);
-  const [rejectReason, setRejectReason] = useState("");
-  const rejectInputRef = useRef<HTMLInputElement>(null);
-  const mountedRef = useRef(true);
-  const bannerMessage = actionMessage ?? loadErrorMessage;
-  const showErrorOnly = !isLoading && approvals.length === 0 && Boolean(loadErrorMessage);
-  const frameTitle = isLoading
-    ? "正在加载审批队列"
-    : showErrorOnly
-      ? "加载失败"
-      : `队列深度 ${approvals.length}`;
 
-  async function fetchPendingApprovals(): Promise<Approval[]> {
-    return getApprovals("pending");
-  }
-
-  function removeApprovalFromQueue(id: string) {
-    setApprovals((current) => current.filter((approval) => approval.id !== id));
-  }
-
-  async function syncQueueAfterDecision(id: string) {
-    removeApprovalFromQueue(id);
-
+  const loadApprovals = useCallback(async () => {
+    setIsLoading(true);
     try {
-      const items = await fetchPendingApprovals();
-      if (!mountedRef.current) return;
-      setApprovals(items);
-      setActionMessage(null);
+      setApprovals(await getApprovals(status));
+      setErrorMessage(null);
     } catch (error) {
-      if (!mountedRef.current) return;
-      setActionMessage(`审批已提交，但刷新队列失败：${getErrorMessage(error)}`);
-    }
-  }
-
-  useEffect(() => {
-    mountedRef.current = true;
-
-    async function loadInitialApprovals() {
-      try {
-        const items = await fetchPendingApprovals();
-        if (!mountedRef.current) return;
-        setApprovals(items);
-        setActionMessage(null);
-        setLoadErrorMessage(null);
-      } catch (error) {
-        if (!mountedRef.current) return;
-        setLoadErrorMessage(getErrorMessage(error));
-      } finally {
-        if (mountedRef.current) setIsLoading(false);
-      }
-    }
-
-    void loadInitialApprovals();
-
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (rejectingId) {
-      rejectInputRef.current?.focus();
-    }
-  }, [rejectingId]);
-
-  async function handleApprove(id: string) {
-    setActiveApprovalId(id);
-    setActionMessage(null);
-
-    try {
-      await approveApproval(id);
-      await syncQueueAfterDecision(id);
-    } catch (error) {
-      setActionMessage(getErrorMessage(error));
+      setErrorMessage(getErrorMessage(error));
     } finally {
-      setActiveApprovalId(null);
+      setIsLoading(false);
     }
-  }
+  }, [status]);
 
-  function handleRejectClick(id: string) {
-    setActionMessage(null);
-    setRejectingId(id);
-    setRejectReason("");
-  }
+  useEffect(() => {
+    void loadApprovals();
+  }, [loadApprovals]);
 
-  function handleRejectCancel() {
-    setRejectingId(null);
-    setRejectReason("");
-  }
-
-  async function handleRejectConfirm(id: string) {
-    const trimmed = rejectReason.trim();
-    if (!trimmed) {
-      setActionMessage("拒绝原因不能为空");
+  async function decide(approval: Approval, decision: "approve" | "reject") {
+    const reason = (reasons[approval.id] || "").trim();
+    if (!reason) {
+      setErrorMessage("请先填写决策理由。");
       return;
     }
-
-    setActiveApprovalId(id);
-    setActionMessage(null);
-
+    setBusyID(approval.id);
     try {
-      await rejectApproval(id, trimmed);
-      setRejectingId(null);
-      setRejectReason("");
-      await syncQueueAfterDecision(id);
+      if (decision === "approve") {
+        await approveApproval(approval.id, reason);
+      } else {
+        await rejectApproval(approval.id, reason);
+      }
+      setReasons((current) => ({ ...current, [approval.id]: "" }));
+      await loadApprovals();
     } catch (error) {
-      setActionMessage(getErrorMessage(error));
+      setErrorMessage(getErrorMessage(error));
     } finally {
-      setActiveApprovalId(null);
+      setBusyID(null);
     }
   }
 
   return (
     <div className={styles.page}>
       <TerminalFrame
+        actions={
+          <div className={styles.toolbar}>
+            <label className={styles.filterLabel}>
+              状态
+              <select value={status} onChange={(event) => setStatus(event.target.value)}>
+                {APPROVAL_STATUSES.map((item) => (
+                  <option key={item.label} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+            </label>
+            <button type="button" onClick={() => void loadApprovals()}>刷新</button>
+          </div>
+        }
         bodyClassName={styles.listBody}
         className={styles.listFrame}
-        label="审批中心"
-        title={frameTitle}
+        label="类型化工具审批"
+        title={isLoading ? "正在加载审批" : `审批数量 ${approvals.length}`}
       >
-        {bannerMessage ? <p className={styles.error}>错误 &gt; {bannerMessage}</p> : null}
+        {errorMessage ? <p className={styles.error}>错误 &gt; {errorMessage}</p> : null}
+        {isLoading ? <p className={styles.placeholder}>正在读取 durable Runtime 审批队列</p> : null}
+        {!isLoading && approvals.length === 0 ? <p className={styles.placeholder}>当前筛选条件下没有审批。</p> : null}
 
-        {isLoading ? (
-          <p className={styles.placeholder}>正在加载审批队列</p>
-        ) : showErrorOnly ? null : approvals.length === 0 ? (
-          <p className={styles.placeholder}>当前没有待审批任务</p>
-        ) : (
-          <ul className={styles.list}>
-            {approvals.map((approval) => {
-              const isBusy = activeApprovalId === approval.id;
-              const isRejecting = rejectingId === approval.id;
-
-              return (
-                <li key={approval.id} className={styles.item}>
-                  <div className={styles.itemHeader}>
-                    <StatusChip status={approval.status} />
-                    <span className={styles.approvalId}>ID: {truncateId(approval.id, 8, 4)}</span>
+        <ul className={styles.list}>
+          {approvals.map((approval) => {
+            const pending = approval.status === "pending";
+            const busy = busyID === approval.id;
+            return (
+              <li className={styles.item} key={approval.id}>
+                <div className={styles.itemHeader}>
+                  <div>
+                    <strong>{approval.objective || approval.tool_name}</strong>
+                    <p className={styles.approvalId}>审批 {truncateId(approval.id, 8, 4)}</p>
                   </div>
+                  <StatusChip status={approval.status} />
+                </div>
 
-                  <div className={styles.meta}>
-                    <MetaRow label="task_id" value={truncateId(approval.task_id, 8, 4)} />
-                    <MetaRow label="created_at" value={toIsoSeconds(approval.created_at)} />
-                  </div>
+                <div className={styles.meta}>
+                  <MetaRow label="工具" value={`${approval.tool_name}@${approval.tool_version}`} />
+                  <MetaRow label="申请原因" value={approval.reason} />
+                  <MetaRow label="运行 ID" value={truncateId(approval.run_id, 8, 4)} />
+                  <MetaRow label="创建时间" value={toIsoSeconds(approval.created_at)} />
+                  {approval.decision_reason ? <MetaRow label="决策理由" value={approval.decision_reason} /> : null}
+                </div>
 
-                  {isRejecting ? (
-                    <div className={styles.rejectForm}>
+                <details className={styles.payload}>
+                  <summary>查看审批载荷</summary>
+                  <pre>{formatPayload({ resources: approval.resources, payload: approval.payload })}</pre>
+                </details>
+
+                <div className={styles.actions}>
+                  <Link className={styles.viewButton} href={`/runs/${approval.run_id}`}>查看运行</Link>
+                  {pending ? (
+                    <>
                       <input
-                        ref={rejectInputRef}
-                        className={styles.rejectInput}
-                        disabled={isBusy}
-                        onChange={(e) => setRejectReason(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") handleRejectCancel();
-                          if (e.key === "Enter" && rejectReason.trim()) {
-                            void handleRejectConfirm(approval.id);
-                          }
-                        }}
-                        placeholder="输入拒绝原因（Enter 确认，Esc 取消）"
-                        type="text"
-                        value={rejectReason}
+                        aria-label={`审批 ${approval.id} 的决策理由`}
+                        className={styles.reasonInput}
+                        onChange={(event) => setReasons((current) => ({ ...current, [approval.id]: event.target.value }))}
+                        placeholder="填写决策理由"
+                        value={reasons[approval.id] || ""}
                       />
-                      <div className={styles.rejectActions}>
-                        <button
-                          className={styles.confirmRejectButton}
-                          disabled={isBusy || !rejectReason.trim()}
-                          onClick={() => void handleRejectConfirm(approval.id)}
-                          type="button"
-                        >
-                          确认拒绝
-                        </button>
-                        <button
-                          className={styles.cancelButton}
-                          onClick={handleRejectCancel}
-                          type="button"
-                        >
-                          取消
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className={styles.actions}>
-                      <Link className={styles.viewButton} href={`/tasks/${approval.task_id}`}>
-                        查看任务
-                      </Link>
-                      <button
-                        className={styles.approveButton}
-                        disabled={isBusy}
-                        onClick={() => void handleApprove(approval.id)}
-                        type="button"
-                      >
-                        {isBusy ? "处理中" : "批准"}
+                      <button className={styles.approveButton} disabled={busy} onClick={() => void decide(approval, "approve")} type="button">
+                        批准
                       </button>
-                      <button
-                        className={styles.rejectButton}
-                        disabled={isBusy}
-                        onClick={() => handleRejectClick(approval.id)}
-                        type="button"
-                      >
+                      <button className={styles.rejectButton} disabled={busy} onClick={() => void decide(approval, "reject")} type="button">
                         拒绝
                       </button>
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
+                    </>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       </TerminalFrame>
     </div>
   );
+}
+
+function formatPayload(value: unknown): string {
+  const formatted = JSON.stringify(value, null, 2) || "{}";
+  return formatted.length > 4000 ? `${formatted.slice(0, 4000)}\n...` : formatted;
 }

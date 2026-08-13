@@ -190,3 +190,25 @@ function looksLikeLegacyExecutionSuffix(value: string): boolean {
     value.includes("执行吧")
   );
 }
+
+export interface WebEvidenceSource {
+  title: string;
+  url: string;
+  snippet?: string;
+  reliability_hint?: string;
+}
+
+export interface WebEvidenceArtifactContent {
+  queries: string[];
+  provider: string;
+  sources: WebEvidenceSource[];
+}
+
+export function getWebEvidenceArtifact(artifacts: TaskArtifact[]): WebEvidenceArtifactContent | null {
+  const artifact = artifacts.find((item) => item.artifact_type === "web_evidence");
+  if (!artifact || typeof artifact.content !== "object" || artifact.content === null) {
+    return null;
+  }
+  const content = artifact.content as WebEvidenceArtifactContent;
+  return Array.isArray(content.sources) && content.sources.length > 0 ? content : null;
+}

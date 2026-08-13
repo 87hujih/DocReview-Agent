@@ -14,8 +14,8 @@ type ResourceListProps = {
 };
 
 export function ResourceList({
-  actionHrefBuilder = (resource) => `/tasks/new?resource_id=${resource.id}`,
-  actionLabel = "创建任务",
+	actionHrefBuilder = (resource) => `/?resource_id=${resource.id}`,
+	actionLabel = "进入新助手",
   emptyMessage = "当前没有可用资源",
   resources,
   selectedResourceId

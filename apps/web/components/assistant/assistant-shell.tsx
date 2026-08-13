@@ -14,7 +14,6 @@ import type {
   AssistantUploadCapabilities
 } from "../../lib/assistant/types";
 import {
-  confirmAssistantTaskSuggestion,
   createAssistantConversationWithFile,
   deleteAssistantSession,
   getAssistantCapabilities,
@@ -33,9 +32,10 @@ import { SessionHistory } from "./session-history";
 import styles from "./assistant-shell.module.css";
 
 type HistoryStatus = "history_error" | "history_ready" | "loading_history";
-type TurnStatus = "confirming_task" | "idle" | "loading_conversation" | "stopping" | "streaming" | "uploading_file";
+type TurnStatus = "idle" | "loading_conversation" | "stopping" | "streaming" | "uploading_file";
 
 type AssistantShellProps = {
+  initialResourceId?: string | null;
   initialSessionId?: string | null;
 };
 
@@ -45,7 +45,7 @@ const FALLBACK_UPLOAD_CAPABILITIES: AssistantUploadCapabilities = {
   supported_extensions: [".md", ".txt"]
 };
 
-export function AssistantShell({ initialSessionId = null }: AssistantShellProps) {
+export function AssistantShell({ initialResourceId = null, initialSessionId = null }: AssistantShellProps) {
   const { railCollapsed, setRailCollapsed } = useAppChrome();
   const [sessions, setSessions] = useState<AssistantSession[]>([]);
   const [currentSession, setCurrentSession] = useState<AssistantSession | null>(null);
@@ -54,11 +54,11 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
   const [turnStatus, setTurnStatus] = useState<TurnStatus>("idle");
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
-  const [activeTaskSuggestionId, setActiveTaskSuggestionId] = useState<string | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
   const [historyHost, setHistoryHost] = useState<HTMLElement | null>(null);
   const [uploadCapabilities, setUploadCapabilities] = useState<AssistantUploadCapabilities>(FALLBACK_UPLOAD_CAPABILITIES);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const initialResourceIdRef = useRef(normalizeSessionId(initialResourceId));
   const initialSessionIdRef = useRef(normalizeSessionId(initialSessionId));
   const localMessageCounterRef = useRef(0);
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
@@ -190,7 +190,6 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
       setCurrentSession(null);
       setMessages([]);
       setActionNotice(null);
-      setActiveTaskSuggestionId(null);
       setTurnStatus("idle");
       setStickToBottom(true);
     });
@@ -221,6 +220,9 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
     if (turnStatus !== "idle") {
       return;
     }
+
+    // 将本轮请求绑定到最近一次已就绪的持久化资源，避免会话与文档作用域脱节。
+    const resourceId = latestReadySessionResource(messages) ?? initialResourceIdRef.current ?? undefined;
 
     const localUserMessage = buildLocalTextMessage(
       nextLocalId(localMessageCounterRef, "local-user"),
@@ -305,6 +307,17 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
             }
           });
           return;
+        case "turn_state":
+          if (event.status === "waiting_approval" || event.status === "waiting_input") {
+            const notice = event.status === "waiting_approval"
+              ? "此轮正在等待外部审批；审批完成后会从持久化状态自动继续。"
+              : "此轮正在等待补充输入；当前状态已持久化，可安全恢复。";
+            startTransition(() => {
+              setActionNotice(notice);
+              setMessages((current) => finalizeTurnWait(current, localAssistantMessage.id, notice));
+            });
+          }
+          return;
         default:
           return;
       }
@@ -314,10 +327,12 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
       const result = currentSession
         ? await streamAssistantMessage(currentSession.id, message, {
             onEvent: handleEvent,
+            resourceId,
             signal: controller.signal
           })
         : await streamAssistantConversation(message, {
             onEvent: handleEvent,
+            resourceId,
             signal: controller.signal
           });
 
@@ -389,32 +404,6 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
     }
   }
 
-  async function handleConfirmTaskSuggestion(messageId: string) {
-    if (turnStatus !== "idle") {
-      return;
-    }
-
-    setActionNotice(null);
-    setActiveTaskSuggestionId(messageId);
-    setTurnStatus("confirming_task");
-
-    try {
-      const result = await confirmAssistantTaskSuggestion(messageId);
-      startTransition(() => {
-        setCurrentSession(result.session);
-        setMessages((current) => [...current, ...result.messages]);
-        setSessions((current) => upsertSession(current, result.session));
-        setActionNotice(result.error_message || null);
-        setTurnStatus("idle");
-      });
-    } catch (error) {
-      setActionNotice(getErrorMessage(error));
-      setTurnStatus("idle");
-    } finally {
-      setActiveTaskSuggestionId(null);
-    }
-  }
-
   async function handleDeleteSession(sessionId: string) {
     if (turnStatus !== "idle") {
       return;
@@ -480,9 +469,7 @@ export function AssistantShell({ initialSessionId = null }: AssistantShellProps)
 
           <div aria-busy={isBusy} className={styles.messageViewport} ref={messageViewportRef}>
             <AssistantMessageList
-              activeTaskSuggestionId={activeTaskSuggestionId}
               messages={messages}
-              onConfirmTaskSuggestion={(messageId) => void handleConfirmTaskSuggestion(messageId)}
               onStopGeneration={handleStopGeneration}
               showStopAction={turnStatus === "streaming" || turnStatus === "stopping"}
               stopActionLabel={turnStatus === "stopping" ? "正在停止" : "停止生成"}
@@ -635,6 +622,39 @@ function finalizeTurnFailure(
   });
 
   return nextMessages;
+}
+
+// latestReadySessionResource 从后向前查找当前会话最近一次已就绪的资源。
+function latestReadySessionResource(messages: AssistantRenderableMessage[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.kind !== "session_file" || message.payload.status !== "ready") {
+      continue;
+    }
+    const resourceId = message.payload.resource_id.trim();
+    if (resourceId !== "") {
+      return resourceId;
+    }
+  }
+  return undefined;
+}
+
+// finalizeTurnWait 将本地占位消息更新为可恢复的等待状态说明。
+function finalizeTurnWait(
+  current: AssistantRenderableMessage[],
+  localMessageId: string,
+  content: string
+): AssistantRenderableMessage[] {
+  return current.map((message) => {
+    if (message.id !== localMessageId || message.kind !== "local_text") {
+      return message;
+    }
+    return {
+      ...message,
+      local_state: undefined,
+      payload: { content }
+    };
+  });
 }
 
 function upsertSession(current: AssistantSession[], session: AssistantSession): AssistantSession[] {

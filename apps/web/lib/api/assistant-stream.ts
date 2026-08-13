@@ -13,7 +13,10 @@ import { ApiClientError, apiRequest } from "./client";
 const STREAM_TIMEOUT_MS = 90_000;
 
 type AssistantStreamRequestOptions = {
+  maxResumeAttempts?: number;
   onEvent?: (event: AssistantStreamEvent) => void;
+  requestId?: string;
+  resourceId?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
 };
@@ -21,6 +24,7 @@ type AssistantStreamRequestOptions = {
 type ParsedSSEFrame = {
   data: string;
   event: string;
+  id?: string;
 };
 
 type StreamErrorPayload = {
@@ -38,6 +42,10 @@ type StreamSessionPayload = {
 
 type StreamDeltaPayload = {
   delta: string;
+};
+
+type StreamTurnStatePayload = {
+  status?: string;
 };
 
 class AssistantStreamClientError extends Error {
@@ -144,64 +152,88 @@ async function streamAssistant(
   message: string,
   options: AssistantStreamRequestOptions
 ): Promise<AssistantStreamRunResult> {
-  let response: Response;
+  const requestId = normalizeRequestId(options.requestId) || createRequestId();
+  const maxResumeAttempts = Math.max(0, Math.min(options.maxResumeAttempts ?? 2, 5));
+  let lastEventId = 0;
 
-  try {
-    response = await apiRequest(path, {
-      body: JSON.stringify({ message }),
-      method: "POST",
-      signal: options.signal,
-      timeoutMs: options.timeoutMs ?? STREAM_TIMEOUT_MS
-    });
-  } catch (error) {
-    if (options.signal?.aborted && isAbortError(error)) {
-      return {
-        error: {
-          code: "generation_stopped",
-          message: "已停止生成。"
-        },
-        status: "stopped"
-      };
+  // 复用同一请求标识和事件游标重连，确保服务端可以幂等地续传持久化事件。
+  for (let attempt = 0; attempt <= maxResumeAttempts; attempt += 1) {
+    let response: Response;
+    const headers = new Headers({ "X-Request-ID": requestId });
+    if (lastEventId > 0) {
+      headers.set("Last-Event-ID", String(lastEventId));
     }
 
-    throw error;
-  }
-
-  if (!response.ok) {
-    throw await buildHTTPStreamError(response);
-  }
-
-  if (!isEventStreamResponse(response)) {
-    throw new AssistantStreamClientError("service_error", "服务返回的流格式不正确。");
-  }
-
-  let sawDone = false;
-  let streamError: AssistantStreamClientError | null = null;
-
-  await parseSSEStream(response.body, (frame) => {
-    const event = parseAssistantStreamEvent(frame);
-    if (!event) {
-      return;
+    try {
+      response = await apiRequest(path, {
+        body: JSON.stringify({
+          message,
+          ...(options.resourceId ? { resource_id: options.resourceId } : {})
+        }),
+        headers,
+        method: "POST",
+        signal: options.signal,
+        timeoutMs: options.timeoutMs ?? STREAM_TIMEOUT_MS
+      });
+    } catch (error) {
+      if (options.signal?.aborted && isAbortError(error)) {
+        return stoppedResult();
+      }
+      if (attempt < maxResumeAttempts) {
+        continue;
+      }
+      throw error;
     }
 
-    options.onEvent?.(event);
-
-    if (event.type === "done") {
-      sawDone = true;
+    if (!response.ok) {
+      throw await buildHTTPStreamError(response);
     }
-    if (event.type === "error") {
-      streamError = new AssistantStreamClientError(event.error.code, event.error.message);
+    if (!isEventStreamResponse(response)) {
+      throw new AssistantStreamClientError("service_error", "服务返回的流格式不正确。");
     }
-  });
 
-  if (streamError) {
-    throw streamError;
-  }
-  if (!sawDone) {
-    throw new AssistantStreamClientError("service_error", "助手流式回复已中断，请重试。");
+    let sawDone = false;
+    let streamError: AssistantStreamClientError | null = null;
+    try {
+      await parseSSEStream(response.body, (frame) => {
+        const sequence = Number.parseInt(frame.id || "", 10);
+        if (Number.isSafeInteger(sequence) && sequence > lastEventId) {
+          lastEventId = sequence;
+        }
+        const event = parseAssistantStreamEvent(frame);
+        if (!event) {
+          return;
+        }
+        options.onEvent?.(event);
+        if (event.type === "done") {
+          sawDone = true;
+        }
+        if (event.type === "error") {
+          streamError = new AssistantStreamClientError(event.error.code, event.error.message);
+        }
+      });
+    } catch (error) {
+      if (options.signal?.aborted && isAbortError(error)) {
+        return stoppedResult();
+      }
+      if (attempt < maxResumeAttempts) {
+        continue;
+      }
+      throw error;
+    }
+
+    if (streamError) {
+      throw streamError;
+    }
+    if (sawDone) {
+      return { status: "completed" };
+    }
+    if (attempt === maxResumeAttempts) {
+      throw new AssistantStreamClientError("service_error", "助手流式回复已中断，请使用同一请求继续。");
+    }
   }
 
-  return { status: "completed" };
+  throw new AssistantStreamClientError("service_error", "助手流式回复恢复失败。");
 }
 
 function drainSSEBuffer(
@@ -234,9 +266,14 @@ function drainSSEBuffer(
 
 function parseSSEBlock(block: string): ParsedSSEFrame {
   let event = "message";
+  let id: string | undefined;
   const dataLines: string[] = [];
 
   for (const line of block.split("\n")) {
+    if (line.startsWith("id:")) {
+      id = line.slice("id:".length).trim();
+      continue;
+    }
     if (line.startsWith("event:")) {
       event = line.slice("event:".length).trim();
       continue;
@@ -248,7 +285,8 @@ function parseSSEBlock(block: string): ParsedSSEFrame {
 
   return {
     data: dataLines.join("\n"),
-    event
+    event,
+    id
   };
 }
 
@@ -298,11 +336,46 @@ function parseAssistantStreamEvent(frame: ParsedSSEFrame): AssistantStreamEvent 
         type: "error"
       };
     }
+    case "turn_state": {
+      const payload = parseJSON<StreamTurnStatePayload>(frame.data);
+      if (!isTurnState(payload.status)) {
+        return null;
+      }
+      return { status: payload.status, type: "turn_state" };
+    }
     case "done":
       return { type: "done" };
     default:
       return null;
   }
+}
+
+// isTurnState 判断服务端状态是否属于前端支持的持久化轮次状态。
+function isTurnState(value: unknown): value is "running" | "waiting_input" | "waiting_approval" | "succeeded" | "failed" | "cancelled" {
+  return typeof value === "string" && [
+    "running", "waiting_input", "waiting_approval", "succeeded", "failed", "cancelled"
+  ].includes(value);
+}
+
+// stoppedResult 构造用户主动停止生成时的统一返回结果。
+function stoppedResult(): AssistantStreamRunResult {
+  return {
+    error: { code: "generation_stopped", message: "已停止生成。" },
+    status: "stopped"
+  };
+}
+
+// normalizeRequestId 清理调用方传入的请求标识，空值交由后续逻辑生成。
+function normalizeRequestId(value: string | undefined): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+// createRequestId 优先生成随机 UUID，并为不支持该 API 的环境提供兼容标识。
+function createRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `assistant-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function parseJSON<T>(value: string): T {

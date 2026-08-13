@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/knowledge/citation"
 	"agent_project/apps/server/internal/storage/postgres"
 	"agent_project/apps/server/internal/testsupport/postgrescleanup"
@@ -448,13 +446,8 @@ func TestNewSearchResourcesResponseEncodesNilCitationsAsEmptyArray(t *testing.T)
 func newHandlerTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
-		t.Skip("database not available")
-	}
-
 	ctx := testContext(t)
-	cfg := appconfig.Load()
-	return postgrestest.NewIsolatedPool(t, ctx, cfg.DatabaseURL, "server_handlers", postgres.NewPool, postgres.RunMigrations)
+	return postgrestest.NewIsolatedPool(t, ctx, "server_handlers", postgres.NewPool, postgres.RunMigrations)
 }
 
 // cleanupResource 清理 handler 测试中创建的资源数据。

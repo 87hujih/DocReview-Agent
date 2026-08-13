@@ -5,14 +5,14 @@ import Link from "next/link";
 
 import { getFileDownloadURL } from "../../lib/api/files";
 import { formatStatusLabel } from "../../lib/terminal";
-import type { AssistantRenderableMessage } from "../../lib/assistant/types";
+import type { AssistantRenderableMessage, AssistantWebSearchSummary } from "../../lib/assistant/types";
 import { AssistantMarkdown } from "./assistant-markdown";
 import styles from "./assistant-message-list.module.css";
 
 type AssistantMessageListProps = {
-  activeTaskSuggestionId: string | null;
+  activeTaskSuggestionId?: string | null;
   messages: AssistantRenderableMessage[];
-  onConfirmTaskSuggestion: (messageId: string) => Promise<void> | void;
+  onConfirmTaskSuggestion?: (messageId: string) => Promise<void> | void;
   onStopGeneration?: () => void;
   showStopAction?: boolean;
   stopActionLabel?: string;
@@ -134,7 +134,7 @@ function CopyActionIcon({ state }: CopyActionIconProps) {
 }
 
 export function AssistantMessageList({
-  activeTaskSuggestionId,
+  activeTaskSuggestionId = null,
   messages,
   onConfirmTaskSuggestion,
   onStopGeneration,
@@ -227,6 +227,7 @@ export function AssistantMessageList({
         if (message.kind === "task_suggestion") {
           const isConsumed = consumedSuggestionIds.has(message.id);
           const isCreating = activeTaskSuggestionId === message.id;
+          const isLegacyActionDisabled = !onConfirmTaskSuggestion;
 
           return (
             <section key={message.id} className={styles.card}>
@@ -241,11 +242,17 @@ export function AssistantMessageList({
               <p className={styles.cardMeta}>{message.payload.resource_label}</p>
               <p className={styles.cardStatus}>{message.payload.status_message}</p>
               <button
-                disabled={!message.payload.can_create || isCreating || isConsumed}
-                onClick={() => void onConfirmTaskSuggestion(message.id)}
+                disabled={!message.payload.can_create || isCreating || isConsumed || isLegacyActionDisabled}
+                onClick={() => void onConfirmTaskSuggestion?.(message.id)}
                 type="button"
               >
-                {isCreating ? "正在创建任务" : isConsumed ? "任务已创建" : message.payload.action_label}
+                {isLegacyActionDisabled
+                  ? "旧任务链路已停用"
+                  : isCreating
+                    ? "正在创建任务"
+                    : isConsumed
+                      ? "任务已创建"
+                      : message.payload.action_label}
               </button>
             </section>
           );
@@ -334,6 +341,9 @@ export function AssistantMessageList({
 
         const isStreamingAssistant = message.kind === "local_text" && message.role === "assistant" && message.local_state === "streaming";
         const content = message.payload.content;
+        const webSearch = message.kind === "text" || message.kind === "local_text"
+          ? (message.payload as { content: string; web_search?: AssistantWebSearchSummary }).web_search
+          : undefined;
 
         const messageBody = (
           <>
@@ -349,6 +359,24 @@ export function AssistantMessageList({
               ) : (
                 <p className={styles.content}>{content}</p>
               )
+            ) : null}
+
+            {webSearch && webSearch.status === "searched_sufficient" && webSearch.sources && webSearch.sources.length > 0 ? (
+              <div className={styles.webSearchSources}>
+                <p className={styles.webSearchLabel}>
+                  联网查证 · {webSearch.queries.join("、")}
+                </p>
+                <ul className={styles.webSearchList}>
+                  {webSearch.sources.map((src, i) => (
+                    <li key={i} className={styles.webSearchItem}>
+                      <a href={src.url} target="_blank" rel="noopener noreferrer" className={styles.webSearchLink}>
+                        {src.title}
+                      </a>
+                      {src.snippet ? <span className={styles.webSearchSnippet}> · {src.snippet}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ) : null}
 
             {isStreamingAssistant ? (

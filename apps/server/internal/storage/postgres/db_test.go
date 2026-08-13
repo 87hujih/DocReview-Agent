@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"os"
 	"reflect"
 	"slices"
 	"sort"
@@ -12,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	appconfig "agent_project/apps/server/internal/config"
 	"agent_project/apps/server/internal/testsupport/postgrescleanup"
 	"agent_project/apps/server/internal/testsupport/postgrestest"
 
@@ -21,7 +19,7 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
-// TestMigrationCreatesAllTables 验证迁移会创建所需表和 vector 扩展。
+// TestMigrationCreatesAllTables 验证迁移会创建所需表和 向量 扩展。
 func TestMigrationCreatesAllTables(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -46,6 +44,18 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	}
 
 	expectedTables := []string{
+		"schema_migrations",
+		"users",
+		"organizations",
+		"workspaces",
+		"memberships",
+		"principal_audit_events",
+		"agent_runs",
+		"agent_steps",
+		"agent_attempts",
+		"tool_calls",
+		"context_manifests",
+		"outbox_events",
 		"resources",
 		"resource_versions",
 		"resource_chunks",
@@ -88,7 +98,51 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 	}
 }
 
-// TestRunMigrationsCreatesAssistantRuntimeEventsTable 验证迁移会创建 assistant runtime 事件真源表。
+// TestRunMigrationsRecordsLedgerOnce 验证迁移重复执行时不会重放已记录文件。
+func TestRunMigrationsRecordsLedgerOnce(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := testContext(t)
+
+	available, err := loadMigrations(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	if err := RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run migrations again: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT name, checksum
+		FROM schema_migrations
+		ORDER BY name ASC
+	`)
+	if err != nil {
+		t.Fatalf("query migration ledger: %v", err)
+	}
+	defer rows.Close()
+
+	type ledgerEntry struct {
+		Name     string
+		Checksum string
+	}
+	entries, err := pgx.CollectRows(rows, pgx.RowToStructByName[ledgerEntry])
+	if err != nil {
+		t.Fatalf("collect migration ledger: %v", err)
+	}
+	if len(entries) != len(available) {
+		t.Fatalf("expected %d ledger entries, got %d", len(available), len(entries))
+	}
+	for index, entry := range entries {
+		if entry.Name != available[index].Name {
+			t.Fatalf("expected ledger migration %q, got %q", available[index].Name, entry.Name)
+		}
+		if entry.Checksum != available[index].Checksum {
+			t.Fatalf("expected checksum %q for %s, got %q", available[index].Checksum, entry.Name, entry.Checksum)
+		}
+	}
+}
+
+// TestRunMigrationsCreatesAssistantRuntimeEventsTable 验证迁移会创建 助手 运行时 事件真源表。
 func TestRunMigrationsCreatesAssistantRuntimeEventsTable(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -128,7 +182,7 @@ func TestRunMigrationsCreatesAssistantRuntimeEventsTable(t *testing.T) {
 	}
 }
 
-// TestRunMigrationsCreatesAssistantRuntimeSamplesTable 验证迁移会创建 assistant runtime 学习样本表。
+// TestRunMigrationsCreatesAssistantRuntimeSamplesTable 验证迁移会创建 助手 运行时 学习样本表。
 func TestRunMigrationsCreatesAssistantRuntimeSamplesTable(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -443,7 +497,7 @@ func TestMigrationAlignsResourceVersionStructureColumnsWithDefaults(t *testing.T
 	}
 }
 
-// TestMigrationAddsAssistantAdvisorStateColumns 验证迁移会为 session_context_snapshots 补齐 advisor state 列及默认值。
+// TestMigrationAddsAssistantAdvisorStateColumns 验证迁移会为 session_context_snapshots 补齐 advisor 状态 列及默认值。
 func TestMigrationAddsAssistantAdvisorStateColumns(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := testContext(t)
@@ -1377,33 +1431,23 @@ func TestCleanupResourceTreeIsIdempotent(t *testing.T) {
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
-		t.Skip("database not available")
-	}
-
 	ctx := testContext(t)
-	databaseURL := testDatabaseURL()
-	return postgrestest.NewIsolatedPool(t, ctx, databaseURL, "storage_postgres", NewPool, RunMigrations)
+	return postgrestest.NewIsolatedPool(t, ctx, "storage_postgres", NewPool, RunMigrations)
 }
 
 // newRawTestPool 为需要自行控制迁移时机的测试创建数据库连接池。
 func newRawTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
-		t.Skip("database not available")
-	}
-
 	ctx := testContext(t)
-	databaseURL := testDatabaseURL()
-	return postgrestest.NewRawIsolatedPool(t, ctx, databaseURL, "storage_postgres_raw", NewPool)
+	return postgrestest.NewRawIsolatedPool(t, ctx, "storage_postgres_raw", NewPool)
 }
 
 // runMigrationsBefore 在测试里按顺序执行指定迁移之前的所有 SQL，便于构造历史 schema。
 func runMigrationsBefore(ctx context.Context, pool *pgxpool.Pool, stopBefore string) error {
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
-		return fmt.Errorf("read migrations dir: %w", err)
+		return fmt.Errorf("读取 migrations dir：%w", err)
 	}
 
 	var migrationNames []string
@@ -1422,43 +1466,38 @@ func runMigrationsBefore(ctx context.Context, pool *pgxpool.Pool, stopBefore str
 
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return fmt.Errorf("acquire migration conn: %w", err)
+		return fmt.Errorf("处理失败：acquire migration conn：%w", err)
 	}
 	defer conn.Release()
 
+	// 开启事务，确保后续状态变更以原子方式提交。
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return fmt.Errorf("begin migration tx: %w", err)
+		return fmt.Errorf("处理失败：begin migration tx：%w", err)
 	}
 	defer func() {
 		_ = tx.Rollback(ctx)
 	}()
 
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, migrationLockNamespace, migrationLockKey); err != nil {
-		return fmt.Errorf("lock migrations: %w", err)
+		return fmt.Errorf("处理失败：lock migrations：%w", err)
 	}
 
 	for _, migrationName := range migrationNames {
 		statement, err := migrationsFS.ReadFile("migrations/" + migrationName)
 		if err != nil {
-			return fmt.Errorf("read migration %s: %w", migrationName, err)
+			return fmt.Errorf("读取 migration %s：%w", migrationName, err)
 		}
 		if _, err := tx.Exec(ctx, string(statement)); err != nil {
-			return fmt.Errorf("exec migration %s: %w", migrationName, err)
+			return fmt.Errorf("处理失败：exec migration %s：%w", migrationName, err)
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit migration tx: %w", err)
+		return fmt.Errorf("处理失败：commit migration tx：%w", err)
 	}
 
 	return nil
-}
-
-// testDatabaseURL 从当前配置中读取测试数据库地址。
-func testDatabaseURL() string {
-	cfg := appconfig.Load()
-	return cfg.DatabaseURL
 }
 
 // cleanupResource 按资源维度清理测试过程中插入的任务和资源数据。

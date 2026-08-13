@@ -63,9 +63,28 @@
 }
 
 .actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) auto auto;
   gap: var(--terminal-space-3);
+  align-items: center;
+}
+
+.toolbar {
+  display: flex;
+  gap: var(--terminal-space-3);
+  align-items: flex-end;
+}
+
+.filterLabel {
+  display: grid;
+  gap: var(--terminal-space-1);
+  color: var(--terminal-text-muted);
+  font-size: 12px;
+}
+
+.filterLabel select {
+  min-height: 38px;
+  padding: 0 var(--terminal-space-3);
 }
 
 .viewButton {
@@ -95,46 +114,36 @@
   color: var(--terminal-warning);
 }
 
-.rejectForm {
-  display: grid;
-  gap: var(--terminal-space-3);
-  padding: var(--terminal-space-3) var(--terminal-space-4);
-  border: var(--terminal-border-width) dashed var(--terminal-warning);
-}
-
-.rejectInput {
+.reasonInput {
   width: 100%;
+  min-height: 38px;
   padding: var(--terminal-space-2) var(--terminal-space-3);
-  border-color: rgba(255, 176, 0, 0.4);
-  background: rgba(30, 14, 0, 0.6);
+  border-color: var(--terminal-border);
+  background: var(--app-surface);
   color: var(--terminal-text-strong);
 }
 
-.rejectInput::placeholder {
+.reasonInput::placeholder {
   color: var(--terminal-text-muted);
 }
 
-.rejectActions {
-  display: flex;
-  gap: var(--terminal-space-3);
-}
-
-.confirmRejectButton {
-  display: inline-flex;
-  align-items: center;
-  min-height: 36px;
-  padding: 0 var(--terminal-space-4);
-  border: var(--terminal-border-width) solid var(--terminal-warning);
-  color: var(--terminal-warning);
-}
-
-.cancelButton {
-  display: inline-flex;
-  align-items: center;
-  min-height: 36px;
-  padding: 0 var(--terminal-space-4);
-  border: var(--terminal-border-width) solid var(--terminal-border);
+.payload {
   color: var(--terminal-text-dim);
+}
+
+.payload summary {
+  cursor: pointer;
+}
+
+.payload pre {
+  max-height: 240px;
+  margin: var(--terminal-space-3) 0 0;
+  padding: var(--terminal-space-3);
+  overflow: auto;
+  border: var(--terminal-border-width) solid var(--terminal-border);
+  color: var(--terminal-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .error {
@@ -151,5 +160,17 @@
   .itemHeader {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .reasonInput {
+    grid-column: 1 / -1;
+  }
+
+  .viewButton {
+    grid-column: 1 / -1;
   }
 }

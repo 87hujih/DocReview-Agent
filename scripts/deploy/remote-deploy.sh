@@ -65,7 +65,8 @@ else
 fi
 
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm migrate
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-deps server web
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
 
 SERVER_PORT_VALUE="$(env_value SERVER_PORT)"

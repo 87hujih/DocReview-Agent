@@ -5206,6 +5206,17 @@ func (r *fakeSessionRepo) DeleteSession(_ context.Context, id string) (bool, err
 	return true, nil
 }
 
+func (r *fakeSessionRepo) UpdateSessionWebSearchEnabled(_ context.Context, sessionID string, enabled bool) error {
+	session, ok := r.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+
+	session.WebSearchEnabled = enabled
+	r.sessions[sessionID] = session
+	return nil
+}
+
 // seedSession 实现测试替身需要的 `seedSession` 接口方法，为用例分支提供可控返回。
 func (r *fakeSessionRepo) seedSession(title string) postgres.AssistantSession {
 	now := time.Now()

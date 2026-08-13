@@ -1208,6 +1208,10 @@ func (f fakeAssistantService) DeleteSession(context.Context, string) (bool, erro
 	return f.deleteSessionResult, f.deleteSessionErr
 }
 
+func (f fakeAssistantService) ToggleWebSearch(_ context.Context, _ string, _ bool) (*postgres.AssistantSession, error) {
+	return nil, nil
+}
+
 // fakeAssistantUploadPolicy 作为助手上传策略的测试替身，用于在用例里提供可控的依赖行为。
 type fakeAssistantUploadPolicy struct {
 	supportedExtensions []string

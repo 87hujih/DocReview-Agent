@@ -330,6 +330,50 @@
   color: #ffd9cc;
 }
 
+.webSearchSources {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.webSearchLabel {
+  margin: 0 0 6px;
+  color: rgba(115, 215, 255, 0.7);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.webSearchList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.webSearchItem {
+  font-size: 0.75rem;
+  color: var(--terminal-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webSearchLink {
+  color: rgba(0, 200, 165, 0.8);
+  text-decoration: none;
+}
+
+.webSearchLink:hover {
+  color: #00C8A5;
+  text-decoration: underline;
+}
+
+.webSearchSnippet {
+  color: rgba(148, 163, 184, 0.6);
+}
+
 .streamFooter {
   display: flex;
   align-items: center;

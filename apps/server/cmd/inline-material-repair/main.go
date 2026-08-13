@@ -21,7 +21,7 @@ import (
 
 const dryRunPreviewLimit = 20
 
-// repairMode 承载一次性历史修复命令的运行模式；默认 dry-run，只有显式 `--apply` 才会真正写库。
+// repairMode 承载一次性历史修复命令的运行模式；默认 dry-运行，只有显式 `--apply` 才会真正写库。
 type repairMode struct {
 	Apply      bool
 	ResourceID string
@@ -39,7 +39,7 @@ type resourceVersionCandidate struct {
 	RepairedContent    string
 }
 
-// diffPreviewArtifactCandidate 保存待修复的 diff_preview artifact 及其修复后 JSON。
+// diffPreviewArtifactCandidate 保存待修复的 diff_preview 制品及其修复后 JSON。
 type diffPreviewArtifactCandidate struct {
 	ArtifactID      string
 	TaskID          string
@@ -54,7 +54,7 @@ type repairScanResult struct {
 	ArtifactCandidates []diffPreviewArtifactCandidate
 }
 
-// main 负责串起参数解析、候选扫描、dry-run 输出和显式 apply 写回。
+// main 负责串起参数解析、候选扫描、dry-运行输出和显式 apply 写回。
 func main() {
 	mode, err := parseRepairMode(os.Args[1:])
 	if err != nil {
@@ -72,10 +72,6 @@ func main() {
 		log.Fatalf("数据库连接失败：%v", err)
 	}
 	defer pool.Close()
-
-	if err := postgres.RunMigrations(ctx, pool); err != nil {
-		log.Fatalf("数据库迁移失败：%v", err)
-	}
 
 	scanResult, err := scanRepairCandidates(ctx, pool, mode)
 	if err != nil {
@@ -96,7 +92,7 @@ func main() {
 	log.Printf("修复完成：resource_versions=%d，task_artifacts=%d", appliedVersions, appliedArtifacts)
 }
 
-// parseRepairMode 解析命令参数；默认 dry-run，可按资源收敛范围，并要求资源过滤必须是合法 UUID。
+// parseRepairMode 解析命令参数；默认 dry-运行，可按资源收敛范围，并要求资源过滤必须是合法 UUID。
 func parseRepairMode(args []string) (repairMode, error) {
 	fs := flag.NewFlagSet("inline-material-repair", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -119,7 +115,7 @@ func parseRepairMode(args []string) (repairMode, error) {
 	return mode, nil
 }
 
-// validateForRepair 校验历史修复命令最小所需配置；dry-run 只要求数据库连接即可。
+// validateForRepair 校验历史修复命令最小所需配置；dry-运行只要求数据库连接即可。
 func validateForRepair(cfg appconfig.Config) error {
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		return fmt.Errorf("缺少必填配置：DATABASE_URL")
@@ -128,7 +124,7 @@ func validateForRepair(cfg appconfig.Config) error {
 	return nil
 }
 
-// validateForReindexing 校验需要重建 chunk 时的 embedding 配置，避免修到一半才因模型配置缺失失败。
+// validateForReindexing 校验需要重建 chunk 时的嵌入配置，避免修到一半才因模型配置缺失失败。
 func validateForReindexing(cfg appconfig.Config) error {
 	var missing []string
 	if strings.TrimSpace(cfg.SiliconFlowAPIKey) == "" {
@@ -352,7 +348,7 @@ func applyRepairCandidates(
 	return appliedVersions, appliedArtifacts, nil
 }
 
-// logRepairPlan 打印 dry-run 或 apply 前的候选摘要，便于先确认 blast radius。
+// logRepairPlan 打印 dry-运行或 apply 前的候选摘要，便于先确认 blast radius。
 func logRepairPlan(scanResult *repairScanResult, mode repairMode) {
 	if scanResult == nil {
 		log.Printf("未发现待处理候选")
@@ -402,7 +398,7 @@ func logRepairPlan(scanResult *repairScanResult, mode repairMode) {
 	}
 }
 
-// tailPreview 返回压缩空白后的尾部预览，便于 dry-run 时快速确认脏尾巴是否被准确切掉。
+// tailPreview 返回压缩空白后的尾部预览，便于 dry-运行时快速确认脏尾巴是否被准确切掉。
 func tailPreview(value string) string {
 	compact := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 	if compact == "" {

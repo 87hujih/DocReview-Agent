@@ -1,6 +1,5 @@
 import type {
   AssistantCapabilities,
-  AssistantConfirmTaskResult,
   AssistantConversation,
   AssistantSession,
   AssistantUploadResult
@@ -63,14 +62,6 @@ export async function uploadAssistantFile(
 
   return apiFetch<AssistantUploadResult>(`/api/assistant/sessions/${sessionId}/files`, {
     body: formData,
-    method: "POST"
-  });
-}
-
-export async function confirmAssistantTaskSuggestion(
-  messageId: string
-): Promise<AssistantConfirmTaskResult> {
-  return apiFetch<AssistantConfirmTaskResult>(`/api/assistant/task-suggestions/${messageId}/confirm`, {
     method: "POST"
   });
 }
