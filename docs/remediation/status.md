@@ -307,3 +307,12 @@ Agent Runtime 主线：
 - 未验证与风险：本机未设置同时满足保险丝的 `ALLOW_DB_TESTS=1`、`TEST_DATABASE_URL` 和 host allowlist，因此 PostgreSQL 集成测试在连接前安全跳过；SQL round trip、migration 和隔离 schema 清理必须由 GitHub CI 的授权 `_test` 数据库重新验证。
 - 回滚：回退本次 CI 修复提交即可恢复原行为；不得通过放宽 durable claim 条件、关闭测试数据库保险丝或删除持久化事实绕过门禁。
 - 下一步：推送源分支并等待 PR #15 全部 required checks 通过；仅在 GitHub 报告 `MERGEABLE` 且 checks 全绿后合并到 `main`，不自动进入下一 remediation phase。
+
+## PR #15 CI 第二轮修复（2026-08-13）
+
+- 根因：`agentturn` 的 data-modifying CTE 在同一 PostgreSQL 语句快照内回读刚插入的 `assistant_sessions`，导致新 Session 的 `updated_session` CTE 无行，最终返回 `助手 session does not exist`；`documentcommit` 将 NUL 分隔的复合 key 直接作为 PostgreSQL `text` 参数，触发 `22021 invalid byte sequence for encoding UTF8`。
+- 解决：新 Session 在 `INSERT` 时写入初始时间戳，事实链路沿 CTE `RETURNING` 的 `session_id` 继续创建消息、Run、Step、事件和 outbox；事务内下一条 SQL 再更新 Session 时间戳。advisory lock 复合输入先用 SHA-256 计算，再传入 hex 文本，保持 workspace/idempotency 边界和稳定锁语义。
+- 本地验证：`gofmt`、agentturn/documentcommit 定向 `go test`、`git diff --check` 已通过；随后运行全后端 test、vet 和 server build。
+- 未验证与风险：本机无满足保险丝的 `TEST_DATABASE_URL`，真实 PostgreSQL round trip 仍由 GitHub CI 授权 `_test` 数据库验证；SHA-256 只用于生成 advisory-lock 输入，最终仍由 PostgreSQL `hashtextextended` 映射为事务锁。
+- 回滚：回退本轮提交即可恢复上一版本；禁止通过移除事务事实、关闭数据库测试保险丝或恢复 NUL 文本参数绕过门禁。
+- 下一步：推送源分支并等待 PR #15 required checks；仅在 `MERGEABLE` 且 checks 全绿时合并到 `main`，不自动推进后续 remediation phase。

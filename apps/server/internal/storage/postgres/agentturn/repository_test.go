@@ -58,6 +58,7 @@ func TestNewTurnFactsAreCreatedWithinOneTransaction(t *testing.T) {
 	for _, fragment := range []string{
 		"INSERT INTO assistant_messages",
 		"INSERT INTO agent_runs",
+		"FROM linked_turn",
 		"INSERT INTO agent_steps",
 		"UnderstandGoal",
 		"INSERT INTO agent_turn_events",

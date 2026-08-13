@@ -3,6 +3,8 @@ package documentcommit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,7 +83,7 @@ func (r *Repository) CommitAtomic(ctx context.Context, request documentcommit.At
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	lockKey := request.WorkspaceID + "\x00" + request.IdempotencyKey
+	lockKey := advisoryLockKey(request.WorkspaceID, request.IdempotencyKey)
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
 		return documentcommit.AtomicResult{}, err
 	}
@@ -164,6 +166,11 @@ func (r *Repository) CommitAtomic(ctx context.Context, request documentcommit.At
 		return documentcommit.AtomicResult{}, err
 	}
 	return documentcommit.AtomicResult{ResourceID: request.ResourceID, VersionID: request.Bundle.Document.VersionID, OutboxID: outboxID, Created: true}, nil
+}
+
+func advisoryLockKey(workspaceID, idempotencyKey string) string {
+	digest := sha256.Sum256([]byte(workspaceID + "\x00" + idempotencyKey))
+	return hex.EncodeToString(digest[:])
 }
 
 type rowQuerier interface {

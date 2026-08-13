@@ -39,8 +39,8 @@ WITH locked_session AS MATERIALIZED (
 	FOR UPDATE
 ),
 created_session AS (
-	INSERT INTO assistant_sessions (title)
-	SELECT $3
+	INSERT INTO assistant_sessions (title, last_message_at, updated_at)
+	SELECT $3, $8, $8
 	WHERE $2::uuid IS NULL
 	RETURNING id
 ),
@@ -64,24 +64,17 @@ inserted_message AS (
 	FROM linked_turn
 	RETURNING id, session_id
 ),
-updated_session AS (
-	UPDATE assistant_sessions
-	SET last_message_at = $8, updated_at = $8
-	FROM inserted_message
-	WHERE assistant_sessions.id = inserted_message.session_id
-	RETURNING assistant_sessions.id
-),
 inserted_run AS (
 	INSERT INTO agent_runs (
 		organization_id, workspace_id, resource_id, session_id, request_id, trace_id, turn_id,
 		principal_type, principal_id, trust_source, runtime_mode,
 		status, objective, max_steps, max_tool_calls, state_json
 	)
-	SELECT $5, $6, $9::uuid, updated_session.id, 'turn:' || $1::text, $7, $1,
+	SELECT $5, $6, $9::uuid, linked_turn.session_id, 'turn:' || $1::text, $7, $1,
 		$10, $11, $12, $13,
 		'queued', $4::jsonb ->> 'message', 64, 32,
 		jsonb_build_object('turn_id', $1::text, 'resource_id', ($9::uuid)::text, 'runtime_mode', $13::text)
-	FROM updated_session
+	FROM linked_turn
 	RETURNING id, session_id
 ),
 inserted_step AS (
@@ -282,6 +275,13 @@ func (r *Repository) Accept(ctx context.Context, input turn.AcceptInput) (turn.T
 			return turn.Turn{}, false, fmt.Errorf("处理失败：助手 session does not exist")
 		}
 		if err != nil {
+			return turn.Turn{}, false, err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE assistant_sessions
+			SET last_message_at = $2, updated_at = $2
+			WHERE id = $1
+		`, sessionID, now); err != nil {
 			return turn.Turn{}, false, err
 		}
 		record.SessionID = sessionID

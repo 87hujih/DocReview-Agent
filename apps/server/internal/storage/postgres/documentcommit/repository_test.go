@@ -2,6 +2,7 @@ package documentcommit
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	canonicalcommit "agent_project/apps/server/internal/document/commit"
@@ -16,6 +17,21 @@ func TestSerializationAndDeadlockFailuresRemainRetryable(t *testing.T) {
 		if !errors.Is(err, canonicalcommit.ErrRetryableCommit) {
 			t.Fatalf("code %s was not retryable: %v", code, err)
 		}
+	}
+}
+
+// TestAdvisoryLockKeyIsStableAndTextSafe verifies that the lock key preserves
+// the workspace/idempotency boundary without passing PostgreSQL a NUL byte.
+func TestAdvisoryLockKeyIsStableAndTextSafe(t *testing.T) {
+	first := advisoryLockKey("workspace-a", "key-a")
+	if first != advisoryLockKey("workspace-a", "key-a") {
+		t.Fatal("advisory lock key must be deterministic")
+	}
+	if first == advisoryLockKey("workspace-a", "key-b") {
+		t.Fatal("different idempotency keys must not share the preimage")
+	}
+	if strings.IndexByte(first, 0) >= 0 {
+		t.Fatal("advisory lock key must be valid PostgreSQL text")
 	}
 }
 
