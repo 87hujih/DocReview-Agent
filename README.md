@@ -74,7 +74,7 @@ flowchart LR
 - **AI**：SiliconFlow 兼容的 LLM、Embedding 与 Reranker API
 - **Data**：PostgreSQL 16、pgvector、pg_trgm、本地内容寻址文件存储
 - **Documents**：Markdown / Text 直通解析，可选 Apache Tika
-- **Delivery**：Docker Compose、GitHub Actions、GHCR、SSH 部署
+- **Delivery**：Docker Compose、GitHub Actions、区域 OCI registry、SSH 部署
 
 ## 快速开始
 
@@ -251,7 +251,7 @@ DocReview-Agent/
 |-- deploy/                             # 生产 Compose 与环境模板
 |-- docs/                               # 架构说明、开发指南与运行手册
 |-- scripts/dev/                        # 本地启动、状态与停止脚本
-`-- .github/workflows/                  # CI 与 Release Deploy
+`-- .github/workflows/                  # CI / Release Images / Deploy Production
 ```
 
 ## CI 与部署
@@ -263,7 +263,12 @@ DocReview-Agent/
 - Web 测试、Lint 与生产构建
 - Server / Web Docker 镜像构建
 
-推送 `v*` Tag 后，`Release Deploy` 会构建并推送 GHCR 镜像，通过 SSH 传输镜像，先运行 migration，再启动 Server 与 Web 并检查健康状态。生产部署模板位于 [`deploy/docker-compose.prod.yml`](./deploy/docker-compose.prod.yml)。
+推送 `v*` Tag 后，`Release Images` 会构建 Server / Web 镜像并推送到区域 OCI registry：
+
+- `${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/docreview-agent-server:<tag>`
+- `${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/docreview-agent-web:<tag>`
+
+生产切换由 `Deploy Production` 手动触发。它通过 SSH 同步部署文件，在远端拉取指定 `image_tag`，显式运行 migration，再启动 Server / Web 并检查健康状态。生产部署模板位于 [`deploy/docker-compose.prod.yml`](./deploy/docker-compose.prod.yml)。
 
 生产环境必须满足以下边界：
 
@@ -271,6 +276,7 @@ DocReview-Agent/
 - 代理必须移除客户端伪造的 `X-DocReview-*` 身份头，再写入可信身份头和签名。
 - `NEXT_PUBLIC_API_URL` 指向浏览器可访问的 HTTPS 应用来源，HMAC secret 不得出现在任何 `NEXT_PUBLIC_*` 变量中。
 - 迁移只允许由独立 migrator 执行；Server 和运维 CLI 不自动修改 Schema。
+- 部署前必须人工确认服务器 `.env` 中的 `DATABASE_URL` 是真实生产连接，而不是示例占位值。
 - 发布回滚前应先在入口停止接收新请求，等待已接受的 Run 与 Outbox 事件处理完成，再部署目标版本。
 
 ## 代码入口

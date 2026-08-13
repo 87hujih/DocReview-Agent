@@ -5,10 +5,9 @@ set -eu
 APP_DIR="${APP_DIR:-}"
 IMAGE_TAG="${IMAGE_TAG:-}"
 DRY_RUN="${DRY_RUN:-0}"
-GHCR_USERNAME="${GHCR_USERNAME:-}"
-GHCR_TOKEN="${GHCR_TOKEN:-}"
-SERVER_IMAGE_ARCHIVE="${SERVER_IMAGE_ARCHIVE:-}"
-WEB_IMAGE_ARCHIVE="${WEB_IMAGE_ARCHIVE:-}"
+REGISTRY_HOST="${REGISTRY_HOST:-}"
+REGISTRY_USERNAME="${REGISTRY_USERNAME:-}"
+REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-}"
 
 if [ -z "$APP_DIR" ]; then
   echo "APP_DIR is required" >&2
@@ -33,11 +32,20 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
-if grep -q '^IMAGE_TAG=' "$ENV_FILE"; then
-  sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$IMAGE_TAG/" "$ENV_FILE"
-else
-  printf '\nIMAGE_TAG=%s\n' "$IMAGE_TAG" >> "$ENV_FILE"
-fi
+upsert_image_tag() {
+  if grep -q '^IMAGE_TAG=' "$ENV_FILE"; then
+    sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$IMAGE_TAG/" "$ENV_FILE"
+  else
+    printf '\nIMAGE_TAG=%s\n' "$IMAGE_TAG" >> "$ENV_FILE"
+  fi
+}
+
+env_value() {
+  key="$1"
+  awk -F= -v key="$key" '$1 == key { sub(/\r$/, "", $2); print $2; exit }' "$ENV_FILE"
+}
+
+upsert_image_tag
 
 if [ "$DRY_RUN" = "1" ]; then
   echo "DRY_RUN=1"
@@ -45,42 +53,26 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-load_image_archive() {
-  archive_path="$1"
-  image_label="$2"
-
-  if [ ! -f "$archive_path" ]; then
-    echo "Missing image archive for $image_label: $archive_path" >&2
+if [ -n "$REGISTRY_HOST" ] || [ -n "$REGISTRY_USERNAME" ] || [ -n "$REGISTRY_PASSWORD" ]; then
+  if [ -z "$REGISTRY_HOST" ] || [ -z "$REGISTRY_USERNAME" ] || [ -z "$REGISTRY_PASSWORD" ]; then
+    echo "REGISTRY_HOST, REGISTRY_USERNAME, and REGISTRY_PASSWORD must all be set together" >&2
     exit 1
   fi
 
-  docker load -i "$archive_path"
-}
-
-if [ -n "$SERVER_IMAGE_ARCHIVE" ] || [ -n "$WEB_IMAGE_ARCHIVE" ]; then
-  if [ -z "$SERVER_IMAGE_ARCHIVE" ] || [ -z "$WEB_IMAGE_ARCHIVE" ]; then
-    echo "SERVER_IMAGE_ARCHIVE and WEB_IMAGE_ARCHIVE must both be set when using archive deployment" >&2
-    exit 1
-  fi
-
-  load_image_archive "$SERVER_IMAGE_ARCHIVE" "server"
-  load_image_archive "$WEB_IMAGE_ARCHIVE" "web"
-elif [ -n "$GHCR_USERNAME" ] || [ -n "$GHCR_TOKEN" ]; then
-  if [ -z "$GHCR_USERNAME" ] || [ -z "$GHCR_TOKEN" ]; then
-    echo "GHCR_USERNAME and GHCR_TOKEN are required for GHCR-based deployments" >&2
-    exit 1
-  fi
-
-  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull
+  printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" --password-stdin
 else
-  echo "Using preloaded local images for IMAGE_TAG=$IMAGE_TAG"
+  echo "Registry credentials not provided; using existing docker auth state"
 fi
 
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm migrate
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-deps server web
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
 
-if [ -n "$SERVER_IMAGE_ARCHIVE" ] && [ -n "$WEB_IMAGE_ARCHIVE" ]; then
-  rm -f "$SERVER_IMAGE_ARCHIVE" "$WEB_IMAGE_ARCHIVE"
+SERVER_PORT_VALUE="$(env_value SERVER_PORT)"
+if [ -z "$SERVER_PORT_VALUE" ]; then
+  echo "SERVER_PORT is required in $ENV_FILE" >&2
+  exit 1
 fi
+
+curl -fsS "http://127.0.0.1:${SERVER_PORT_VALUE}/healthz"

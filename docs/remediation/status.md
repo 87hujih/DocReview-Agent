@@ -289,3 +289,12 @@ Agent Runtime 主线：
 - Phase F/E/D/B/C 的历史代码回滚必须部署匹配 release，并保留所有增量表和审计事实；不得通过删除历史或新幂等键重放写操作来回滚。
 - R0.1：仅回滚测试 helper/CI 配置，不涉及生产数据。R0.2 回滚会重新暴露 wildcard CORS 或公共 backend，应只用于诊断。R0.3 只影响 CI/README。
 - R1.1 migration 失败：不得启动 server/web；事务会回滚 pending batch 和 ledger。修复必须新增 migration 文件，禁止编辑已应用迁移。R1.2 migration 执行后只允许应用层忽略新增表/nullable 字段，破坏性 Schema 收缩必须另行评审。
+
+## PR #15 合并冲突修复（2026-08-13）
+
+- 根因：`feat/task-event-chain-consistency` 与 `main` 同时修改了 README 和远程部署脚本；`main` 还以新的区域 registry workflow 替代了旧 `release-deploy.yml`。
+- 解决：将 `origin/main` 合入源分支，保留 durable runtime、受保护入口、显式 migrator 和测试数据库 fuse；同时保留 `main` 的区域 registry、Release/Deploy 分离与凭据保护。`migrate`、`server`、`web` 统一从 `${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}` 拉取。
+- 验证：`go test ./apps/server/... -count=1`、`go test -race ./apps/server/... -count=1`、`go vet ./apps/server/...`、四个生产命令 build、前端 30 文件/104 测试、lint、production build、actionlint、Compose 解析、POSIX shell 解析和 diff check 均通过；数据库授权变量未设置，集成测试在连接前安全跳过。
+- 未验证与风险：Docker Desktop Linux daemon 不可用，未运行 Server/Web 镜像构建；未执行真实 registry push/pull、远程 migration 或生产健康检查。部署前仍需确认区域 registry secrets、生产 `DATABASE_URL`、受保护 ingress 和目标 tag。
+- 回滚：如本次冲突修复导致回归，回退源分支上的合并提交；如已发布，先从可信入口摘流并排空 durable Run/Outbox，再部署上一已验证 tag，禁止删除迁移或审计事实。
+- 下一步：等待 PR #15 的 GitHub CI 和 mergeability 重新计算；完成合并后再按 Phase 1 gate 决定是否推进后续 remediation，不自动进入下一阶段。
