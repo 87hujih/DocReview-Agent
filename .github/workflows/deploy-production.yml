@@ -1,0 +1,114 @@
+name: Deploy Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Existing image tag to deploy or roll back to"
+        required: true
+        type: string
+      dry_run:
+        description: "Only update IMAGE_TAG and print the deployment target"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add server to known hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${{ secrets.DEPLOY_PORT }}" "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Prepare remote deployment directory
+        shell: bash
+        run: |
+          ssh -p "${{ secrets.DEPLOY_PORT }}" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "mkdir -p /opt/agent-project"
+
+      - name: Copy deployment assets to server
+        shell: bash
+        run: |
+          scp -P "${{ secrets.DEPLOY_PORT }}" deploy/docker-compose.prod.yml "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/agent-project/docker-compose.prod.yml"
+          scp -P "${{ secrets.DEPLOY_PORT }}" scripts/deploy/remote-deploy.sh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/agent-project/remote-deploy.sh"
+
+      - name: Write registry runtime env
+        shell: bash
+        env:
+          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          escape_for_single_quotes() {
+            printf "%s" "$1" | sed "s/'/'\"'\"'/g"
+          }
+
+          cat > .deploy-runtime.env <<EOF
+          REGISTRY_HOST='$(escape_for_single_quotes "$REGISTRY_HOST")'
+          REGISTRY_USERNAME='$(escape_for_single_quotes "$REGISTRY_USERNAME")'
+          REGISTRY_PASSWORD='$(escape_for_single_quotes "$REGISTRY_PASSWORD")'
+          EOF
+
+      - name: Copy registry runtime env to server
+        shell: bash
+        run: |
+          scp -P "${{ secrets.DEPLOY_PORT }}" .deploy-runtime.env "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/agent-project/.deploy-runtime.env"
+
+      - name: Run remote deployment
+        shell: bash
+        env:
+          DEPLOY_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            DEPLOY_DRY_RUN=1
+          else
+            DEPLOY_DRY_RUN=0
+          fi
+
+          if [[ ! "$DEPLOY_IMAGE_TAG" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]{0,127}$ ]]; then
+            echo "image_tag must be a version tag beginning with v and contain only letters, digits, dots, underscores, or hyphens" >&2
+            exit 1
+          fi
+
+          ssh -p "${{ secrets.DEPLOY_PORT }}" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "IMAGE_TAG='${DEPLOY_IMAGE_TAG}' DRY_RUN='${DEPLOY_DRY_RUN}' sh -s" <<'EOF'
+          set -eu
+          cleanup() {
+            rm -f /opt/agent-project/.deploy-runtime.env
+          }
+          trap cleanup EXIT
+
+          chmod 600 /opt/agent-project/.deploy-runtime.env
+          chmod +x /opt/agent-project/remote-deploy.sh
+
+          set -a
+          . /opt/agent-project/.deploy-runtime.env
+          set +a
+
+          APP_DIR=/opt/agent-project \
+          IMAGE_TAG="${IMAGE_TAG}" \
+          DRY_RUN="${DRY_RUN}" \
+          sh /opt/agent-project/remote-deploy.sh
+          EOF
+
+      - name: Remove local registry runtime env
+        if: always()
+        shell: bash
+        run: |
+          rm -f .deploy-runtime.env
