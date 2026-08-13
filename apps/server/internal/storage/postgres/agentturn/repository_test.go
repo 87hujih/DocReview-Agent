@@ -71,9 +71,18 @@ func TestNewTurnFactsAreCreatedWithinOneTransaction(t *testing.T) {
 
 // TestInitialTypedStepContainsOnlyNodeContractFields 验证对应场景下的正常路径与失败路径。
 func TestInitialTypedStepContainsOnlyNodeContractFields(t *testing.T) {
-	fragment := "jsonb_build_object('message', $4::jsonb ->> 'message', 'resource_id', $9::text)"
+	fragment := "jsonb_build_object('message', $4::jsonb ->> 'message', 'resource_id', ($9::uuid)::text)"
 	if !strings.Contains(createFactsSQL, fragment) {
 		t.Fatalf("initial typed step must strip transport and trusted identity fields; missing %q", fragment)
+	}
+}
+
+// TestTurnFactsUseOneResourceParameterType prevents PostgreSQL from inferring $9 as both UUID and text.
+func TestTurnFactsUseOneResourceParameterType(t *testing.T) {
+	for _, fragment := range []string{"$9::uuid", "($9::uuid)::text"} {
+		if !strings.Contains(createFactsSQL, fragment) {
+			t.Fatalf("turn facts SQL must contain %q", fragment)
+		}
 	}
 }
 

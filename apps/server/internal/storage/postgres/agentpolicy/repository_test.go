@@ -2,6 +2,7 @@ package agentpolicy
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,21 @@ import (
 	agenttools "agent_project/apps/server/internal/agent/tools"
 	"agent_project/apps/server/internal/agent/tools/builtin"
 )
+
+// TestJSONEqualUsesJSONSemantics verifies PostgreSQL JSONB key normalization does not create false conflicts.
+func TestJSONEqualUsesJSONSemantics(t *testing.T) {
+	left := json.RawMessage(`{"base_version_id":"version-1","operations":[]}`)
+	right := json.RawMessage(`{"operations":[],"base_version_id":"version-1"}`)
+	if !jsonEqual(left, right) {
+		t.Fatal("equivalent JSON objects with different key order must compare equal")
+	}
+	if jsonEqual(left, json.RawMessage(`{"base_version_id":"version-2","operations":[]}`)) {
+		t.Fatal("different JSON objects must not compare equal")
+	}
+	if jsonEqual(json.RawMessage(`{"value":9007199254740992}`), json.RawMessage(`{"value":9007199254740993}`)) {
+		t.Fatal("different large JSON integers must not compare equal")
+	}
+}
 
 // TestApprovalRequestRejectsMissingTrustedScopeBeforeDatabaseAccess 验证对应场景下的正常路径与失败路径。
 func TestApprovalRequestRejectsMissingTrustedScopeBeforeDatabaseAccess(t *testing.T) {

@@ -107,7 +107,7 @@ func seedCanonicalDocument(t *testing.T, ctx context.Context, pool interface {
 	}
 	ast, _ := json.Marshal(document)
 	metadata, _ := json.Marshal(document.Metadata)
-	_, err = tx.Exec(ctx, `INSERT INTO canonical_documents (workspace_id,resource_id,version_id,document_id,root_node_id,schema_version,source_format,content_hash,ast_json,metadata_json,renderer_profile,chunk_profile,embedding_profile) VALUES ($1,$2,$3,$2,$4,'1.0','pdf',$5,$6::jsonb,$7::jsonb,'pdf-canonical-v1','node-v1','embedding-v1')`, workspaceID, resourceID, versionID, document.Root.NodeID, document.ContentHash, ast, metadata)
+	_, err = tx.Exec(ctx, `INSERT INTO canonical_documents (workspace_id,resource_id,version_id,document_id,root_node_id,schema_version,source_format,content_hash,ast_json,metadata_json,renderer_profile,chunk_profile,embedding_profile) VALUES ($1,$2::uuid,$3,($2::uuid)::text,$4,'1.0','pdf',$5,$6::jsonb,$7::jsonb,'pdf-canonical-v1','node-v1','embedding-v1')`, workspaceID, resourceID, versionID, document.Root.NodeID, document.ContentHash, ast, metadata)
 	if err != nil {
 		t.Fatal(err)
 	}

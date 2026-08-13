@@ -298,3 +298,12 @@ Agent Runtime 主线：
 - 未验证与风险：Docker Desktop Linux daemon 不可用，未运行 Server/Web 镜像构建；未执行真实 registry push/pull、远程 migration 或生产健康检查。部署前仍需确认区域 registry secrets、生产 `DATABASE_URL`、受保护 ingress 和目标 tag。
 - 回滚：如本次冲突修复导致回归，回退源分支上的合并提交；如已发布，先从可信入口摘流并排空 durable Run/Outbox，再部署上一已验证 tag，禁止删除迁移或审计事实。
 - 下一步：等待 PR #15 的 GitHub CI 和 mergeability 重新计算；完成合并后再按 Phase 1 gate 决定是否推进后续 remediation，不自动进入下一阶段。
+
+## PR #15 CI 合并门禁修复（2026-08-13）
+
+- 根因：首次冲突修复后 PR 已显示 `MERGEABLE`，但 GitHub CI 的授权 `agent_project_test` 暴露了 7 个集成失败。Turn 原子 SQL 将同一参数同时推断为 UUID/Text；canonical 测试夹具同样复用 UUID/Text 参数；Approval 幂等比较按 JSON 字节顺序比较，无法兼容 PostgreSQL JSONB 键规范化；3 个 Run 领取测试仍创建无可信作用域的旧式 Run；Tool Audit 租约测试未提供与 call 匹配的 Descriptor。
+- 解决：统一 Turn 与 canonical fixture 的 UUID 参数类型后再显式转 Text；Approval JSON 按解析后的 JSON 语义比较并新增键顺序回归；Run 测试夹具显式绑定 workspace、resource、principal、trust source 和 `runtime_mode=durable`；Tool Audit 测试传入精确 name/version Descriptor。生产领取器的 fail-closed 可信作用域条件未放宽。
+- 本地验证：`go test ./apps/server/internal/storage/postgres/agentpolicy ./apps/server/internal/storage/postgres/agentturn ./apps/server/internal/storage/postgres/documentcommit ./apps/server/internal/storage/postgres/agentrun -count=1`、`go test ./apps/server/... -count=1`、`go vet ./apps/server/...` 和 `git diff --check` 通过。
+- 未验证与风险：本机未设置同时满足保险丝的 `ALLOW_DB_TESTS=1`、`TEST_DATABASE_URL` 和 host allowlist，因此 PostgreSQL 集成测试在连接前安全跳过；SQL round trip、migration 和隔离 schema 清理必须由 GitHub CI 的授权 `_test` 数据库重新验证。
+- 回滚：回退本次 CI 修复提交即可恢复原行为；不得通过放宽 durable claim 条件、关闭测试数据库保险丝或删除持久化事实绕过门禁。
+- 下一步：推送源分支并等待 PR #15 全部 required checks 通过；仅在 GitHub 报告 `MERGEABLE` 且 checks 全绿后合并到 `main`，不自动进入下一 remediation phase。

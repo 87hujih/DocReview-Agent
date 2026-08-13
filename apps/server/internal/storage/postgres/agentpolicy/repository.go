@@ -1,11 +1,11 @@
 package agentpolicy
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -512,9 +512,26 @@ func normalizeObject(raw json.RawMessage) (json.RawMessage, error) {
 
 // jsonEqual 执行该函数负责的核心处理逻辑。
 func jsonEqual(left, right json.RawMessage) bool {
-	var leftBuffer, rightBuffer bytes.Buffer
-	if json.Compact(&leftBuffer, left) != nil || json.Compact(&rightBuffer, right) != nil {
+	leftValue, err := decodeJSONNumber(left)
+	if err != nil {
 		return false
 	}
-	return bytes.Equal(leftBuffer.Bytes(), rightBuffer.Bytes())
+	rightValue, err := decodeJSONNumber(right)
+	if err != nil {
+		return false
+	}
+	return reflect.DeepEqual(leftValue, rightValue)
+}
+
+func decodeJSONNumber(raw json.RawMessage) (any, error) {
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("invalid JSON")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return value, nil
 }

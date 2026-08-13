@@ -13,6 +13,8 @@ import (
 	"agent_project/apps/server/internal/storage/postgres/agentrun"
 	"agent_project/apps/server/internal/storage/postgres/outbox"
 	"agent_project/apps/server/internal/testsupport/postgrestest"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestRepositoryIdempotencyClaimLeaseAndManifestRoundTrip 验证对应场景下的正常路径与失败路径。
@@ -44,6 +46,7 @@ func TestRepositoryIdempotencyClaimLeaseAndManifestRoundTrip(t *testing.T) {
 	if err != nil || created || duplicate.ID != run.ID {
 		t.Fatalf("idempotent run: created=%v duplicate=%#v err=%v", created, duplicate, err)
 	}
+	bindDurableRun(t, ctx, pool, run.ID)
 
 	step, created, err := repo.CreateOrGetStep(ctx, agentrun.CreateStepParams{
 		RunID:       run.ID,
@@ -151,6 +154,7 @@ func TestEngineStoreWaitingResumeAndOutcomeOutboxAreDurable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create run: %v", err)
 	}
+	bindDurableRun(t, ctx, pool, run.ID)
 	if _, _, err := repo.CreateOrGetStep(ctx, agentrun.CreateStepParams{
 		RunID: run.ID, StepKey: "request_approval:1", StepType: "RequestApproval",
 		InputJSON: json.RawMessage(`{"risk":"high"}`), MaxAttempts: 3,
@@ -243,6 +247,7 @@ func TestEngineStoreRetryCommitIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create run: %v", err)
 	}
+	bindDurableRun(t, ctx, pool, run.ID)
 	if _, _, err := repo.CreateOrGetStep(ctx, agentrun.CreateStepParams{
 		RunID: run.ID, StepKey: "retrieve:1", StepType: "RetrieveEvidence", InputJSON: json.RawMessage(`{}`), MaxAttempts: 3,
 	}); err != nil {
@@ -297,13 +302,14 @@ func TestToolAuditExpiredLeaseCanBeReclaimedAndFencesLateFinish(t *testing.T) {
 		RunID: run.ID, StepID: step.ID, ToolName: "document.read_nodes", ToolVersion: "1.0.0",
 		Input: json.RawMessage(`{"resource_id":"resource-1"}`), IdempotencyKey: "read-resource-1",
 	}
+	descriptor := agenttools.Descriptor{Name: call.ToolName, Version: call.ToolVersion}
 	// 开启事务，确保后续状态变更以原子方式提交。
-	first, err := workerA.Begin(ctx, agenttools.AuditStart{Call: call, StartedAt: started})
+	first, err := workerA.Begin(ctx, agenttools.AuditStart{Call: call, Descriptor: descriptor, StartedAt: started})
 	if err != nil || !first.Acquired || first.LeaseGeneration != 1 {
 		t.Fatalf("first claim: record=%#v err=%v", first, err)
 	}
 	// 开启事务，确保后续状态变更以原子方式提交。
-	reclaimed, err := workerB.Begin(ctx, agenttools.AuditStart{Call: call, StartedAt: started.Add(2 * time.Minute)})
+	reclaimed, err := workerB.Begin(ctx, agenttools.AuditStart{Call: call, Descriptor: descriptor, StartedAt: started.Add(2 * time.Minute)})
 	if err != nil || !reclaimed.Acquired || reclaimed.LeaseGeneration != 2 {
 		t.Fatalf("reclaim: record=%#v err=%v", reclaimed, err)
 	}
@@ -325,9 +331,34 @@ func TestToolAuditExpiredLeaseCanBeReclaimedAndFencesLateFinish(t *testing.T) {
 		t.Fatalf("reclaimed finish: %v", err)
 	}
 	// 开启事务，确保后续状态变更以原子方式提交。
-	replay, err := workerA.Begin(ctx, agenttools.AuditStart{Call: call, StartedAt: started.Add(3 * time.Minute)})
+	replay, err := workerA.Begin(ctx, agenttools.AuditStart{Call: call, Descriptor: descriptor, StartedAt: started.Add(3 * time.Minute)})
 	if err != nil || replay.Acquired || replay.Status != agenttools.AuditSucceeded || replay.Result == nil {
 		t.Fatalf("terminal replay: record=%#v err=%v", replay, err)
+	}
+}
+
+func bindDurableRun(t *testing.T, ctx context.Context, pool *pgxpool.Pool, runID string) {
+	t.Helper()
+	var organizationID, workspaceID, userID, resourceID string
+	if err := pool.QueryRow(ctx, `INSERT INTO organizations (slug, name) VALUES ('durable-run-org', 'Durable Run Org') RETURNING id`).Scan(&organizationID); err != nil {
+		t.Fatalf("create durable organization: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO workspaces (organization_id, slug, name) VALUES ($1, 'durable-run-workspace', 'Durable Run Workspace') RETURNING id`, organizationID).Scan(&workspaceID); err != nil {
+		t.Fatalf("create durable workspace: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO users (display_name) VALUES ('Durable Test User') RETURNING id`).Scan(&userID); err != nil {
+		t.Fatalf("create durable user: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO resources (workspace_id, title) VALUES ($1, 'Durable Test Resource') RETURNING id`, workspaceID).Scan(&resourceID); err != nil {
+		t.Fatalf("create durable resource: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_runs
+		SET workspace_id = $2, resource_id = $3, principal_type = 'user', principal_id = $4,
+			trust_source = 'integration-test', runtime_mode = 'durable'
+		WHERE id = $1
+	`, runID, workspaceID, resourceID, userID); err != nil {
+		t.Fatalf("bind durable run scope: %v", err)
 	}
 }
 

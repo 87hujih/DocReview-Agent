@@ -77,17 +77,17 @@ inserted_run AS (
 		principal_type, principal_id, trust_source, runtime_mode,
 		status, objective, max_steps, max_tool_calls, state_json
 	)
-	SELECT $5, $6, $9, updated_session.id, 'turn:' || $1::text, $7, $1,
+	SELECT $5, $6, $9::uuid, updated_session.id, 'turn:' || $1::text, $7, $1,
 		$10, $11, $12, $13,
 		'queued', $4::jsonb ->> 'message', 64, 32,
-		jsonb_build_object('turn_id', $1::text, 'resource_id', $9::text, 'runtime_mode', $13::text)
+		jsonb_build_object('turn_id', $1::text, 'resource_id', ($9::uuid)::text, 'runtime_mode', $13::text)
 	FROM updated_session
 	RETURNING id, session_id
 ),
 inserted_step AS (
 	INSERT INTO agent_steps (run_id, step_key, step_type, input_json, max_attempts)
 	SELECT inserted_run.id, 'understand_goal:1', 'UnderstandGoal',
-		jsonb_build_object('message', $4::jsonb ->> 'message', 'resource_id', $9::text), 5
+		jsonb_build_object('message', $4::jsonb ->> 'message', 'resource_id', ($9::uuid)::text), 5
 	FROM inserted_run
 	RETURNING id, run_id
 ),
