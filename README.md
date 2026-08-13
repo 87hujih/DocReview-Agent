@@ -51,7 +51,7 @@ flowchart LR
 - **检索与 AI**：SiliconFlow（LLM / Embedding / Reranker）、`pgvector`、`pg_trgm`
 - **文档处理**：文本直通解析、Apache Tika（可选）
 - **存储与运行**：PostgreSQL 16、Docker Compose、本地内容寻址文件存储
-- **CI/CD**：GitHub Actions、GHCR、SSH + Docker Compose 部署
+- **CI/CD**：GitHub Actions、区域 OCI registry、SSH + Docker Compose 部署
 
 ## 快速开始
 
@@ -180,7 +180,7 @@ Agent_Project/
 ├── deploy/                     # 生产部署 compose 与 env 模板
 ├── docs/                       # 设计与链路说明
 ├── scripts/dev/                # 本地启动 / 状态 / 停止脚本
-└── .github/workflows/          # CI / Release Deploy
+└── .github/workflows/          # CI / Release Images / Deploy Production
 ```
 
 ## CI / 部署
@@ -190,12 +190,16 @@ Agent_Project/
   - Web `lint`
   - Web `build`
   - Server / Web Docker 镜像构建
-- `Release Deploy`：在推送 `v*` tag 时触发
-  - 构建并推送 GHCR 镜像
-  - 通过 SSH 把镜像和 `deploy/docker-compose.prod.yml` 部署到远端主机
+- `Release Images`：在推送 `v*` tag 时触发
+  - 构建 Server / Web 镜像并推送到区域 OCI registry
+  - 镜像地址为 `${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/docreview-agent-{server,web}:<tag>`
+- `Deploy Production`：手动输入 `image_tag` 触发部署或回滚
+  - 通过 SSH 同步部署文件
+  - 远端服务器从 registry 拉取指定版本并执行 Docker Compose 更新
 
 生产环境注意事项：
 
 - 前端必须配置 `NEXT_PUBLIC_API_URL` 为**浏览器可访问**的后端公网地址
 - 不要把它写成 Docker service name 或服务器本机 `127.0.0.1`
+- 部署前必须人工确认服务器 `.env` 中的 `DATABASE_URL` 是真实生产连接，而不是示例占位值
 - 生产模板参见 [`deploy/docker-compose.prod.yml`](./deploy/docker-compose.prod.yml) 和 [`deploy/prod.env.example`](./deploy/prod.env.example)

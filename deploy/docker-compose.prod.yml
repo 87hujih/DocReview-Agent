@@ -1,6 +1,6 @@
 services:
   server:
-    image: ghcr.io/${GHCR_OWNER}/docreview-agent-server:${IMAGE_TAG}
+    image: ${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/docreview-agent-server:${IMAGE_TAG}
     restart: unless-stopped
     networks:
       - agent-net
@@ -20,7 +20,7 @@ services:
       LOG_ADD_SOURCE: "${LOG_ADD_SOURCE}"
 
   web:
-    image: ghcr.io/${GHCR_OWNER}/docreview-agent-web:${IMAGE_TAG}
+    image: ${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/docreview-agent-web:${IMAGE_TAG}
     restart: unless-stopped
     networks:
       - agent-net
